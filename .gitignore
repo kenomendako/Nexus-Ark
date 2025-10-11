@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Gradio
+.gradio_cache/
+
+# Application Configuration (Local User Settings)
+# これらのファイルは個人の環境に依存するため、リポジトリに含めません。
+config.json
+alarms.json
+
+# Character Data (All character-specific files are ignored)
+# キャラクターの全データ（ログ、設定、画像、キャッシュ等）はリポジトリに含めません。
+characters/
+
+# Application Generated Caches & Logs
+# アプリケーションが実行時に自動生成する一時ファイルやログ。
+temp/
+.memos/
+importer_errors.log
+retry_success.log
+
+# Development/Backup Artifacts
+# 開発中の一時的な作業ディレクトリやバックアップファイル。
+jules-scratch/
+*_backup.py
+*.bak
