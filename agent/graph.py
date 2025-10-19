@@ -340,37 +340,40 @@ def agent_node(state: AgentState):
     llm = get_configured_llm(state['model_name'], state['api_key'], state['generation_config'])
     llm_with_tools = llm.bind_tools(all_tools)
 
-    import pprint
-    print("\n--- [DEBUG] AIに渡される直前のメッセージリスト (最終確認) ---")
-    for i, msg in enumerate(messages_for_agent):
-        msg_type = type(msg).__name__
-        content_for_length_check = ""
-        if hasattr(msg, 'content'):
-            if isinstance(msg.content, str): content_for_length_check = msg.content
-            elif isinstance(msg.content, list): content_for_length_check = "".join(part.get('text', '') if isinstance(part, dict) else str(part) for part in msg.content)
-        print(f"[{i}] {msg_type} (Content Length: {len(content_for_length_check)})")
-        if isinstance(msg, SystemMessage):
-            print(f"  - Content (Head): {msg.content[:300]}...")
-            print(f"  - Content (Tail): ...{msg.content[-300:]}")
-        elif hasattr(msg, 'content'):
-            print("  - Content:"); pprint.pprint(msg.content, indent=4)
-        if hasattr(msg, 'tool_calls') and msg.tool_calls:
-            print("  - Tool Calls:"); pprint.pprint(msg.tool_calls, indent=4)
-        print("-" * 20)
-    print("--------------------------------------------------\n")
+    if state.get("debug_mode", False):
+        import pprint
+        print("\n--- [DEBUG] AIに渡される直前のメッセージリスト (最終確認) ---")
+        for i, msg in enumerate(messages_for_agent):
+            msg_type = type(msg).__name__
+            content_for_length_check = ""
+            if hasattr(msg, 'content'):
+                if isinstance(msg.content, str): content_for_length_check = msg.content
+                elif isinstance(msg.content, list): content_for_length_check = "".join(part.get('text', '') if isinstance(part, dict) else str(part) for part in msg.content)
+            print(f"[{i}] {msg_type} (Content Length: {len(content_for_length_check)})")
+            if isinstance(msg, SystemMessage):
+                print(f"  - Content (Head): {msg.content[:300]}...")
+                print(f"  - Content (Tail): ...{msg.content[-300:]}")
+            elif hasattr(msg, 'content'):
+                print("  - Content:"); pprint.pprint(msg.content, indent=4)
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                print("  - Tool Calls:"); pprint.pprint(msg.tool_calls, indent=4)
+            print("-" * 20)
+        print("--------------------------------------------------\n")
 
     response = None
     try:
         response = llm_with_tools.invoke(messages_for_agent)
         
-        print("\n--- [DEBUG] AIから返ってきた生の応答 ---")
-        import copy
-        response_for_log = copy.deepcopy(response)
-        if hasattr(response_for_log, 'tool_calls') and response_for_log.tool_calls:
-            for tool_call in response_for_log.tool_calls:
-                if 'api_key' in tool_call.get('args', {}): tool_call['args']['api_key'] = '<REDACTED>'
-        pprint.pprint(response_for_log)
-        print("---------------------------------------\n")
+        if state.get("debug_mode", False):
+            import pprint
+            import copy
+            print("\n--- [DEBUG] AIから返ってきた生の応答 ---")
+            response_for_log = copy.deepcopy(response)
+            if hasattr(response_for_log, 'tool_calls') and response_for_log.tool_calls:
+                for tool_call in response_for_log.tool_calls:
+                    if 'api_key' in tool_call.get('args', {}): tool_call['args']['api_key'] = '<REDACTED>'
+            pprint.pprint(response_for_log)
+            print("---------------------------------------\n")
 
         loop_count += 1
         # ツール呼び出しを含まない、純粋なテキスト応答の場合のみ、
@@ -524,7 +527,7 @@ def safe_tool_executor(state: AgentState):
             history_for_editing = [msg for msg in state['messages'] if msg is not last_message]
             final_context_for_editing = [state['system_prompt']] + history_for_editing + [edit_instruction_message]
 
-            if state.get("debug_mode", True): # デバッグモード中は常に出力
+            if state.get("debug_mode", False):
                 print("\n--- [DEBUG] AIへの最終編集タスクプロンプト (完全版) ---")
                 for i, msg in enumerate(final_context_for_editing):
                     msg_type = type(msg).__name__
@@ -580,8 +583,8 @@ def safe_tool_executor(state: AgentState):
                 content_to_process = json_match.group(1).strip() if json_match else edited_content_document
                 instructions = json.loads(content_to_process)
 
-                print(f"--- [DEBUG] AIが生成した差分指示リスト ---\n{json.dumps(instructions, indent=2, ensure_ascii=False)}\n------------------------------------")
-
+                if state.get("debug_mode", False):
+                    print(f"--- [DEBUG] AIが生成した差分指示リスト ---\n{json.dumps(instructions, indent=2, ensure_ascii=False)}\n------------------------------------")
                 if is_plan_main_memory:
                     output = _apply_main_memory_edits(instructions=instructions, room_name=room_name)
                 elif is_plan_secret_diary:
