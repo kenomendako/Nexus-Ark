@@ -1,3 +1,17 @@
+# === [CRITICAL FIX FOR EMBEDDED PYTHON] ===
+# This block MUST be at the absolute top of the file.
+import sys
+import os
+
+# Get the absolute path of the directory where this script is located.
+# This ensures that even in an embedded environment, Python knows where to find other modules.
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Add the script's directory to Python's module search path.
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+# === [END CRITICAL FIX] ===
+
 # --- [ロギング設定の強制上書き] ---
 import logging
 import logging.config
