@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "last_updated": "2025-10-17 23:24:09",
+  "override_settings": {
+    "model_name": null,
+    "voice_id": "pulcherrima",
+    "voice_style_prompt": "優しく中性的。高い声。静かで知的。ゆっくり。囁くように小声。",
+    "add_timestamp": true,
+    "send_thoughts": true,
+    "send_notepad": true,
+    "use_common_prompt": true,
+    "send_core_memory": true,
+    "send_scenery": true,
+    "temperature": 0.9,
+    "top_p": 0.95,
+    "safety_block_threshold_harassment": "BLOCK_NONE",
+    "safety_block_threshold_hate_speech": "BLOCK_NONE",
+    "safety_block_threshold_sexually_explicit": "BLOCK_NONE",
+    "safety_block_threshold_dangerous_content": "BLOCK_NONE",
+    "enable_typewriter_effect": true,
+    "streaming_speed": 0.015,
+    "enable_scenery_system": true,
+    "auto_memory_enabled": false,
+    "send_current_time": true
+  },
+  "agent_display_name": "オリヴェ", 
+  "memory_last_updated": "2025-10-16 15:50:04"
+}
