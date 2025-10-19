@@ -14,6 +14,7 @@ pillow==11.3.0
 # --- RAG (Knowledge Base) Feature ---
 faiss-cpu==1.12.0
 langchain-faiss==0.1.1
+langchain-community==0.3.29
 
 # --- UI & Data Handling ---
 pandas==2.3.2
