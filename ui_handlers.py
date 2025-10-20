@@ -581,6 +581,12 @@ def _stream_and_handle_response(
 
             if final_state:
                 new_messages = final_state["messages"][initial_message_count:]
+
+                # LangGraphが末尾に追加する空のAIMessage（メタデータのみ）を除去
+                if new_messages and isinstance(new_messages[-1], AIMessage):
+                    if not new_messages[-1].content or not new_messages[-1].content.strip():
+                        new_messages.pop()
+
                 last_ai_message = next((msg for msg in reversed(new_messages) if isinstance(msg, AIMessage)), None)
                 has_tool_calls_in_turn = bool(last_ai_message and last_ai_message.tool_calls)
 
