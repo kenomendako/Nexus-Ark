@@ -56,6 +56,8 @@ import sys
 # ▼▼▼【以下のimportを追加】▼▼▼
 import shutil
 # ▲▲▲【追加はここまで】▲▲▲
+import argparse
+import socket
 import utils
 import json
 import gradio as gr
@@ -69,6 +71,61 @@ if not utils.acquire_lock():
     else: input("続行するにはEnterキーを押してください...")
     sys.exit(1)
 os.environ["MEM0_TELEMETRY_ENABLED"] = "false"
+
+# --- [ポート番号の処理] ---
+def find_available_port(start_port=7860, max_attempts=100):
+    """利用可能なポートを見つける。start_portから順番に試行する
+
+    Args:
+        start_port: 開始ポート番号
+        max_attempts: 最大試行回数（1の場合は指定ポートのみチェック）
+
+    Returns:
+        利用可能なポート番号、または見つからない場合はNone
+    """
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                # SO_REUSEADDRを設定することで、TIME_WAIT状態でも即座に再利用可能にする
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("0.0.0.0", port))
+                return port
+        except OSError:
+            continue
+    return None
+
+# コマンドライン引数の解析
+parser = argparse.ArgumentParser(description='Nexus Ark - LLMチャットアプリケーション')
+parser.add_argument('--port', type=int, help='使用するポート番号を指定します（例: --port 8080）')
+args = parser.parse_args()
+
+# ポート番号の決定
+if args.port:
+    # ポート番号が指定された場合
+    SERVER_PORT = find_available_port(args.port, max_attempts=1)
+    if SERVER_PORT is None:
+        print(f"\n" + "X"*60)
+        print(f"!!! [エラー] 指定されたポート {args.port} は既に使用されています。")
+        print("X"*60 + "\n")
+        if os.name == "nt": os.system("pause")
+        else: input("続行するにはEnterキーを押してください...")
+        sys.exit(1)
+    print(f"--- [ポート設定] 指定されたポート {SERVER_PORT} を使用します ---")
+else:
+    # ポート番号が指定されていない場合、7860から順番に試行
+    SERVER_PORT = find_available_port(7860)
+    if SERVER_PORT is None:
+        print(f"\n" + "X"*60)
+        print(f"!!! [エラー] 利用可能なポートが見つかりませんでした（7860-7959を試行）。")
+        print("X"*60 + "\n")
+        if os.name == "nt": os.system("pause")
+        else: input("続行するにはEnterキーを押してください...")
+        sys.exit(1)
+    if SERVER_PORT != 7860:
+        print(f"--- [ポート設定] ポート7860が使用中のため、ポート {SERVER_PORT} を使用します ---")
+    else:
+        print(f"--- [ポート設定] ポート {SERVER_PORT} を使用します ---")
+# --- [ポート番号の処理 ここまで] ---
 
 try:
     config_manager.load_config()
@@ -1729,8 +1786,8 @@ try:
         )
         play_audio_event.failure(fn=ui_handlers._reset_play_audio_on_failure, inputs=None, outputs=[audio_player, play_audio_button, rerun_button])
 
-        print("\n" + "="*60); print("アプリケーションを起動します..."); print(f"起動後、以下のURLでアクセスしてください。"); print(f"\n  【PCからアクセスする場合】"); print(f"  http://127.0.0.1:7860"); print(f"\n  【スマホからアクセスする場合（PCと同じWi-Fiに接続してください）】"); print(f"  http://<お使いのPCのIPアドレス>:7860"); print("  (IPアドレスが分からない場合は、PCのコマンドプロモートやターミナルで"); print("   `ipconfig` (Windows) または `ifconfig` (Mac/Linux) と入力して確認できます)"); print("="*60 + "\n")
-        demo.queue().launch(server_name="0.0.0.0", server_port=7860, share=False, allowed_paths=["."], inbrowser=True)
+        print("\n" + "="*60); print("アプリケーションを起動します..."); print(f"起動後、以下のURLでアクセスしてください。"); print(f"\n  【PCからアクセスする場合】"); print(f"  http://127.0.0.1:{SERVER_PORT}"); print(f"\n  【スマホからアクセスする場合（PCと同じWi-Fiに接続してください）】"); print(f"  http://<お使いのPCのIPアドレス>:{SERVER_PORT}"); print("  (IPアドレスが分からない場合は、PCのコマンドプロモートやターミナルで"); print("   `ipconfig` (Windows) または `ifconfig` (Mac/Linux) と入力して確認できます)"); print("="*60 + "\n")
+        demo.queue().launch(server_name="0.0.0.0", server_port=SERVER_PORT, share=False, allowed_paths=["."], inbrowser=True)
 
 except Exception as e:
     print("\n" + "X"*60); print("!!! [致命的エラー] アプリケーションの起動中に、予期せぬ例外が発生しました。"); print("X"*60); traceback.print_exc()
