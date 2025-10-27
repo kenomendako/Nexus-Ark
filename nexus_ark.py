@@ -222,7 +222,86 @@ try:
     """
     custom_js = """
     function() {
-        // This function is intentionally left blank.
+        const CONTAINER_SELECTOR = "#chat_input_box";
+        const INIT_FLAG = "enterBehaviorInitialized";
+
+        function getRoot() {
+            if (window.gradioApp) {
+                try {
+                    const appRoot = window.gradioApp();
+                    if (appRoot) {
+                        return appRoot;
+                    }
+                } catch (error) {
+                    console.warn("[NexusArk] Failed to access gradioApp root:", error);
+                }
+            }
+            const gradioEl = document.querySelector("gradio-app");
+            if (gradioEl && gradioEl.shadowRoot) {
+                return gradioEl.shadowRoot;
+            }
+            return document;
+        }
+
+        function attachHandler(root) {
+            if (!root) {
+                return;
+            }
+            const container = root.querySelector(CONTAINER_SELECTOR);
+            if (!container) {
+                return;
+            }
+            const textarea = container.querySelector("textarea");
+            if (!textarea || textarea.dataset[INIT_FLAG]) {
+                return;
+            }
+            textarea.dataset[INIT_FLAG] = "true";
+            textarea.setAttribute("enterkeyhint", "send");
+
+            const handler = (event) => {
+                if (event.key !== "Enter" || event.isComposing) {
+                    return;
+                }
+                const hasModifier = event.ctrlKey || event.metaKey || event.altKey;
+                if (event.shiftKey && !hasModifier) {
+                    event.stopImmediatePropagation();
+                    return;
+                }
+                if (!event.shiftKey && !hasModifier) {
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    const submitButton =
+                        container.querySelector(".submit-button:not([disabled])") ||
+                        container.querySelector("button[data-testid='textbox-submit']:not([disabled])");
+                    if (submitButton) {
+                        submitButton.click();
+                    } else {
+                        const form = textarea.closest("form");
+                        if (form) {
+                            form.dispatchEvent(new Event("submit", { bubbles: true }));
+                        }
+                    }
+                }
+            };
+
+            textarea.addEventListener("keypress", handler, true);
+        }
+
+        function initObserver() {
+            const root = getRoot();
+            if (!root) {
+                return;
+            }
+            attachHandler(root);
+            const observer = new MutationObserver(() => attachHandler(root));
+            observer.observe(root, { childList: true, subtree: true });
+        }
+
+        if (document.readyState === "loading") {
+            document.addEventListener("DOMContentLoaded", initObserver, { once: true });
+        } else {
+            initObserver();
+        }
     }
     """
 
@@ -594,10 +673,11 @@ try:
                         chat_input_multimodal = gr.MultimodalTextbox(
                             file_types=["image", "audio", "video", "text", ".pdf", ".md", ".py", ".json", ".html", ".css", ".js"],
                             max_plain_text_length=100000,
-                            placeholder="メッセージを入力してください (Shift+Enterで送信)",
+                            placeholder="メッセージを入力してください (Enterで送信 / Shift+Enterで改行)",
                             show_label=False,
                             lines=3,
-                            interactive=True
+                            interactive=True,
+                            elem_id="chat_input_box"
                         )
 
                         token_count_display = gr.Markdown(
