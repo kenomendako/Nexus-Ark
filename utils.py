@@ -217,25 +217,108 @@ def delete_message_from_log(log_file_path: str, message_to_delete: Dict[str, str
         print(f"エラー: ログからのメッセージ削除中に予期せぬエラー: {e}"); traceback.print_exc()
         return False
 
+def sanitize_for_display(text: str, placeholder: str = "思考中...") -> Tuple[str, bool]:
+    """
+    Hide internal THINKING/THOUGHTS content while keeping visible responses readable.
+
+    Returns:
+        tuple[str, bool]: (sanitized_text, suppressed_flag)
+    """
+    if not text:
+        return "", False
+
+    suppressed = False
+    sanitized = text
+
+    def _placeholder_repl(_: re.Match) -> str:
+        nonlocal suppressed
+        suppressed = True
+        return placeholder
+
+    block_patterns = [
+        re.compile(r"<\s*(?:thinking|thought|reasoning)\s*>[\s\S]*?<\s*/\s*(?:thinking|thought|reasoning)\s*>", re.IGNORECASE),
+        re.compile(r"\[\s*(?:thinking|thought|reasoning)\s*\][\s\S]*?\[\s*/\s*(?:thinking|thought|reasoning)\s*\]", re.IGNORECASE),
+        re.compile(r"�yThoughts�z[\s\S]*?�y/Thoughts�z", re.IGNORECASE),
+    ]
+
+    for pattern in block_patterns:
+        sanitized = pattern.sub(_placeholder_repl, sanitized)
+
+    fence_pattern = re.compile(r"```(?P<lang>[^\n`]*)\n(?P<body>[\s\S]*?)```", re.IGNORECASE)
+
+    def _replace_thinking_fence(match: re.Match) -> str:
+        nonlocal suppressed
+        lang = (match.group("lang") or "").strip().lower()
+        body = match.group("body") or ""
+        target_langs = {
+            "thinking",
+            "thought",
+            "thoughts",
+            "reasoning",
+            "internal_thought",
+            "internal-thought",
+            "internal_thoughts",
+        }
+        if lang in target_langs or body.strip().upper().startswith(("THINKING:", "THOUGHT:", "REASONING:")):
+            suppressed = True
+            return placeholder
+        return match.group(0)
+
+    sanitized = fence_pattern.sub(_replace_thinking_fence, sanitized)
+
+    thinking_prefixes = (
+        "THINKING:",
+        "THOUGHT:",
+        "REASONING:",
+        "INTERNAL THOUGHT:",
+        "INTERNAL_THOUGHT:",
+        "CHAIN-OF-THOUGHT:",
+    )
+    thinking_markers = (
+        "[THINKING]",
+        "[THOUGHT]",
+        "[REASONING]",
+        "[INTERNAL THOUGHT]",
+        "[INTERNAL_THOUGHT]",
+    )
+
+    placeholder_stripped = placeholder.strip()
+    processed_lines: List[str] = []
+    for line in sanitized.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        if any(upper.startswith(marker) for marker in thinking_markers):
+            suppressed = True
+            if placeholder:
+                if not processed_lines or processed_lines[-1].strip() != placeholder_stripped:
+                    processed_lines.append(placeholder)
+            continue
+
+        matched_prefix = next((prefix for prefix in thinking_prefixes if upper.startswith(prefix)), None)
+        if matched_prefix:
+            suppressed = True
+            if placeholder:
+                if not processed_lines or processed_lines[-1].strip() != placeholder_stripped:
+                    processed_lines.append(placeholder)
+            continue
+
+        processed_lines.append(line)
+
+    sanitized = "\n".join(processed_lines)
+    sanitized = re.sub(r"\n{3,}", "\n\n", sanitized)
+
+    return sanitized.strip(), suppressed
+
 def remove_thoughts_from_text(text: str) -> str:
-    """
-    (v2: The Definitive Thought Remover)
-    テキストから、新しい `THOUGHT:` プレフィックス形式と、古い `【Thoughts】` ブロック形式の
-    両方の思考ログを除去する。
-    """
+    """Remove THINKING/THOUGHT annotations from text for TTS and logging."""
     if not text:
         return ""
 
-    # 1. 古い【Thoughts】ブロックを除去
-    # 新しい思考ログ形式（`THOUGHT:`）も誤って除去しないように、より厳密な正規表現に変更
-    text_no_blocks = re.sub(r"【Thoughts】[\s\S]*?【/Thoughts】\s*|\[THOUGHT\][\s\S]*?\[/THOUGHT\]\s*", "", text, flags=re.IGNORECASE).strip()
+    sanitized_text, _ = sanitize_for_display(text, placeholder="")
+    sanitized_text = re.sub(r"\n{3,}", "\n\n", sanitized_text)
 
-    # 2. 新しい THOUGHT: プレフィックス行を除去
-    lines = text_no_blocks.split('\n')
-    cleaned_lines = [line for line in lines if not line.strip().upper().startswith("THOUGHT:")]
-
-    return "\n".join(cleaned_lines).strip()
-
+    return sanitized_text.strip()
 def get_current_location(character_name: str) -> Optional[str]:
     try:
         location_file_path = os.path.join("characters", character_name, "current_location.txt")

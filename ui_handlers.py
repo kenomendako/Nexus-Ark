@@ -611,15 +611,28 @@ def _stream_and_handle_response(
                     all_ai_contents = [msg.content for msg in new_messages if isinstance(msg, AIMessage) and msg.content and isinstance(msg.content, str)]
                     text_to_display = "\n\n".join(all_ai_contents)
 
-                if text_to_display and text_to_display.strip():
+                sanitized_text = ""
+                suppressed_thinking = False
+                if isinstance(text_to_display, str):
+                    sanitized_text, suppressed_thinking = utils.sanitize_for_display(text_to_display)
+                elif text_to_display:
+                    sanitized_text = str(text_to_display)
+
+                if suppressed_thinking and not sanitized_text.strip():
+                    sanitized_text = "思考中..."
+
+                if sanitized_text and sanitized_text.strip():
                     if enable_typewriter_effect and streaming_speed > 0:
-                        for char in text_to_display:
+                        streamed_text = ""
+                        for char in sanitized_text:
                             streamed_text += char
                             chatbot_history[-1] = (None, streamed_text + "▌")
                             yield (chatbot_history, mapping_list, *([gr.update()] * 12))
                             time.sleep(streaming_speed)
                     else:
-                        streamed_text = text_to_display
+                        streamed_text = sanitized_text
+                else:
+                    streamed_text = sanitized_text
                 
                 # ストリーミング完了後、最終的なテキストで一度更新
                 chatbot_history[-1] = (None, streamed_text)
