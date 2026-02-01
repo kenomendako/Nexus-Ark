@@ -599,6 +599,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Known Issues - 既知の問題
 - MP4動画: API制限のため送信失敗することがある
 
+### Fixed
+- Gemini APIキーのローテーションロジックを改善し、無料キーを最優先で使い切るように修正しました（有料キーを不必要に消費することを防止）。
+- 内部処理（検索、要約、司会）において、ルーム個別設定ではなく共通設定のAPIキーを強制的に使用するように改善。
+- `config.json` の `enable_api_key_rotation` フラグの型不整合を修正。
+- 応答再生成時にユーザー入力の添付ファイルが再添付されない問題を修正。
+
 ---
 
 ## [1.0.0] - 2025-10-19

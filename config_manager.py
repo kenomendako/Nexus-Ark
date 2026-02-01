@@ -1207,7 +1207,13 @@ def get_active_gemini_api_key(room_name: str = None) -> Optional[str]:
     # ローテーション無効、または有効なキーが見つからない場合は従来のロジック
     key_name = get_latest_api_key_name_from_config()
     if key_name:
-        return GEMINI_API_KEYS.get(key_name)
+        key_val = GEMINI_API_KEYS.get(key_name)
+        # 【追加】たとえローテーション無効でも、そのキーが枯渇しているなら最後の手段として利用可能キーを探す
+        if is_key_exhausted(key_name):
+            alt_key = get_next_available_gemini_key()
+            if alt_key:
+                return GEMINI_API_KEYS.get(alt_key)
+        return key_val
 
     return None
 
@@ -1583,37 +1589,47 @@ def clear_exhausted_keys():
 def get_next_available_gemini_key(current_exhausted_key: str = None, excluded_keys: set = None) -> Optional[str]:
     """
     有効なキーの中から、枯渇していないものを探して返す。
-    現在選択中のキー（last_api_key_name）を優先的にチェックする。
-    Excluded_keysが与えられた場合、それらに含まれるキーは除外する。
-    
-    Returns:
-        利用可能なAPIキーの名前 (str) または None
+    無料キーを最優先し、すべて枯渇した場合のみ有料キーを使用する。
     """
     if excluded_keys is None:
         excluded_keys = set()
+    if current_exhausted_key:
+        excluded_keys.add(current_exhausted_key)
         
     config = load_config_file()
-    valid_keys = [
+    all_valid_keys = [
         k for k, v in GEMINI_API_KEYS.items()
         if v and isinstance(v, str) and not v.startswith("YOUR_API_KEY")
         and k not in excluded_keys
     ]
     
-    if not valid_keys:
+    if not all_valid_keys:
         return None
 
-    # 現在のキーが生きていればそれを優先
+    paid_key_names = config.get("paid_api_key_names", [])
+    free_keys = [k for k in all_valid_keys if k not in paid_key_names]
+    paid_keys = [k for k in all_valid_keys if k in paid_key_names]
+    
+    # フェーズ1: 無料キーの探索
+    # 現在選択中のキーが無料ならそれを優先
     last_key_name = config.get("last_api_key_name")
-    if last_key_name in valid_keys and not is_key_exhausted(last_key_name):
+    if last_key_name in free_keys and not is_key_exhausted(last_key_name):
         return last_key_name
         
-    # それ以外から探索
-    for key_name in valid_keys:
-        if not is_key_exhausted(key_name):
-            return key_name
+    for k in free_keys:
+        if not is_key_exhausted(k):
+            return k
             
-    # 全滅の場合... Noneを返す（呼び出し元でエラー処理）
-    print("--- [API Key Rotation] CRITICAL: All keys are exhausted! ---")
+    # フェーズ2: 有料キーの探索（無料キー全滅時）
+    if last_key_name in paid_keys and not is_key_exhausted(last_key_name):
+        return last_key_name
+
+    for k in paid_keys:
+        if not is_key_exhausted(k):
+            return k
+            
+    # 全滅の場合
+    print("--- [API Key Rotation] CRITICAL: All keys (Free and Paid) are exhausted! ---")
     return None
 
 def get_key_name_by_value(key_value: str) -> str:

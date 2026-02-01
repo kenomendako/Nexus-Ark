@@ -53,7 +53,8 @@ class LLMFactory:
             # 3. プロバイダごとの分岐処理
             if active_provider == "google":
                 if not api_key:
-                    api_key = config_manager.get_active_gemini_api_key(room_name)
+                    # [2026-02-01 FIX] 内部処理(internal_role)ではルーム個別設定ではなく共通設定のAPIキーを優先する
+                    api_key = config_manager.get_active_gemini_api_key(None)
                 if not api_key:
                     raise ValueError("Google provider requires an API key. No valid key found.")
                 return gemini_api.get_configured_llm(
