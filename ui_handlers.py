@@ -10635,87 +10635,6 @@ def handle_import_return_log(
 
 # ===== 🧠 内的状態（Internal State）用ハンドラ =====
 
-def handle_refresh_internal_state(room_name: str):
-    """
-    内的状態を読み込み、動機レベルと未解決の問いを返す。
-    
-    Returns:
-        (boredom, curiosity, goal_achievement, devotion, 
-         dominant_drive_text, open_questions_df, last_update_text)
-    """
-    if not room_name:
-        gr.Warning("ルームが選択されていません。")
-        empty_df = []
-        return 0, 0, 0, 0, "", empty_df, "最終更新: ---"
-    
-    try:
-        from motivation_manager import MotivationManager
-        
-        mm = MotivationManager(room_name)
-        
-        # 各動機を計算（小数点2桁に丸め）
-        boredom = round(mm.calculate_boredom(), 2)
-        curiosity = round(mm.calculate_curiosity(), 2)
-        goal_achievement = round(mm.calculate_goal_achievement(), 2)
-        devotion = round(mm.calculate_devotion(), 2)
-        
-        # 内部状態ログを生成
-        motivation_log = mm.generate_motivation_log()
-        dominant_drive = motivation_log.get("dominant_drive_label", "不明")
-        drive_level = motivation_log.get("drive_level", 0.0)
-        narrative = motivation_log.get("narrative", "")
-        
-        # Markdown記法を使わずプレーンテキストで表示（Textbox用）
-        if narrative:
-            dominant_text = f"🎯 {dominant_drive} (レベル: {drive_level:.2f})\n\n{narrative}"
-        else:
-            dominant_text = f"🎯 {dominant_drive} (レベル: {drive_level:.2f})"
-        
-        # 未解決の問いをDataFrame形式に変換
-        state = mm._load_state()
-        open_questions = state.get("drives", {}).get("curiosity", {}).get("open_questions", [])
-        
-        questions_data = []
-        for q in open_questions:
-            # 日時を読みやすくフォーマット
-            asked_at = q.get("asked_at", "")
-            if asked_at:
-                try:
-                    dt = datetime.datetime.fromisoformat(asked_at)
-                    asked_at = dt.strftime("%Y-%m-%d %H:%M")
-                except ValueError:
-                    pass
-            
-            questions_data.append([
-                q.get("topic", ""),
-                q.get("context", ""),
-                round(q.get("priority", 0.5), 2),
-                asked_at if asked_at else "未回答"
-            ])
-        
-        # 最終更新を読みやすくフォーマット
-        last_interaction = state.get("drives", {}).get("boredom", {}).get("last_interaction", "")
-        if last_interaction:
-            try:
-                dt = datetime.datetime.fromisoformat(last_interaction)
-                last_update_text = f"最終対話: {dt.strftime('%Y-%m-%d %H:%M:%S')}"
-            except ValueError:
-                last_update_text = f"最終対話: {last_interaction}"
-        else:
-            last_update_text = "最終更新: データなし"
-        
-        gr.Info(f"内的状態を読み込みました（最強動機: {dominant_drive}）")
-        
-        return (
-            boredom, curiosity, goal_achievement, devotion,
-            dominant_text, questions_data, last_update_text, "---"
-        )
-    
-    except Exception as e:
-        print(f"Internal State Load Error: {e}")
-        traceback.print_exc()
-        gr.Error(f"内的状態の読み込みに失敗しました: {e}")
-        return 0, 0, 0, 0, "", [], "最終更新: エラー", "⚠️ 読み込みエラー"
 
 
 def handle_clear_open_questions(room_name: str):
@@ -10790,22 +10709,7 @@ def handle_delete_selected_questions(room_name: str, selected_topics: list):
         gr.Info(f"{deleted_count}件の問いを削除しました。")
         
         # 更新後のDataFrameを返す
-        questions_data = []
-        for q in remaining:
-            asked_at = q.get("asked_at", "")
-            if asked_at:
-                try:
-                    dt = datetime.datetime.fromisoformat(asked_at)
-                    asked_at = dt.strftime("%Y-%m-%d %H:%M")
-                except ValueError:
-                    pass
-            
-            questions_data.append([
-                q.get("topic", ""),
-                q.get("context", ""),
-                round(q.get("priority", 0.5), 2),
-                asked_at if asked_at else "未回答"
-            ])
+        questions_data = _render_open_questions_dataframe(remaining)
         
         return questions_data, f"🗑️ {deleted_count}件を削除しました", []
     
@@ -10843,30 +10747,15 @@ def handle_resolve_selected_questions(room_name: str, selected_topics: list):
         # 各問いを解決済みにマーク
         resolved_count = 0
         for topic in selected_topics:
-            if mm.mark_question_asked(topic):
+            # 修正: mark_question_asked ではなく mark_question_resolved を使用
+            if mm.mark_question_resolved(topic):
                 resolved_count += 1
         
-        gr.Info(f"{resolved_count}件の問いを解決済みにしました。")
+        gr.Info(f"{resolved_count}件の問いを解決済み（回答済み）にしました。")
         
         # 更新後のDataFrameを返す
         questions = mm._state.get("drives", {}).get("curiosity", {}).get("open_questions", [])
-        
-        questions_data = []
-        for q in questions:
-            asked_at = q.get("asked_at", "")
-            if asked_at:
-                try:
-                    dt = datetime.datetime.fromisoformat(asked_at)
-                    asked_at = dt.strftime("%Y-%m-%d %H:%M")
-                except ValueError:
-                    pass
-            
-            questions_data.append([
-                q.get("topic", ""),
-                q.get("context", ""),
-                round(q.get("priority", 0.5), 2),
-                asked_at if asked_at else "未回答"
-            ])
+        questions_data = _render_open_questions_dataframe(questions)
         
         return questions_data, f"✅ {resolved_count}件を解決済みにしました", []
     
@@ -11596,6 +11485,35 @@ def handle_ai_add_selected(room_name: str, selected_labels: list, candidates_dat
         gr.Error(f"追加に失敗しました: {e}")
         return gr.update(), gr.update(), f"❌ エラー: {e}"
 
+def _render_open_questions_dataframe(questions: list) -> list:
+    """
+    未解決の問いをDataFrame用のリスト形式に変換する（フィルタリング含む）。
+    """
+    df_data = []
+    for q in questions:
+        # 解決済み、または記憶変換済みの問いは表示しない
+        if q.get("resolved_at") or q.get("converted_to_memory"):
+            continue
+            
+        # 日時を読みやすくフォーマット
+        # detect_at という古いフィールド名の可能性も考慮しつつ、asked_at または created_at を探す
+        timestamp_str = q.get("asked_at") or q.get("created_at") or q.get("detected_at") or ""
+        
+        if timestamp_str:
+            try:
+                dt = datetime.datetime.fromisoformat(timestamp_str)
+                timestamp_str = dt.strftime("%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                pass
+        
+        df_data.append([
+            q.get("topic", ""),
+            q.get("context", ""),
+            round(q.get("priority", 0.5), 2),
+            timestamp_str if timestamp_str else "未回答"
+        ])
+    return df_data
+
 
 def handle_refresh_internal_state(room_name: str) -> Tuple[float, float, float, float, str, pd.DataFrame, str, pd.DataFrame, str]:
     """
@@ -11696,14 +11614,7 @@ def handle_refresh_internal_state(room_name: str) -> Tuple[float, float, float, 
         
         # 3. Open Questions (DataFrame)
         questions = drives.get("curiosity", {}).get("open_questions", [])
-        df_data = []
-        for q in questions:
-            df_data.append([
-                q.get("topic", ""),
-                q.get("context", ""),
-                q.get("priority", 0),
-                q.get("detected_at", "")
-            ])
+        df_data = _render_open_questions_dataframe(questions)
         
         if not df_data:
             open_questions_df = empty_df

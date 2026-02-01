@@ -317,9 +317,10 @@ class MotivationManager:
         """
         好奇心を計算（0.0 ~ 1.0）
         
+        【v4: 飽和曲線 + 鮮度減衰版】
         未解決の問い（open_questions）の数と優先度から計算。
-        - 未質問（asked_at=None）: フル重み
-        - 回答待ち（asked_at有り、resolved_at無し）: 0.5倍の重み
+        - 鮮度減衰: source_date からの日数経過で優先度を減衰（最低30%キープ）
+        - 飽和曲線: 合計スコアを指数関数で 0.0~1.0 にマップ
         """
         curiosity_data = self._state["drives"]["curiosity"]
         open_questions = curiosity_data.get("open_questions", [])
@@ -328,22 +329,48 @@ class MotivationManager:
             self._state["drives"]["curiosity"]["level"] = 0.0
             return 0.0
         
-        # 未質問 = まだ聞いていない（フル重み）
-        unasked = [q for q in open_questions if not q.get("asked_at")]
+        today = datetime.datetime.now()
         
-        # 回答待ち = 質問したがまだ回答なし（重み0.5）
-        pending = [q for q in open_questions 
-                   if q.get("asked_at") and not q.get("resolved_at")]
-        
-        if not unasked and not pending:
+        total_score = 0.0
+        for q in open_questions:
+            if q.get("resolved_at"):
+                continue
+                
+            # 基礎優先度
+            priority = q.get("priority", 0.5)
+            
+            # 時間経過による減衰 (鮮度)
+            # source_date (YYYY-MM-DD) から日数を計算
+            days_passed = 0
+            sd_str = q.get("source_date")
+            if sd_str:
+                try:
+                    sd_dt = datetime.datetime.strptime(sd_str, "%Y-%m-%d")
+                    days_passed = (today - sd_dt).days
+                except:
+                    pass
+            
+            # 減衰式: 7日で半分程度、最低30%は保持
+            decay_factor = 0.3 + 0.7 * math.exp(-max(0, days_passed) / 7.0)
+            adjusted_priority = priority * decay_factor
+            
+            # 状態（未質問か回答待ちか）による重み
+            # 回答待ち（asked_at有り）は興味が半分
+            state_weight = 1.0
+            if q.get("asked_at"):
+                state_weight = 0.5
+                
+            total_score += adjusted_priority * state_weight
+            
+        if total_score <= 0:
             self._state["drives"]["curiosity"]["level"] = 0.0
             return 0.0
-        
-        # 重み付け計算
-        unasked_score = sum(q.get("priority", 0.5) for q in unasked)
-        pending_score = sum(q.get("priority", 0.5) * 0.5 for q in pending)
-        
-        curiosity = min(1.0, (unasked_score + pending_score) / 2)
+            
+        # 飽和曲線 (Saturation Curve)
+        # 1.0 - exp(-S / k)
+        # k=2.0 の場合: Score 1.0 -> 0.39, Score 2.0 -> 0.63, Score 4.0 -> 0.86
+        k = 2.0
+        curiosity = 1.0 - math.exp(-total_score / k)
         
         self._state["drives"]["curiosity"]["level"] = curiosity
         return curiosity

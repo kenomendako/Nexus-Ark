@@ -238,7 +238,7 @@ class EpisodicMemoryManager:
         # 全角チルダにも対応し、前後の空白も除去
         # 「エラーにより要約できませんでした」という文字が含まれるエントリは、再処理対象にするため「既知」から除外する
         # 特殊タイプ（achievement, bonding, discovery）は日次要約とは別物なので除外
-        special_types = {"achievement", "bonding", "discovery"}
+        special_types = {"achievement", "bonding", "discovery", "curiosity_resolved", "goal_achievement", "persona_emotion_change", "bonding_event"}
         existing_dates_single = {
             item['date'].strip() for item in existing_memory 
             if isinstance(item, dict) and 'date' in item 
@@ -640,7 +640,7 @@ class EpisodicMemoryManager:
             # 重複判定（単一一致 or 範囲内）
             # 特殊タイプ（achievement, bonding, discovery）は日次要約とは別物なので、
             # これらのタイプのエピソードがあっても重複とはみなさない
-            special_types = {"achievement", "bonding", "discovery"}
+            special_types = {"achievement", "bonding", "discovery", "curiosity_resolved", "goal_achievement", "persona_emotion_change", "bonding_event"}
             is_duplicate = False
             new_date = new_episode.get('date', '').strip()
             new_type = new_episode.get('type', None)  # 新規エピソードのタイプ
