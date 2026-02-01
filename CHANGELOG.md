@@ -53,6 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 - **APIキーローテーション初回選択時の枯渇チェック追加 (2026-01-31):** 指定されたAPIキーが枯渇状態の場合でもそのまま使用される問題を修正。初回キー選択時に枯渇チェックを行い、必要に応じて自動で代替キーに切り替えるように改善。[レポート](docs/reports/2026-01-31_api_key_rotation_initial_check.md)
+- **応答再生成時の添付ファイル復元 (2026-02-01):** 応答を再生成する際、過去のメッセージに含まれていた画像やファイル等の添付ファイルが API に送信されない問題を修正。ログ内の添付ファイルマーカーをパースし、マルチモーダルパーツとして再構成するロジックを実装。また、添付ファイル処理を共通ヘルパー関数 `_create_api_parts_from_files` へ集約し、メンテナンス性を向上。[レポート](docs/reports/2026-02-01_regeneration_attachment_fix.md)
 - **read_project_file ツール失敗誤検知の根本修正 (2026-01-31):** ファイル内容に `Exception:`、`Error:`、`エラー:` 等が含まれていると誤ってエラー表示されていた問題を修正。開発者ツールのエラー検知を `【エラー】` で始まる行のみに限定。[レポート](docs/reports/2026-01-31_tool_error_false_detection_fix.md)
 - **過去の会話検索結果のヘッダー簡略化 (2026-01-27):** 検索結果に含まれる `## AGENT:ルシアン` 等のロールヘッダーを `ルシアン` のように簡略化。LLMのコンテキスト内の可視性向上と、現在の会話との混同を防止。[レポート](docs/reports/2026-01-27_Search_Header_Simplification.md)
 - **Zhipu AIツール実行エラー (404) の修正 (2026-01-28):** ツール実行用LLM初期化時にルーム名が渡されず、Zhipu設定時でもGoogle APIを使用してしまう不具合を修正。ファイル編集などの自律動作がZhipuモデルで正常に行えるようになりました。[レポート](docs/reports/2026-01-28_Zhipu_Tool_Provider_Fix.md)

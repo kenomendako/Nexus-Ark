@@ -1939,6 +1939,59 @@ def _stream_and_handle_response(
                style_css_update # [v21] Sync Background
         )
 
+def _create_api_parts_from_files(file_paths: List[str]) -> List[Dict]:
+    """
+    ファイルパスのリストを受け取り、API送信用のパーツ(Dict)のリストを生成する。
+    """
+    parts = []
+    for file_path in file_paths:
+        try:
+            if not file_path or not os.path.exists(file_path):
+                continue
+                
+            file_basename = os.path.basename(file_path)
+            kind = filetype.guess(file_path)
+            mime_type = kind.mime if kind else "application/octet-stream"
+
+            if mime_type.startswith('image/'):
+                # APIコスト削減: 画像をリサイズ
+                resize_result = utils.resize_image_for_api(file_path, max_size=768, return_image=False)
+                if resize_result:
+                    encoded_string, output_format = resize_result
+                    mime_type = f"image/{output_format}"
+                else:
+                    with open(file_path, "rb") as f:
+                        encoded_string = base64.b64encode(f.read()).decode("utf-8")
+                parts.append({
+                    "type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded_string}"}
+                })
+            elif mime_type.startswith('audio/') or mime_type.startswith('video/'):
+                # 音声/動画: file形式でBase64エンコード
+                with open(file_path, "rb") as f:
+                    encoded_string = base64.b64encode(f.read()).decode("utf-8")
+                parts.append({
+                    "type": "file",
+                    "source_type": "base64",
+                    "mime_type": mime_type,
+                    "data": encoded_string
+                })
+            else:
+                # テキスト系ファイル: 内容を読み込んでテキストとして送信
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    parts.append({
+                        "type": "text", 
+                        "text": f"[ATTACHED_FILE: {file_basename}]\n```\n{content}\n```\n[/ATTACHED_FILE]"
+                    })
+                except Exception as read_e:
+                    parts.append({"type": "text", "text": f"（ファイル「{file_basename}」の読み込み中にエラーが発生しました: {read_e}）"})
+        except Exception as e:
+            print(f"--- [_create_api_parts_from_files] ファイル処理エラー: {e} ---")
+            traceback.print_exc()
+            parts.append({"type": "text", "text": f"（添付ファイル「{os.path.basename(file_path)}」の処理中に致命的なエラーが発生しました）"})
+    return parts
+
 def handle_message_submission(
     multimodal_input: dict, soul_vessel_room: str, api_key_name: str,
     api_history_limit: str, debug_mode: bool,
@@ -1976,6 +2029,9 @@ def handle_message_submission(
     if user_prompt_from_textbox:
         log_message_parts.append(user_prompt_from_textbox + timestamp)
 
+    # 永続化用のパスリスト
+    files_to_send_api = []
+
     if file_input_list:
         attachments_dir = os.path.join(constants.ROOMS_DIR, soul_vessel_room, "attachments")
         os.makedirs(attachments_dir, exist_ok=True)
@@ -2011,6 +2067,7 @@ def handle_message_submission(
                         f.write(file_obj)
                     print(f"--- [ファイル永続化] ペーストされたテキストを保存しました: {permanent_path} ---")
                     log_message_parts.append(f"[ファイル添付: {permanent_path}]")
+                    files_to_send_api.append(permanent_path)
                     continue # このファイルの処理は完了
 
                 # --- ステップ2: ファイルのコピーとログへの記録 ---
@@ -2022,6 +2079,7 @@ def handle_message_submission(
                     shutil.copy(temp_file_path, permanent_path)
                     print(f"--- [ファイル永続化] 添付ファイルをコピーしました: {permanent_path} ---")
                     log_message_parts.append(f"[ファイル添付: {permanent_path}]")
+                    files_to_send_api.append(permanent_path)
                 else:
                     print(f"--- [ファイル永続化警告] 未知または無効な添付ファイルオブジェクトです: {file_obj} ---")
 
@@ -2040,78 +2098,21 @@ def handle_message_submission(
         yield (history, mapping, *([gr.update()] * 10), gr.update(visible=False), gr.update(interactive=True), gr.update(), gr.update())
         return
 
-    # ▼▼▼【ここからが修正の核心】▼▼▼
     # 2. ユーザーの発言を、セッション参加者全員のログに書き込む
     all_participants_in_session = [soul_vessel_room] + (active_participants or [])
     for room_name in all_participants_in_session:
         log_f, _, _, _, _, _ = get_room_files_paths(room_name)
         if log_f:
             utils.save_message_to_log(log_f, "## USER:user", full_user_log_entry)
-    # ▲▲▲【修正はここまで】▲▲▲
 
-    # 3. API用の入力パーツを準備 (変更なし)
+    # 3. API用の入力パーツを準備
     user_prompt_parts_for_api = []
     if user_prompt_from_textbox:
         user_prompt_parts_for_api.append({"type": "text", "text": user_prompt_from_textbox})
 
-    if file_input_list:
-        for file_obj in file_input_list:
-            try:
-                file_path = None
-                if hasattr(file_obj, 'name') and os.path.exists(file_obj.name):
-                    file_path = file_obj.name
-                elif isinstance(file_obj, str) and os.path.exists(file_obj):
-                    file_path = file_obj
-                else:
-                    content = file_obj if isinstance(file_obj, str) else str(file_obj)
-                    user_prompt_parts_for_api.append({"type": "text", "text": f"添付されたテキストの内容:\n---\n{content}\n---"})
-                    continue
-
-                if file_path:
-                    file_basename = os.path.basename(file_path)
-                    kind = filetype.guess(file_path)
-                    mime_type = kind.mime if kind else "application/octet-stream"
-
-                    if mime_type.startswith('image/'):
-                        # ▼▼▼【APIコスト削減】送信前に画像をリサイズ（768px上限、元形式維持）▼▼▼
-                        resize_result = utils.resize_image_for_api(file_path, max_size=768, return_image=False)
-                        if resize_result:
-                            encoded_string, output_format = resize_result
-                            mime_type = f"image/{output_format}"
-                        else:
-                            # リサイズ失敗時は元画像をそのまま使用
-                            with open(file_path, "rb") as f:
-                                encoded_string = base64.b64encode(f.read()).decode("utf-8")
-                        # ▲▲▲
-                        user_prompt_parts_for_api.append({
-                            "type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded_string}"}
-                        })
-                    elif mime_type.startswith('audio/') or mime_type.startswith('video/'):
-                        # 音声/動画: file形式でBase64エンコード（LangChainソースコードのdocstring準拠）
-                        with open(file_path, "rb") as f:
-                            encoded_string = base64.b64encode(f.read()).decode("utf-8")
-                        user_prompt_parts_for_api.append({
-                            "type": "file",
-                            "source_type": "base64",
-                            "mime_type": mime_type,
-                            "data": encoded_string
-                        })
-                    else:
-                        # テキスト系ファイル: 内容を読み込んでテキストとして送信
-                        # ユーザーの直接入力と区別しやすいよう、XMLタグ形式で囲む
-                        try:
-                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                                content = f.read()
-                            user_prompt_parts_for_api.append({
-                                "type": "text", 
-                                "text": f"[ATTACHED_FILE: {file_basename}]\n```\n{content}\n```\n[/ATTACHED_FILE]"
-                            })
-                        except Exception as read_e:
-                            user_prompt_parts_for_api.append({"type": "text", "text": f"（ファイル「{file_basename}」の読み込み中にエラーが発生しました: {read_e}）"})
-            except Exception as e:
-                print(f"--- ファイル処理中に致命的なエラー: {e} ---")
-                traceback.print_exc()
-                user_prompt_parts_for_api.append({"type": "text", "text": f"（添付ファイルの処理中に致命的なエラーが発生しました）"})
+    if files_to_send_api:
+        # 共通ヘルパーを使用してパーツを作成
+        user_prompt_parts_for_api.extend(_create_api_parts_from_files(files_to_send_api))
 
     # --- [情景画像のAI共有] ---
     # 場所移動、画像更新、起動後初回の場合のみ画像を添付（コスト効率化）
@@ -2253,7 +2254,22 @@ def handle_rerun_button_click(
     utils.save_message_to_log(log_f, "## USER:user", full_user_log_entry)
 
     gr.Info("応答を再生成します...")
-    user_prompt_parts_for_api = [{"type": "text", "text": restored_input_text}]
+    
+    # 添付ファイルマーカー [ファイル添付: /path/to/file] をパースしてAPIパーツを構築
+    # ログ保存用（full_user_log_entry）には残すが、API送信用のテキストからは除去する
+    attachment_pattern = re.compile(r'\[ファイル添付: (.*?)\]')
+    found_attachments = attachment_pattern.findall(restored_input_text)
+    
+    # API送信用のクリーンなテキストを作成（マーカーを除去）
+    clean_input_text = attachment_pattern.sub('', restored_input_text).strip()
+    
+    user_prompt_parts_for_api = []
+    if clean_input_text:
+        user_prompt_parts_for_api.append({"type": "text", "text": clean_input_text})
+    
+    if found_attachments:
+        print(f"--- [Rerun] 過去の添付ファイルを検出しました: {found_attachments} ---")
+        user_prompt_parts_for_api.extend(_create_api_parts_from_files(found_attachments))
 
     # 3. 中核となるストリーミング関数を呼び出す
     yield from _stream_and_handle_response(
