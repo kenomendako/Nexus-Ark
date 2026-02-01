@@ -1418,6 +1418,18 @@ def agent_node(state: AgentState):
                     break
 
             except Exception as e:
+                # 429 RESOURCE_EXHAUSTED の場合はリトライせずに即時 raise する。
+                # これにより、上位の invoke_nexus_agent_stream で即座にキーローテーションが行われる。
+                is_429 = isinstance(e, google_exceptions.ResourceExhausted)
+                if not is_429:
+                    err_str = str(e).upper()
+                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                        is_429 = True
+                
+                if is_429:
+                    print(f"--- [DEBUG] 429 割り当て制限を検知しました。リトライせずに上位へ制御を戻します。 ---")
+                    raise e
+
                 print(f"--- [警告] agent_node 試行 {attempt + 1} でエラーが発生しました: {e} ---")
                 if attempt < max_agent_retries:
                     time.sleep(2) # エラー時は少し長めに待機

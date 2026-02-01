@@ -913,7 +913,7 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
                     yield (mode, payload)
                 break # Success
                 
-        except (ResourceExhausted, ChatGoogleGenerativeAIError) as e:
+        except Exception as e:
             # 429 エラーハンドリング（ローテーション）
             is_429 = isinstance(e, ResourceExhausted)
             if not is_429:
@@ -961,7 +961,7 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
             # persistent update
             config_manager.save_config_if_changed("last_api_key_name", next_key_name)
             
-            time.sleep(1) # バックオフ
+            time.sleep(0.1) # 最小限の待機でローテーション
             continue
 
         except Exception as e:
