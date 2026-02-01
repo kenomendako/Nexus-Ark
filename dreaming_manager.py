@@ -5,8 +5,9 @@ import os
 import datetime
 import traceback
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import re
+import time
 
 import constants
 import config_manager
@@ -153,7 +154,12 @@ class DreamingManager:
         """
         
         try:
-            search_query = llm_flash.invoke(query_prompt).content.strip()
+            search_query_msg = self._invoke_llm(
+                role="processing",
+                prompt=query_prompt,
+                settings=effective_settings
+            )
+            search_query = search_query_msg.content.strip()
             print(f"  - [Dreaming] 生成されたクエリ: {search_query}")
         except Exception as e:
             return f"クエリ生成に失敗しました: {e}"
@@ -260,7 +266,12 @@ class DreamingManager:
         """
 
         try:
-            response = llm_dreamer.invoke(dreaming_prompt).content.strip()
+            response_msg = self._invoke_llm(
+                role="summarization",
+                prompt=dreaming_prompt,
+                settings=effective_settings
+            )
+            response = response_msg.content.strip()
             # JSON部分を抽出
             json_match = re.search(r'\{.*\}', response, re.DOTALL)
             if json_match:
@@ -399,7 +410,7 @@ class DreamingManager:
                 # 古い解決済み質問を削除
                 cleaned_count = mm.cleanup_resolved_questions(days_threshold=7)
                 if cleaned_count > 0:
-                    print(f"  - [Dreaming] {cleaned_count}件の古い質問をアーカイブしました")
+                    print(f"  - [Dreaming] {cleaned_count}件の古い解決済み質問をクリーンアップしました")
                 
                 # 古い未解決質問の優先度を下げる
                 decayed_count = mm.decay_old_questions(days_threshold=14)
@@ -751,3 +762,49 @@ class DreamingManager:
         except Exception as e:
             print(f"  - [Shadow] メッセージ取得エラー: {e}")
             return ""
+
+    def _invoke_llm(self, role: str, prompt: str, settings: dict) -> Any:
+        tried_keys = set()
+        # 現在のキー名を特定
+        current_key_name = config_manager.get_key_name_by_value(self.api_key)
+        if current_key_name != "Unknown":
+            tried_keys.add(current_key_name)
+        
+        max_retries = 5
+        for attempt in range(max_retries):
+            # 1. 枯渇チェック
+            if config_manager.is_key_exhausted(current_key_name):
+                print(f"  [Dreaming Rotation] Key '{current_key_name}' is exhausted. Swapping...")
+                next_key = config_manager.get_next_available_gemini_key(
+                    current_exhausted_key=current_key_name,
+                    excluded_keys=tried_keys
+                )
+                if next_key:
+                    current_key_name = next_key
+                    self.api_key = config_manager.GEMINI_API_KEYS[next_key]
+                    tried_keys.add(next_key)
+                    # 永続化
+                    config_manager.save_config_if_changed("last_api_key_name", next_key)
+                else:
+                    raise Exception("利用可能なAPIキーがありません（枯渇）。")
+
+            # 2. モデル生成
+            llm = LLMFactory.create_chat_model(
+                api_key=self.api_key,
+                generation_config=settings,
+                internal_role=role
+            )
+            
+            try:
+                return llm.invoke(prompt)
+            except Exception as e:
+                err_str = str(e).upper()
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    print(f"  [Dreaming Rotation] 429 Error with key '{current_key_name}'.")
+                    config_manager.mark_key_as_exhausted(current_key_name)
+                    time.sleep(1 * (attempt+1)) # バックオフ
+                    continue
+                else:
+                    raise e
+        
+        raise Exception("Max retries exceeded in DreamingManager._invoke_llm")

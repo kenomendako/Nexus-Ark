@@ -164,6 +164,8 @@ class RAGManager:
                     print(f"      [RAG Rotation] Switching key: {key_name} -> {next_key_name}")
                     self.api_key = next_key_val
                     self.tried_keys.add(next_key_name)
+                    # 永続化
+                    config_manager.save_config_if_changed("last_api_key_name", next_key_name)
                     self.embeddings = None # 次の _get_embeddings() で新キーで再生成
                     return True
         

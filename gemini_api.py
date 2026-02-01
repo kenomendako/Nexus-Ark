@@ -691,6 +691,8 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
         if alternative_key:
             print(f"  [Rotation] 代替キー '{alternative_key}' に切り替えます")
             current_retry_api_key_name = alternative_key
+            # ローテーション結果を永続化
+            config_manager.save_config_if_changed("last_api_key_name", alternative_key)
         else:
             yield ("values", {"messages": [AIMessage(content="[エラー: 利用可能なAPIキーがありません。しばらく時間をおいてから再試行してください。]")]})
             return
@@ -956,8 +958,8 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
             # 次の試行のために変数を更新
             current_retry_api_key_name = next_key_name
             api_key = config_manager.GEMINI_API_KEYS.get(next_key_name)
-            # persistent update (optional, but good for UX)
-            config_manager.CONFIG_GLOBAL["last_used_api_key_name"] = next_key_name
+            # persistent update
+            config_manager.save_config_if_changed("last_api_key_name", next_key_name)
             
             time.sleep(1) # バックオフ
             continue

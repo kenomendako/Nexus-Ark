@@ -14,6 +14,7 @@ import constants
 CONFIG_GLOBAL = {}
 GEMINI_API_KEYS = {}
 GEMINI_KEY_STATES = {} # {key_name: {'exhausted': bool, 'exhausted_at': timestamp}}
+KEY_STATES_FILE = ".gemini_key_states.json"
 TAVILY_API_KEY = ""  # Tavily検索用APIキー
 AVAILABLE_MODELS_GLOBAL = []
 DEFAULT_MODEL_GLOBAL = "gemini-2.5-flash"
@@ -103,6 +104,28 @@ def _restore_from_backup() -> bool:
     except Exception as e:
         print(f"!!! エラー: バックアップからの復元に失敗しました: {e}")
         return False
+
+def load_gemini_key_states():
+    """APIキーの枯渇状態をファイルから読み込む。"""
+    global GEMINI_KEY_STATES
+    if os.path.exists(KEY_STATES_FILE):
+        try:
+            with open(KEY_STATES_FILE, "r", encoding="utf-8") as f:
+                GEMINI_KEY_STATES = json.load(f)
+                print(f"--- [API Key Rotation] Loaded {len(GEMINI_KEY_STATES)} key states from {KEY_STATES_FILE} ---")
+        except Exception as e:
+            print(f"警告: {KEY_STATES_FILE} の読み込みに失敗しました: {e}")
+            GEMINI_KEY_STATES = {}
+    else:
+        GEMINI_KEY_STATES = {}
+
+def save_gemini_key_states():
+    """APIキーの枯渇状態をファイルに保存する。"""
+    try:
+        with open(KEY_STATES_FILE, "w", encoding="utf-8") as f:
+            json.dump(GEMINI_KEY_STATES, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"警告: {KEY_STATES_FILE} の保存に失敗しました: {e}")
 
 def load_config_file() -> dict:
     """
@@ -569,6 +592,9 @@ def load_config():
     global AVAILABLE_MODELS_GLOBAL, DEFAULT_MODEL_GLOBAL, initial_streaming_speed_global
     global NOTIFICATION_SERVICE_GLOBAL, NOTIFICATION_WEBHOOK_URL_GLOBAL, PUSHOVER_CONFIG
     global ZHIPU_API_KEY, GROQ_API_KEY, MOONSHOT_API_KEY, LOCAL_MODEL_PATH
+
+    # APIキーの枯渇状態を読み込む
+    load_gemini_key_states()
 
     # ステップ1：全てのキーを含む、理想的なデフォルト設定を定義
 # ステップ1：全てのキーを含む、理想的なデフォルト設定を定義
@@ -1526,6 +1552,7 @@ def mark_key_as_exhausted(key_name: str):
         'exhausted': True,
         'exhausted_at': time.time()
     }
+    save_gemini_key_states()
     print(f"--- [API Key Rotation] Key '{key_name}' marked as EXHAUSTED ---")
 
 def is_key_exhausted(key_name: str) -> bool:
@@ -1542,6 +1569,7 @@ def is_key_exhausted(key_name: str) -> bool:
     if time.time() - exhausted_at > 3600:
         print(f"--- [API Key Rotation] Key '{key_name}' auto-recovered from exhausted state ---")
         GEMINI_KEY_STATES[key_name]['exhausted'] = False
+        save_gemini_key_states()
         return False
         
     return True
@@ -1549,6 +1577,7 @@ def is_key_exhausted(key_name: str) -> bool:
 def clear_exhausted_keys():
     """すべてのキーの枯渇状態を解除する"""
     GEMINI_KEY_STATES.clear()
+    save_gemini_key_states()
     print("--- [API Key Rotation] All exhausted states cleared ---")
 
 def get_next_available_gemini_key(current_exhausted_key: str = None, excluded_keys: set = None) -> Optional[str]:
@@ -1586,3 +1615,10 @@ def get_next_available_gemini_key(current_exhausted_key: str = None, excluded_ke
     # 全滅の場合... Noneを返す（呼び出し元でエラー処理）
     print("--- [API Key Rotation] CRITICAL: All keys are exhausted! ---")
     return None
+
+def get_key_name_by_value(key_value: str) -> str:
+    """APIキーの値を元に、対応するキー設定名を取得する"""
+    for k, v in GEMINI_API_KEYS.items():
+        if v == key_value:
+            return k
+    return "Unknown"
