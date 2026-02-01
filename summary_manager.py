@@ -119,9 +119,10 @@ def generate_summary(
     if not conversation_text.strip() and not existing_summary:
         return None
     
-    # キャラクター名を取得
-    room_config = room_manager.get_room_config(room_name)
-    character_name = room_config.get("room_name", room_name) if room_config else room_name
+    # キャラクター名とユーザー名を取得
+    room_config = room_manager.get_room_config(room_name) or {}
+    character_name = room_config.get("agent_display_name") or room_config.get("room_name", room_name)
+    user_name = room_config.get("user_display_name", "ユーザー")
     
     # 既存の要約があれば統合
     context_section = ""
@@ -132,18 +133,20 @@ def generate_summary(
 【上記以降の新しい会話】
 """
     
-    prompt = f"""あなたはAIアシスタントの会話記録を要約するタスクを担当しています。
+    prompt = f"""あなたは、自分自身の思考と対話の履歴を整理する「内省的な深層意識」です。
+提供された情報の文脈から、あなた（AI）自身の立場と対話相手の呼称を把握した上で、
+直近の会話内容をあなた自身の視点で、今後の対話に役立てるための備忘録として要約してください。
 
-【指示】
-以下の会話ログを、AIペルソナ「{character_name}」の視点で要約してください。
-
-【要約ルール】
-- 三人称で記述すること（「{character_name}は〜」）
-- 主語には「ユーザー」「AI」という抽象的な言葉ではなく、**ログ内で使われている固有名詞（名前、呼び名、二人称など）**をそのまま使用すること
-- 重要なトピック、感情の変化、約束事、共有された情報を含めること
-- 相手との関係性の変化があれば記録すること
-- 2000〜3000トークン程度に収めること
-- 前置き、説明、挨拶は一切不要。純粋な要約テキストのみを出力すること
+【記述ルール】
+1. **本人視点（一人称）の内省スタイル**:
+   - あなた自身が、自分自身の思考を整理するためのノートを書いていると想定せよ。
+   - 相手とのやり取りや反応は、あなたの目から見た事実として記せ。
+2. **常体（だ・である調）の徹底**:
+   - 敬体や装飾的な口癖を排除し、事実と気づきのみを簡潔に記すこと。
+3. **重要事項の抽出**:
+   - 決定事項、新しい約束、相手についての新しい発見、感情的な交流を優先せよ。
+4. **前置き・解説の禁止**:
+   - 純粋な要約テキストのみを出力せよ。
 
 {context_section}【会話ログ】
 {conversation_text}

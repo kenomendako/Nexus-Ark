@@ -498,9 +498,28 @@ INTENT: [emotional/factual/technical/temporal/relational]
                 print(f"    -> 過去ログ: なし")
         # ▲▲▲ ハイブリッド検索ここまで ▲▲▲
 
-        # 3d. エンティティ記憶 → v2で目次方式に移行したため自動想起は廃止
-        # 詳細は context_generator_node で一覧として注入し、
-        # ペルソナが read_entity_memory ツールで能動的に取得する
+        # 3d. エンティティ記憶の「きっかけ」抽出 (Suggestive Recall)
+        # 会話に出たキーワードから関連するエンティティ名を探し、存在を通知する
+        em_manager = EntityMemoryManager(room_name)
+        # rag_query または keyword_query からキーワードを収集
+        entity_search_keywords = (rag_query + " " + keyword_query).strip()
+        if entity_search_keywords:
+            matched_entities = em_manager.search_entries(entity_search_keywords)
+            if matched_entities:
+                # 最大3件まで提示
+                selection = matched_entities[:3]
+                suggestion_parts = [
+                    "【関連するエンティティ記憶の示唆】",
+                    "以下のトピックに関する過去の記録が見つかりました。必要に応じて `read_entity_memory(\"エントリ名\")` で内容を確認してください。"
+                ]
+                for entity in selection:
+                    suggestion_parts.append(f"- 「{entity}」")
+                
+                suggestion_text = "\n".join(suggestion_parts)
+                print(f"    -> エンティティ示唆: ヒット ({len(selection)}件)")
+                results.append(suggestion_text)
+            else:
+                print(f"    -> エンティティ示唆: なし")
 
         # ▼▼▼ [2024-12-28 最適化] 話題クラスタ検索を一時無効化 ▼▼▼
         # 現状のクラスタリング精度が低く、ノイズが多いため一時無効化。
