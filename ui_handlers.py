@@ -1661,8 +1661,8 @@ def _stream_and_handle_response(
                                             print(f"  - [Emotion] 感情反映エラー: {e}")
                                     else:
                                         print(f"  - [Emotion] 無効なカテゴリ: {detected_category}")
-                                    # タグをログから除去（本文には残さない）
-                                    content_str = re.sub(persona_emotion_pattern, '', content_str, flags=re.IGNORECASE).rstrip()
+                                    # [修正] ログにはメタデータを保持するため、ここでの除去は廃止
+                                    # content_str = re.sub(persona_emotion_pattern, '', content_str, flags=re.IGNORECASE).rstrip()
                                 # --- 感情タグ処理ここまで ---
                                 
                                 # --- [Phase H] 記憶共鳴タグのパースとArousal更新 ---
@@ -1683,8 +1683,8 @@ def _stream_and_handle_response(
                                         print(f"  - [MemoryTrace] {len(trace_matches)}件の記憶共鳴を処理")
                                     except Exception as e:
                                         print(f"  - [MemoryTrace] 共鳴処理エラー: {e}")
-                                    # タグをログから除去
-                                    content_str = re.sub(memory_trace_pattern, '', content_str, flags=re.IGNORECASE).rstrip()
+                                    # [修正] ログにはメタデータを保持するため、ここでの除去は廃止
+                                    # content_str = re.sub(memory_trace_pattern, '', content_str, flags=re.IGNORECASE).rstrip()
                                 # --- 記憶共鳴タグ処理ここまで ---
                                 
                                 # 使用モデル名を取得（実際に推論に使用されたモデル名が final_state に格納されている）
@@ -3245,6 +3245,13 @@ def format_history_for_gradio(
             content_for_parsing = re.sub(r"【表情】…\w+…", "", content_for_parsing)
             content_for_parsing = re.sub(r"<persona_emotion\s+[^>]*/>", "", content_for_parsing)
             content_for_parsing = re.sub(r"<memory_trace\s+[^>]*/>", "", content_for_parsing)
+
+            # --- [新ロジック v6: THOUGHTタグの整合性修正] ---
+            # [THOUGHT] があるが [/THOUGHT] がない（閉じ忘れ）場合、
+            # 冒頭の [THOUGHT] を除去して表示崩れを防ぐ
+            if re.search(r"\[THOUGHT\]", content_for_parsing, flags=re.IGNORECASE) and not re.search(r"\[/THOUGHT\]", content_for_parsing, flags=re.IGNORECASE):
+                content_for_parsing = re.sub(r"^\[THOUGHT\]\s*", "", content_for_parsing, flags=re.IGNORECASE)
+
             content_for_parsing = content_for_parsing.strip()
 
             # 思考ログのタグを、標準的なコードブロック記法に統一する
