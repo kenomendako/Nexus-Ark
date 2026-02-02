@@ -390,7 +390,27 @@ INTENT: [emotional/factual/technical/temporal/relational]
             SystemMessage(content=system_prompt),
             HumanMessage(content=human_prompt)
         ]
-        decision_response = llm_flash.invoke(messages).content.strip()
+        
+        # 503 UNAVAILABLE に対する簡易リトライ (Retriever node)
+        decision_response = ""
+        for attempt in range(3):
+            try:
+                decision_response = llm_flash.invoke(messages).content.strip()
+                break
+            except Exception as e:
+                err_str = str(e).upper()
+                is_503 = "503" in err_str or "UNAVAILABLE" in err_str or "OVERLOADED" in err_str
+                # 429 または 503 リトライ上限の場合は raise して上位の invoke_nexus_agent_stream でローテーションさせる
+                is_429 = isinstance(e, google_exceptions.ResourceExhausted) or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                
+                if is_429 or (is_503 and attempt == 2):
+                    raise e
+                
+                if is_503:
+                    print(f"  - [Retrieval Warning] 503 UNAVAILABLE detected in retrieval_node. Retrying locally (attempt {attempt+1}/3)...")
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                raise e
         
         if "NONE" in decision_response.upper() and len(decision_response) < 10:
             print("  - [Retrieval] 判断: 検索不要 (AI判断)")
@@ -1296,6 +1316,10 @@ def agent_node(state: AgentState):
         # リトライループ
         response_direct = None
         chunks = []
+        combined_text = ""
+        additional_kwargs = {}
+        response_metadata = {}
+        all_tool_calls_chunks = []
         
         for attempt in range(max_agent_retries + 1):
             try:
@@ -1424,33 +1448,19 @@ def agent_node(state: AgentState):
                         text_parts.append(f"[THOUGHT]\n{''.join(thought_buffer)}\n[/THOUGHT]\n")
                     
                     combined_text = "".join(text_parts)
-
-                    # 異常検知 check
-                    if not combined_text.strip() and not all_tool_calls_chunks:
-                        print(f"  - ⚠️ [ANOMALY] 有効な応答が空でした。 (attempt {attempt + 1})")
-                        if is_gemini_3_flash and merged_chunk:
-                            print(f"  - [DEBUG-ANOMALY-DUMP] content: {repr(merged_chunk.content)}")
-                            print(f"  - [DEBUG-ANOMALY-DUMP] additional_kwargs: {merged_chunk.additional_kwargs}")
-                            print(f"  - [DEBUG-ANOMALY-DUMP] response_metadata: {merged_chunk.response_metadata}")
-                            print(f"  - [DEBUG-ANOMALY-DUMP] usage_metadata: {merged_chunk.usage_metadata}")
-
-                        if attempt < max_agent_retries:
-                            continue # 次の試行へ
-
                     # ループを抜ける条件（正常な応答が得られた）
                     break
 
             except Exception as e:
-                # 429 RESOURCE_EXHAUSTED の場合はリトライせずに即時 raise する。
+                # 429 RESOURCE_EXHAUSTED または 503 UNAVAILABLE の場合はリトライせずに即時 raise する。
                 # これにより、上位の invoke_nexus_agent_stream で即座にキーローテーションが行われる。
-                is_429 = isinstance(e, google_exceptions.ResourceExhausted)
-                if not is_429:
-                    err_str = str(e).upper()
-                    if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                        is_429 = True
+                err_str = str(e).upper()
+                is_429 = isinstance(e, google_exceptions.ResourceExhausted) or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                is_503 = "503" in err_str or "UNAVAILABLE" in err_str or "OVERLOADED" in err_str
                 
-                if is_429:
-                    print(f"--- [DEBUG] 429 割り当て制限を検知しました。リトライせずに上位へ制御を戻します。 ---")
+                if is_429 or is_503:
+                    print(f"--- [DEBUG] 429/503 例外を検知しました。リトライせずに上位へ制御を戻します({err_str})。 ---")
+                    # LLM側でリトライを無効化していても、念のためここで即座に上流へ。
                     raise e
 
                 print(f"--- [警告] agent_node 試行 {attempt + 1} でエラーが発生しました: {e} ---")
@@ -1829,10 +1839,11 @@ def safe_tool_executor(state: AgentState):
                     is_429 = isinstance(e, google_exceptions.ResourceExhausted) or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
                     
                     if is_429:
-                        if "PERDAY" in err_str or "DAILY" in err_str:
-                            raise RuntimeError("回復不能なAPIレート上限（日間など）に達したため、処理を中断しました。") from e
-                        
-                        wait_time = base_delay * (2 ** attempt)
+                        # 日間制限、分間制限に関わらず、現在はローテーションで対応する。
+                        # ここで RuntimeError に変換してしまうと、上流の invoke_nexus_agent_stream で
+                        # 429 として検知できずキーローテーションが止まるため、例外をそのまま投げる。
+                        print(f"  - [Persona Edit] 429 Error (Quota Exceeded) detected in tool executor. Re-raising for rotation.")
+                        raise e
                         match = re.search(r"retry_delay {\s*seconds: (\d+)\s*}", err_str)
                         if match: wait_time = int(match.group(1)) + 1
                         

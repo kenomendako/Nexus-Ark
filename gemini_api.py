@@ -914,20 +914,33 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
                 break # Success
                 
         except Exception as e:
-            # 429 エラーハンドリング（ローテーション）
-            is_429 = isinstance(e, ResourceExhausted)
-            if not is_429:
-                err_str = str(e).upper()
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                    is_429 = True
+            # 429 エラーハンドリング（ローテーション）。
+            # 判定を確実にし、SDKラップされた例外からも救い出す。
+            err_str = str(e).upper()
+            is_429 = isinstance(e, ResourceExhausted) or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+            # 503 UNAVAILABLE / Overloaded の判定
+            is_503 = "503" in err_str or "UNAVAILABLE" in err_str or "OVERLOADED" in err_str
             
-            if not is_429:
+            if not is_429 and not is_503:
                 # 429以外のエラーは通常のエラーハンドリングへ
                 yield ("values", {"messages": [AIMessage(content=f"[エラー: AIモデル実行中にエラーが発生しました: {e}]")]})
                 return
 
+            if is_503 and local_503_retry_count < 3:
+                local_503_retry_count += 1
+                wait_time = local_503_retry_count * 2 # 2, 4, 6秒と待機を増やす
+                print(f"  [Warning] 503 UNAVAILABLE (Overloaded) detected. Retrying on SAME key '{current_retry_api_key_name}' (attempt {local_503_retry_count}/3) after {wait_time}s...")
+                time.sleep(wait_time)
+                continue # 同一キーで再試行
+
             retry_count += 1
-            print(f"  [Error] ResourceExhausted: {e}")
+            if is_429:
+                print(f"  [Error] ResourceExhausted (429): {e}")
+            else:
+                print(f"  [Error] Service Unavailable (503) - Final attempt reached: {e}")
+            
+            # ローテーションへ進む前に503カウンタをリセット
+            local_503_retry_count = 0
             
             # Rotation有効確認
             enable_rotation = effective_settings.get("enable_api_key_rotation")
@@ -938,9 +951,13 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
                  yield ("values", {"messages": [AIMessage(content=f"[エラー: API割り当て制限(429)を超過しました。APIキーローテーションは無効です。]")]})
                  return
 
-            # キーを枯渇済みとしてマーク
-            config_manager.mark_key_as_exhausted(current_retry_api_key_name)
-            print(f"  [Rotation] Key '{current_retry_api_key_name}' marked as exhausted.")
+            # 429 の場合のみキーを枯渇済みとしてマーク
+            # 503 はサーバー都合なので、そのキー自体はまだ有効な可能性があるためマークしない
+            if is_429:
+                config_manager.mark_key_as_exhausted(current_retry_api_key_name)
+                print(f"  [Rotation] Key '{current_retry_api_key_name}' marked as exhausted.")
+            else:
+                print(f"  [Rotation] 503 Error rotation - Rotating to NEXT key without marking '{current_retry_api_key_name}' as exhausted.")
             
             # 次のキーを取得
             next_key_name = config_manager.get_next_available_gemini_key(
@@ -1548,7 +1565,7 @@ def get_configured_llm(model_name: str, api_key: str, generation_config: dict):
         # Gemini 3 は公式に system ロールをサポートしているため、Human変換は不要。
         # むしろ変換するとAct 1/2 の署名プロトコルを乱す可能性がある。
         convert_system_message_to_human=False, 
-        max_retries=0,
+        max_retries=1, # 0を指定するとSDKデフォルトになるため、1を設定してリトライを抑制
         temperature=effective_temp,
         top_p=config.get("top_p", 0.95),
         # 公式上限: 65,536 (Gemini 3 Flash)

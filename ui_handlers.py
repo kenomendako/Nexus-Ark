@@ -770,6 +770,7 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
     except Exception:
         pass
 
+    room_openai_settings = override_settings.get("openai_settings") or {}
     return (
         room_name, chat_history, mapping_list,
         gr.update(interactive=True, placeholder="メッセージを入力してください (Shift+Enterで送信)。添付するにはファイルをドロップまたはクリップボタンを押してください..."),
@@ -813,16 +814,17 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         gr.update(value=quiet_end),
         gr.update(choices=list(config_manager.AVAILABLE_MODELS_GLOBAL), value=effective_settings.get("model_name", None)),  # room_model_dropdown (Dropdown)
         # [Phase 3] 個別プロバイダ設定
-        gr.update(value=effective_settings.get("provider", "default")),  # room_provider_radio
-        gr.update(visible=(effective_settings.get("provider") == "google")),  # room_google_settings_group
-        gr.update(visible=(effective_settings.get("provider") == "openai")),  # room_openai_settings_group
-        gr.update(value=effective_settings.get("api_key_name", None)),  # room_api_key_dropdown
-        gr.update(value=effective_settings.get("openai_settings", {}).get("profile", None)),  # room_openai_profile_dropdown
-        gr.update(value=effective_settings.get("openai_settings", {}).get("base_url", "")),  # room_openai_base_url_input
-        gr.update(value=effective_settings.get("openai_settings", {}).get("api_key", "")),  # room_openai_api_key_input
-        gr.update(choices=[], value=effective_settings.get("openai_settings", {}).get("model", None)),  # room_openai_model_dropdown (profs用chooseはprofile選択時に読み込み)
-        gr.update(value=effective_settings.get("openai_settings", {}).get("tool_use_enabled", True)),  # room_openai_tool_use_checkbox
-        gr.update(value=effective_settings.get("enable_api_key_rotation", None)),  # room_rotation_dropdown
+        # null (None) の場合に "default" にフォールバックさせて UI の選択が消えるのを防ぐ
+        gr.update(value=override_settings.get("provider") or "default"),  # room_provider_radio
+        gr.update(visible=(override_settings.get("provider", "default") == "google")),  # room_google_settings_group
+        gr.update(visible=(override_settings.get("provider", "default") == "openai")),  # room_openai_settings_group
+        gr.update(value=override_settings.get("api_key_name") or None),  # room_api_key_dropdown
+        gr.update(value=room_openai_settings.get("profile") or None),  # room_openai_profile_dropdown
+        gr.update(value=room_openai_settings.get("base_url") or ""),  # room_openai_base_url_input
+        gr.update(value=room_openai_settings.get("api_key") or ""),  # room_openai_api_key_input
+        gr.update(choices=[], value=room_openai_settings.get("model") or None),  # room_openai_model_dropdown
+        gr.update(value=room_openai_settings.get("tool_use_enabled") if room_openai_settings.get("tool_use_enabled") is not None else True),  # room_openai_tool_use_checkbox
+        gr.update(value=override_settings.get("enable_api_key_rotation") or None),  # room_rotation_dropdown
         # --- 睡眠時記憶整理 ---
         gr.update(value=sleep_episodic),
         gr.update(value=sleep_memory_index),

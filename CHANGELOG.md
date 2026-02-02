@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- **APIキーローテーションの最適化と503エラー対応 (2026-02-02):** 429 RESOURCE_EXHAUSTED 発生時の SDK 内部リトライを抑制（max_retries=1）し、高速なキー切り替えを実現。また、Google側のサーバー過負荷（503 UNAVAILABLE）発生時に、同一キーで最大3回リトライしてからローテーションするロジックを導入し、不必要な有料キー消費を抑制。503によるローテーション時はキーを「枯渇」マークしないよう調整。[レポート](docs/reports/2026-02-02_Fix_Settings_and_API_Rotation.md)
+- **個別プロバイダ設定の永続化と不具合修正 (2026-02-02):** ルームごとの個別設定（provider等）が `null` の場合にUI選択が消えるバグを修正。再起動後も「共通設定に従う」等の選択が正しく維持されるように堅牢化。また、応答生成時に発生していた `UnboundLocalError` を解消。[レポート](docs/reports/2026-02-02_Fix_Settings_and_API_Rotation.md)
 - **SessionArousal蓄積ロジックの改善 (2026-02-02):** AI応答がエラーや空で終わった場合にArousalスコアが蓄積されないようタイミングを調整。また、メッセージを削除したり再生成（Regenerate）したりした際に、対応するArousalデータも自動的に削除されるように修正。ログ保存とJSON記録のタイムスタンプ同期により整合性を確保。[レポート](docs/reports/2026-02-02_SessionArousal_Fixes.md)
 - **内的感情カテゴリの同期と UI クリーンアップ (2026-02-02):** `contentment` や `protective` などの内的感情をシステム上の有効なカテゴリとして統合。また、チャット画面の没入感を高めるため、表情や感情などのメタデータタグを表示から除去（ログには保持）。閉じ忘れられた `[THOUGHT]` タグによる表示崩れ防止ロジックも導入。[レポート](docs/reports/2026-02-02_SessionArousal_Fixes.md)
 - **表情管理システムの洗練とプロンプト同期の改善 (2026-02-02):** 表情管理UIから削除・追加した内容がAIのシステムプロンプトに即座に反映されるよう `room_manager.py` を修正。アセットがない廃止済みの表情タグの出力を防止。ドロップダウンの項目重複を解消し、標準感情とカスタム表情を一元管理できるヘルパー関数を導入。内的感情カテゴリ（contentment, protective）はロジックを維持しつつ表情リストからのみ除外するように調整。[レポート](docs/reports/2026-02-02_refine_avatar_expressions.md)
