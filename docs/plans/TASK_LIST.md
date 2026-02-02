@@ -37,6 +37,7 @@
 - [ ] スーパーツール化によるトークン削減の検討 <!-- id: 597 -->
 
 ---
+- [x] **Arousal 整合性改善と UI クリーンアップ** ([レポート](reports/2026-02-02_SessionArousal_Fixes.md)) ✅
 - [x] **表情管理システムの洗練とプロンプト同期の改善** ([レポート](reports/2026-02-02_refine_avatar_expressions.md)) ✅
 - [x] **記憶・内省システムの緊急修正**（バグ修正・ロジック刷新） ✅
 - [x] **応答再生成時の添付ファイル復元** ([レポート](reports/2026-02-01_regeneration_attachment_fix.md)) ✅

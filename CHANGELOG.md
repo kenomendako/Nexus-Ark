@@ -7,7 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
-- **SessionArousal蓄積ロジックの改善 (2026-02-02):** AI応答がエラーや空で終わった場合にArousalスコアが蓄積されないようタイミングを調整。また、メッセージを削除したり再生成（Regenerate）したりした際に、対応するArousalデータも自動的に削除されるように `session_arousal_manager.py`、`utils.py`、`ui_handlers.py` を連携修正。[レポート](docs/reports/2026-02-02_fix_session_arousal_accumulation.md)
+- **SessionArousal蓄積ロジックの改善 (2026-02-02):** AI応答がエラーや空で終わった場合にArousalスコアが蓄積されないようタイミングを調整。また、メッセージを削除したり再生成（Regenerate）したりした際に、対応するArousalデータも自動的に削除されるように修正。ログ保存とJSON記録のタイムスタンプ同期により整合性を確保。[レポート](docs/reports/2026-02-02_SessionArousal_Fixes.md)
+- **内的感情カテゴリの同期と UI クリーンアップ (2026-02-02):** `contentment` や `protective` などの内的感情をシステム上の有効なカテゴリとして統合。また、チャット画面の没入感を高めるため、表情や感情などのメタデータタグを表示から除去（ログには保持）。閉じ忘れられた `[THOUGHT]` タグによる表示崩れ防止ロジックも導入。[レポート](docs/reports/2026-02-02_SessionArousal_Fixes.md)
 - **表情管理システムの洗練とプロンプト同期の改善 (2026-02-02):** 表情管理UIから削除・追加した内容がAIのシステムプロンプトに即座に反映されるよう `room_manager.py` を修正。アセットがない廃止済みの表情タグの出力を防止。ドロップダウンの項目重複を解消し、標準感情とカスタム表情を一元管理できるヘルパー関数を導入。内的感情カテゴリ（contentment, protective）はロジックを維持しつつ表情リストからのみ除外するように調整。[レポート](docs/reports/2026-02-02_refine_avatar_expressions.md)
 - **記憶システムの洗練と不具合修復 (2026-02-01):** 記憶システム全体（エンティティ、エピソード、要約）のプロンプトを刷新し、ルシアンの内省的一人称スタイル（常体）に統一。エンティティ抽出ロジックから「メタグルーピング」を排除し、第三者や技術概念を独立したWikipedia形式で抽出するよう強化。消失した「美帆」のコア記憶をログから復旧。[レポート](docs/reports/2026-02-01_memory_harmonization_and_fix.md)
 - **内省・記憶システムの安定化とルシアンの記憶修復 (2026-02-01):** `curiosity_resolved` 等の特殊記憶がある日に日次要約が生成されないバグを修正。ルシアンの消失した 2026-01-31 分の要約を復旧。また、好奇心計算ロジックに「対数減衰（飽和曲線）」と「鮮度による減衰」を導入し、好奇心の変化をより実感できる仕様にアップグレード。解決済みの問いをリストから除去し、UIハンドラの重複も削減。[レポート](docs/reports/2026-02-01_memory_stabilization.md)
