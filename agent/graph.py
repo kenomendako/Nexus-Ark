@@ -944,6 +944,27 @@ def context_generator_node(state: AgentState):
     class SafeDict(dict):
         def __missing__(self, key): return f'{{{key}}}'
 
+    # アバター表情マニュアルの動的生成
+    avatar_expression_manual_text = ""
+    try:
+        available_expressions_dict = room_manager.get_available_expression_files(room_name)
+        if available_expressions_dict:
+            expr_names = ", ".join([f"`{name}`" for name in available_expressions_dict.keys()])
+            avatar_expression_manual_text = f"""
+        ## 【原則2.51】アバター表情の制御
+        現在、あなたのアバターで使用可能な表情は以下の通りです：
+        {expr_names}
+
+        応答を生成する際、今この瞬間にあなたがユーザーに見せたい表情（演技を含めて構いません）がある場合、会話テキストの**最後**（感情タグの直前）に以下の形式でタグを付加してください。
+        
+        **フォーマット:** `【表情】…表情名…`
+        **例:** `こんにちは。【表情】…joy…`
+
+        注意：この「見せたい表情」は、`<persona_emotion>`タグで報告する内的感情と一致している必要はありません。
+"""
+    except Exception as e:
+        print(f"  - [Avatar] 表情リスト取得エラー: {e}")
+
     prompt_vars = {
         'situation_prompt': situation_prompt,
         'action_plan_context': action_plan_context,
@@ -955,8 +976,10 @@ def context_generator_node(state: AgentState):
         'episodic_memory': episodic_memory_section,
         'dream_insights': dream_insights_text,
         'thought_generation_manual': thought_generation_manual_text,
+        'avatar_expression_manual': avatar_expression_manual_text,
         'image_generation_manual': image_generation_manual_text, 
         'tools_list': tools_list_str,
+        'retrieved_info': "{retrieved_info}"  # プレースホルダ: agent_nodeで実際の検索結果に置換される
     }
     final_system_prompt_text = CORE_PROMPT_TEMPLATE.format_map(SafeDict(prompt_vars))
     

@@ -1686,8 +1686,11 @@ try:
                         value="",  # 初期値は空（handle_initial_loadで設定される）
                         elem_id="profile_avatar_container"
                     )
+                    
+                    # 60秒後に待機表情に戻るためのタイマー (constants.AVATAR_IDLE_TIMEOUT = 60)
+                    auto_idle_timer = gr.Timer(constants.AVATAR_IDLE_TIMEOUT, active=False)
 
-                    with gr.Accordion("アバターを変更", open=False) as profile_image_accordion:
+                    with gr.Accordion("🖼️ アバター・表情を管理", open=False) as profile_image_accordion:
                         avatar_mode_radio = gr.Radio(
                             choices=[("静止画 (profile.png)", "static"), ("動画 (idle.mp4等)", "video")],
                             value="static",
@@ -1696,13 +1699,6 @@ try:
                         )
                         staged_image_state = gr.State()
                         
-                        gr.Markdown("### 待機状態 (idle)")
-                        image_upload_button = gr.UploadButton("待機アバターをアップロード", file_types=["image", ".mp4", ".webm", ".gif"])
-                        
-                        gr.Markdown("### 思考中 (thinking)")
-                        thinking_upload_button = gr.UploadButton("思考中アバターをアップロード", file_types=[".mp4", ".webm", ".gif"])
-                        
-                        gr.Markdown("💡 画像は静止画モード用、動画は動画モード用です。思考中アバターはAI応答生成中に表示されます。", elem_id="avatar_upload_hint")
                         cropper_image_preview = gr.ImageEditor(
                             sources=["upload"], type="pil", interactive=True, show_label=False,
                             visible=False, transforms=["crop"], brush=None, eraser=None,
@@ -1712,37 +1708,46 @@ try:
                         # ★★★ 新規: 表情差分管理 ★★★
                         with gr.Accordion("🎭 表情差分の管理", open=False) as expression_management_accordion:
                             gr.Markdown(
-                                "AIの応答内容に応じて、キャラクターの表情を自動で切り替えます。\n\n"
-                                "**設定方法:** システムプロンプトに以下の形式で記載してください:\n"
-                                "```\n"
-                                "【表情について】応答の最後に【表情】…表情名… を付けてください。\n"
-                                "使用可能な表情: idle, happy, sad, angry, surprised, embarrassed\n"
-                                "```"
+                                "AIとの会話中、感情やタグに応じてアバターが切り替わります。ここでは登録済みの表情を確認・管理できます。"
                             )
                             
-                            # 表情リスト表示
-                            expressions_df = gr.DataFrame(
-                                headers=["表情名", "キーワード", "ファイル"],
-                                datatype=["str", "str", "str"],
-                                interactive=False,
-                                row_count=(5, "dynamic"),
-                                col_count=(3, "fixed"),
-                                wrap=True,
+                            # 表情追加・編集・削除フォーム（操作ボタンを上に配置）
+                            gr.Markdown("### 表情の管理")
+                            with gr.Row():
+                                # 登録済みの表情を選択（新規追加も兼用）
+                                expressions_config = room_manager.get_expressions_config(effective_initial_room)
+                                # 重複を除去: idle, thinking + expressions.json + DEFAULT_EXPRESSIONS
+                                base_expressions = ["idle", "thinking"]
+                                config_expressions = expressions_config.get("expressions", [])
+                                # 統合リスト: base + config + DEFAULT（重複除去）
+                                all_initial_choices = base_expressions.copy()
+                                for e in config_expressions + constants.DEFAULT_EXPRESSIONS:
+                                    if e not in all_initial_choices:
+                                        all_initial_choices.append(e)
+                                expression_target_dropdown = gr.Dropdown(
+                                    choices=all_initial_choices,
+                                    label="操作対象の表情を選択",
+                                    allow_custom_value=True,
+                                    info="既存の表情を更新するか、新しい表情名を入力してください。",
+                                    scale=2
+                                )
+                                expression_file_upload = gr.UploadButton(
+                                    "画像を紐付け / 更新", 
+                                    file_types=["image", ".mp4", ".webm", ".gif"],
+                                    scale=1
+                                )
+                            
+                            with gr.Row():
+                                add_expression_button = gr.Button("➕ リストに登録", variant="primary", scale=1)
+                                delete_expression_button = gr.Button("🗑️ リストから削除", variant="stop", scale=1)
+                            
+                            gr.Markdown("💡 **idle / thinking** は状態表示用のため削除できません。その他の表情（感情カテゴリ含む）は自由に編集・削除可能です。")
+                            
+                            # 表情リスト表示 (カード形式) - 操作ボタンの下に配置
+                            expressions_html = gr.HTML(
+                                value=ui_handlers.refresh_expressions_ui(effective_initial_room),
                                 label="登録済みの表情リスト"
                             )
-                            
-                            # 表情追加フォーム
-                            gr.Markdown("### 表情を追加・編集")
-                            with gr.Row():
-                                new_expression_name = gr.Textbox(label="表情名", placeholder="例: happy", scale=1)
-                                new_expression_keywords = gr.Textbox(label="検出キーワード（カンマ区切り）", placeholder="嬉しい, 楽しい, ♪", scale=2)
-                            expression_file_upload = gr.UploadButton(
-                                "画像/動画をアップロード", 
-                                file_types=["image", ".mp4", ".webm", ".gif"]
-                            )
-                            with gr.Row():
-                                add_expression_button = gr.Button("表情を追加", variant="primary")
-                                delete_expression_button = gr.Button("選択した表情を削除", variant="stop")
 
                     # --- 情景ビジュアルセクション ---
                     # フルスクリーンボタンにバグがあるため無効化
@@ -2968,6 +2973,8 @@ try:
             room_project_root_input,
             room_project_exclude_dirs_input,
             room_project_exclude_files_input,
+            expressions_html,
+            expression_target_dropdown
         ]
 
         initial_load_outputs = [
@@ -3116,9 +3123,15 @@ try:
         ]
 
         rerun_event = rerun_button.click(
+            fn=lambda: gr.update(active=False),
+            outputs=[auto_idle_timer]
+        ).then(
             fn=ui_handlers.handle_rerun_button_click,
             inputs=rerun_inputs,
             outputs=unified_streaming_outputs
+        ).then(
+            fn=lambda: gr.update(active=True),
+            outputs=[auto_idle_timer]
         )
 
         # 【v5: 堅牢化】ルーム変更イベントを2段階に分離
@@ -3570,9 +3583,15 @@ try:
         api_test_button.click(fn=ui_handlers.handle_api_connection_test, inputs=[api_key_dropdown], outputs=None)
         # chat_submit_outputs の定義を削除し、代わりに unified_streaming_outputs を使用
         submit_event = chat_input_multimodal.submit(
+            fn=lambda: gr.update(active=False),
+            outputs=[auto_idle_timer]
+        ).then(
             fn=ui_handlers.handle_message_submission,
             inputs=chat_inputs,
             outputs=unified_streaming_outputs # ここを変更
+        ).then(
+            fn=lambda: gr.update(active=True),
+            outputs=[auto_idle_timer]
         )
 
         stop_button.click(
@@ -4326,33 +4345,11 @@ try:
 
         # --- アバターアップロード機能のイベント接続 ---
 
-        # 1. アップロードボタンにファイルが渡されたら、
-        #    画像の場合は編集プレビューを表示、動画の場合は直接保存
-        image_upload_button.upload(
-            fn=ui_handlers.handle_avatar_upload,
-            inputs=[current_room_name, image_upload_button],
-            outputs=[staged_image_state, cropper_image_preview, save_cropped_image_button, profile_image_accordion, profile_image_display]
-        )
-
-        # 2. 編集プレビューで範囲が選択され、「保存」ボタンが押されたら、最終処理を呼び出す
-        save_cropped_image_button.click(
-            fn=ui_handlers.handle_save_cropped_image,
-            inputs=[current_room_name, staged_image_state, cropper_image_preview],
-            outputs=[profile_image_display, cropper_image_preview, save_cropped_image_button]
-        )
-
         # 3. アバターモード切り替えイベント
         avatar_mode_radio.change(
             fn=ui_handlers.handle_avatar_mode_change,
             inputs=[current_room_name, avatar_mode_radio],
-            outputs=[profile_image_display]
-        )
-
-        # 4. 思考中アバターアップロードイベント
-        thinking_upload_button.upload(
-            fn=ui_handlers.handle_thinking_avatar_upload,
-            inputs=[current_room_name, thinking_upload_button],
-            outputs=[]  # 特に出力なし（通知のみ）
+            outputs=[profile_image_display, expressions_html]
         )
 
         # 5. 表情差分管理イベント
@@ -4360,23 +4357,35 @@ try:
         expression_management_accordion.expand(
             fn=ui_handlers.refresh_expressions_list,
             inputs=[current_room_name],
-            outputs=[expressions_df]
+            outputs=[expressions_html]
         )
         
         # 表情追加ボタン
         add_expression_button.click(
             fn=ui_handlers.handle_add_expression,
-            inputs=[current_room_name, new_expression_name, new_expression_keywords],
-            outputs=[expressions_df, new_expression_name, new_expression_keywords]
+            inputs=[current_room_name, expression_target_dropdown],
+            outputs=[expressions_html, expression_target_dropdown, expression_target_dropdown]
         )
         
         # 表情ファイルアップロード
-        # NOTE: .upload()イベントではinputsの最初の要素（ファイルコンポーネント）の値が
-        # 関数の第1引数として渡される。そのため expression_file_upload を先頭に含める。
         expression_file_upload.upload(
             fn=ui_handlers.handle_expression_file_upload,
-            inputs=[expression_file_upload, current_room_name, new_expression_name],
-            outputs=[expressions_df, new_expression_name, new_expression_keywords]
+            inputs=[expression_file_upload, current_room_name, expression_target_dropdown],
+            outputs=[expressions_html, expression_target_dropdown]
+        )
+
+        # 表情削除ボタン
+        delete_expression_button.click(
+            fn=ui_handlers.handle_delete_expression,
+            inputs=[current_room_name, expression_target_dropdown],
+            outputs=[expressions_html, expression_target_dropdown]
+        )
+
+        # 6. アバター自動待機化タイマー
+        auto_idle_timer.tick(
+            fn=lambda r: (ui_handlers.get_avatar_html(r, state="neutral"), gr.update(active=False)),
+            inputs=[current_room_name],
+            outputs=[profile_image_display, auto_idle_timer]
         )
 
         world_builder_raw_outputs = [

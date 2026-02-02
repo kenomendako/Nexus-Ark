@@ -534,8 +534,7 @@ def _get_default_expressions_config() -> dict:
     """デフォルトの表情設定を返す"""
     return {
         "expressions": constants.DEFAULT_EXPRESSIONS.copy(),
-        "default_expression": "idle",
-        "keywords": constants.DEFAULT_EXPRESSION_KEYWORDS.copy()
+        "default_expression": "neutral"
     }
 
 
@@ -590,13 +589,22 @@ def get_available_expression_files(room_name: str) -> dict:
     
     available = {}
     
+    # 【v2】登録済みの表情リストでフィルタリング
+    # これにより、UIから削除された表情がプロンプトに残るのを防ぐ
+    expressions_config = get_expressions_config(room_name)
+    registered_names = ["idle", "thinking"] + expressions_config.get("expressions", []) + constants.DEFAULT_EXPRESSIONS
+    registered_names = list(set(registered_names)) # 重複除去
+    
     try:
-        for filename in os.listdir(avatar_dir):
-            name, ext = os.path.splitext(filename)
-            if ext.lower() in all_exts:
-                # 同じ表情名で動画と静止画がある場合、動画を優先
-                if name not in available or ext.lower() in video_exts:
-                    available[name] = os.path.join(avatar_dir, filename)
+        if os.path.exists(avatar_dir):
+            for filename in os.listdir(avatar_dir):
+                name, ext = os.path.splitext(filename)
+                if ext.lower() in all_exts:
+                    # 登録リストにある場合のみ採用
+                    if name in registered_names:
+                        # 同じ表情名で動画と静止画がある場合、動画を優先
+                        if name not in available or ext.lower() in video_exts:
+                            available[name] = os.path.join(avatar_dir, filename)
     except Exception as e:
         print(f"警告: アバターディレクトリの読み取りエラー: {e}")
     

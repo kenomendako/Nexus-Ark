@@ -293,46 +293,56 @@ def extract_expression_from_response(response_text: str, room_name: str) -> str:
     
     優先順位:
     1. 【表情】…{expression_name}… タグから抽出
-    2. キーワードマッチング
-    3. デフォルト (idle)
+    2. <persona_emotion category="..." /> タグから抽出
+    3. MotivationManager の現在感情状態 (内部状態) から取得
+    4. デフォルト (neutral)
     
     Args:
         response_text: AI応答のテキスト
         room_name: ルームのフォルダ名
         
     Returns:
-        表情名 (例: "happy", "sad", "idle")
+        表情名 (例: "joy", "sadness", "neutral")
     """
-    if not response_text:
-        return "idle"
-    
     # 表情設定を読み込む
     expressions_config = room_manager.get_expressions_config(room_name)
     registered_expressions = expressions_config.get("expressions", constants.DEFAULT_EXPRESSIONS)
-    default_expression = expressions_config.get("default_expression", "idle")
+    default_expression = expressions_config.get("default_expression", "neutral")
     
-    # 1. タグから抽出: 【表情】…{expression_name}…
-    match = re.search(constants.EXPRESSION_TAG_PATTERN, response_text)
-    if match:
-        expression = match.group(1)
-        # 登録済みの表情かどうかをチェック
-        if expression in registered_expressions:
-            print(f"--- [Expression] タグから抽出: {expression} ---")
-            return expression
-        else:
-            print(f"--- [Expression] タグ '{expression}' は未登録、フォールバック処理へ ---")
-    
-    # 2. キーワードマッチング
-    keywords = expressions_config.get("keywords", constants.DEFAULT_EXPRESSION_KEYWORDS)
-    for expression, keyword_list in keywords.items():
-        if expression not in registered_expressions:
-            continue
-        for keyword in keyword_list:
-            if keyword in response_text:
-                print(f"--- [Expression] キーワード '{keyword}' から検出: {expression} ---")
+    # 1. 手動タグから抽出: 【表情】…{expression_name}…
+    if response_text:
+        match = re.search(constants.EXPRESSION_TAG_PATTERN, response_text)
+        if match:
+            expression = match.group(1).lower()
+            if expression in registered_expressions:
+                print(f"--- [Expression] 手動タグから抽出: {expression} ---")
                 return expression
-    
-    # 3. デフォルト
+            else:
+                print(f"--- [Expression] 手動タグ '{expression}' は未登録 ---")
+
+        # 2. ペルソナ感情タグから抽出: <persona_emotion category="xxx" ... />
+        persona_emotion_pattern = r'<persona_emotion\s+category=["\'](\w+)["\']\s+intensity=["\']([0-9.]+)["\']\s*/>'
+        emotion_match = re.search(persona_emotion_pattern, response_text, re.IGNORECASE)
+        if emotion_match:
+            expression = emotion_match.group(1).lower()
+            if expression in registered_expressions:
+                print(f"--- [Expression] 感情タグから抽出: {expression} ---")
+                return expression
+            else:
+                print(f"--- [Expression] 感情タグ '{expression}' は未登録 ---")
+
+    # 3. 内部状態 (MotivationManager) からのフォールバック
+    try:
+        mm = MotivationManager(room_name)
+        internal_state = mm.get_internal_state()
+        persona_emotion = internal_state.get("drives", {}).get("relatedness", {}).get("persona_emotion", "neutral")
+        if persona_emotion in registered_expressions:
+            print(f"--- [Expression] 内部状態から取得: {persona_emotion} ---")
+            return persona_emotion
+    except Exception as e:
+        print(f"--- [Expression] MotivationManager 取得エラー: {e} ---")
+
+    # 4. デフォルト
     return default_expression
 
 
@@ -609,7 +619,10 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
             gr.update(value="待機中"), # episodic_update_status
             gr.update(choices=[], value=None), # entity_dropdown
             gr.update(value=""), # entity_content_editor
-            gr.update(value="gemini") # embedding_provider_radio (旧: embedding_mode_radio)
+            gr.update(value="gemini"), # embedding_provider_radio (旧: embedding_mode_radio)
+            # --- [Avatar Expressions] ---
+            gr.update(value=refresh_expressions_ui(room_name)), # expressions_html
+            gr.update(choices=get_all_expression_choices(room_name), value=None) # expression_target_dropdown
         )
 
     # --- 【通常モード】 ---
@@ -887,10 +900,13 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         gr.update(value=project_root), # room_project_root_input
         gr.update(value=project_exclude_dirs), # room_project_exclude_dirs_input
         gr.update(value=project_exclude_files), # room_project_exclude_files_input
+        # --- [Avatar Expressions] ---
+        gr.update(value=refresh_expressions_ui(room_name)), # expressions_html
+        gr.update(choices=get_all_expression_choices(room_name), value=None) # expression_target_dropdown
     )
 
 
-def handle_initial_load(room_name: str = None, expected_count: int = 174):
+def handle_initial_load(room_name: str = None, expected_count: int = 176):
     """
     【v11: 時間デフォルト対応版】
     UIセッションが開始されるたびに、UIコンポーネントの初期状態を完全に再構築する、唯一の司令塔。
@@ -1582,6 +1598,8 @@ def _stream_and_handle_response(
                     ai_text_messages.sort(key=lambda x: x[0], reverse=True)
                     best_ai_message = ai_text_messages[0][1]
                 
+                print(f"--- [DEBUG] best_ai_message exists: {best_ai_message is not None} ---")
+                
                 # リストを再構築（順序は Tool -> AI の順が自然だが、元の順序をなるべく保つ）
                 # ここではシンプルに [ツール実行報告たち] + [AIの最終回答] とする
                 new_messages = other_messages
@@ -1628,7 +1646,7 @@ def _stream_and_handle_response(
                                 if emotion_match:
                                     detected_category = emotion_match.group(1).lower()
                                     detected_intensity = float(emotion_match.group(2))
-                                    valid_categories = ["joy", "contentment", "protective", "anxious", "sadness", "anger", "neutral"]
+                                    valid_categories = ["joy", "anxious", "sadness", "anger", "neutral"]
                                     if detected_category in valid_categories:
                                         try:
                                             from motivation_manager import MotivationManager
@@ -2535,7 +2553,7 @@ def handle_save_room_config(folder_name: str, room_name: str, user_display_name:
         traceback.print_exc()
         return gr.update(), gr.update()
 
-def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name: str, current_room_name: str = None, expected_count: int = 151):
+def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name: str, current_room_name: str = None, expected_count: int = 153):
     """
     【v7: 引数順序修正版】
     ルームを削除し、統一契約に従って常に正しい数の戻り値を返す。
@@ -2602,9 +2620,7 @@ def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name:
                 gr.update(value=120),  # room_autonomous_inactivity_slider
                 gr.update(value="00:00"),  # room_quiet_hours_start
                 gr.update(value="07:00"),  # room_quiet_hours_end
-                *[gr.update()]*8,  # room_model_dropdown, provider_radio, google_group, openai_group, api_key_dd, openai_profile, base_url, api_key
-                gr.update(),  # openai_model_dropdown
-                gr.update(value=True),  # openai_tool_use_checkbox
+                *[gr.update()]*10,  # room_model_dropdown, provider_radio, google_group, openai_group, api_key_dd, openai_profile, base_url, api_key, model_dd, tool_use
                 # --- 睡眠時記憶整理 ---
                 gr.update(value=True),  # sleep_consolidation_episodic_cb
                 gr.update(value=True),  # sleep_consolidation_memory_index_cb
@@ -2621,12 +2637,14 @@ def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name:
                 gr.update(), # save_room_theme_button
                 gr.update(value=""), # style_injector
                 *[gr.update()]*4, # dream diary (4 items)
-                *[gr.update()]*4, # episodic browser (4 items)
-                gr.update(value="未実行"), # episodic_update_status
-                gr.update(choices=[], value=None), # entity_dropdown
-                gr.update(value=""), # entity_content_editor
-                gr.update(value="gemini"), # embedding_provider_radio (旧: embedding_mode_radio)
-                gr.update(value="未実行") # dream_status_display
+                gr.update(value="未実行"), # dream_status_display
+                gr.update(value=False), # room_auto_summary_checkbox
+                gr.update(value=constants.AUTO_SUMMARY_DEFAULT_THRESHOLD, visible=False), # room_auto_summary_threshold_slider
+                "", # room_project_root_input
+                "", # room_project_exclude_dirs_input
+                "", # room_project_exclude_files_input
+                gr.update(value=refresh_expressions_ui(None)), # expressions_html
+                gr.update(choices=get_all_expression_choices(None), value=None) # expression_target_dropdown
             )
 
             # ケース2の全項目を組み立てる (unified_full_room_refresh_outputs に合わせる)
@@ -2645,8 +2663,7 @@ def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name:
                 "トークン数: (ルーム未選択)", # token_count
                 "", # room_delete_confirmed_state
                 "最終更新: -", # memory_reindex_status
-                "最終更新: -", # current_log_reindex_status
-                "未実行" # dream_status_display
+                "最終更新: -"  # current_log_reindex_status
             )
             
             final_reset_outputs = empty_chat_updates + world_outputs + session_outputs + tail_outputs
@@ -5835,7 +5852,7 @@ def handle_world_builder_load(room_name: str):
         gr.update(choices=place_choices_for_selected_area, value=current_location)
     )
 
-def handle_room_change_for_all_tabs(room_name: str, api_key_name: str, current_room_state: str, expected_count: int = 151):
+def handle_room_change_for_all_tabs(room_name: str, api_key_name: str, current_room_state: str, expected_count: int = 153):
     """
     【v11: 最終契約遵守版】
     ルーム変更時に、全てのUI更新と内部状態の更新を、この単一の関数で完結させる。
@@ -6662,8 +6679,11 @@ def handle_avatar_mode_change(room_name: str, mode: str) -> gr.update:
         mode_name = "静止画" if mode == "static" else "動画"
         gr.Info(f"アバターモードを「{mode_name}」に変更しました。")
     
-    # 新しいモードでアバターを再生成 (UIの状態は常に最新に保つ)
-    return gr.update(value=get_avatar_html(room_name, state="idle", mode=mode))
+    # 新しいモードでアバターを再生成し、表情カードリストも更新する
+    return (
+        gr.update(value=get_avatar_html(room_name, state="idle", mode=mode)),
+        refresh_expressions_ui(room_name)
+    )
 
 
 def get_avatar_mode_for_room(room_name: str) -> gr.update:
@@ -6691,52 +6711,141 @@ def get_avatar_mode_for_room(room_name: str) -> gr.update:
 
 # ===== 表情リスト管理ハンドラ =====
 
-def refresh_expressions_list(room_name: str) -> gr.update:
+def refresh_expressions_ui(room_name: str) -> str:
     """
-    表情リストをDataFrame用に整形して返す。
-    
-    Args:
-        room_name: ルームのフォルダ名
-        
-    Returns:
-        expressions_df の gr.update
+    表情リストをカード形式のHTMLとして生成する。
     """
     if not room_name:
-        return gr.update(value=[])
+        return '<div style="padding:20px; text-align:center; color:var(--text-color-secondary);">ルームを選択してください。</div>'
+    
+    # ルーム設定から現在のモードを取得
+    effective_settings = config_manager.get_effective_settings(room_name)
+    avatar_mode = effective_settings.get("avatar_mode", "video")
+    avatar_dir = os.path.join(constants.ROOMS_DIR, room_name, constants.AVATAR_DIR)
+    
+    image_exts = [".png", ".jpg", ".jpeg", ".webp"]
+    video_exts = [".mp4", ".webm", ".gif"]
     
     expressions_config = room_manager.get_expressions_config(room_name)
-    available_files = room_manager.get_available_expression_files(room_name)
-    keywords = expressions_config.get("keywords", {})
     
-    rows = []
-    for expr in expressions_config.get("expressions", []):
-        # キーワードをカンマ区切りで表示
-        kw_list = keywords.get(expr, [])
-        kw_str = ", ".join(kw_list) if kw_list else ""
-        
-        # ファイルの有無
-        file_path = available_files.get(expr)
-        if file_path:
-            file_name = os.path.basename(file_path)
+    html = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 10px;">'
+    
+    # 順序の定義
+    fixed_at_top = ["idle", "thinking"]
+    standard_emotions = constants.DEFAULT_EXPRESSIONS # neutral, joy, anxious, sadness, anger
+    
+    # 重複を除去しつつ全ての表情をリスト化
+    all_registered = expressions_config.get("expressions", [])
+    custom_exprs = [e for e in all_registered if e not in fixed_at_top and e not in standard_emotions]
+    
+    all_to_show = fixed_at_top + standard_emotions + sorted(custom_exprs)
+    
+    for expr in all_to_show:
+        # モードに応じて優先的にファイルを探す
+        file_path = None
+        if avatar_mode == "static":
+            # 静止画優先
+            for ext in image_exts:
+                p = os.path.join(avatar_dir, f"{expr}{ext}")
+                if os.path.exists(p):
+                    file_path = p
+                    break
+            if not file_path: # フォールバック
+                for ext in video_exts:
+                    p = os.path.join(avatar_dir, f"{expr}{ext}")
+                    if os.path.exists(p):
+                        file_path = p
+                        break
         else:
-            file_name = "（なし）"
+            # 動画優先
+            for ext in video_exts:
+                p = os.path.join(avatar_dir, f"{expr}{ext}")
+                if os.path.exists(p):
+                    file_path = p
+                    break
+            if not file_path: # フォールバック
+                for ext in image_exts:
+                    p = os.path.join(avatar_dir, f"{expr}{ext}")
+                    if os.path.exists(p):
+                        file_path = p
+                        break
+
+        preview_html = ""
         
-        rows.append([expr, kw_str, file_name])
+        if file_path and os.path.exists(file_path):
+            try:
+                # Base64で埋め込み（get_avatar_htmlと同様）
+                with open(file_path, "rb") as f:
+                    encoded = base64.b64encode(f.read()).decode("utf-8")
+                
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in [".mp4", ".webm"]:
+                    mime = f"video/{ext[1:]}"
+                    preview_html = f'<video src="data:{mime};base64,{encoded}" style="width:100%; height:110px; object-fit:cover; border-radius:6px; background:#000;" muted loop autoplay playsinline></video>'
+                elif ext == ".gif":
+                    preview_html = f'<img src="data:image/gif;base64,{encoded}" style="width:100%; height:110px; object-fit:cover; border-radius:6px; background:#000;" />'
+                else:
+                    mime = "image/png" if ext == ".png" else "image/jpeg"
+                    preview_html = f'<img src="data:{mime};base64,{encoded}" style="width:100%; height:110px; object-fit:cover; border-radius:6px; background:#000;" />'
+            except Exception as e:
+                preview_html = f'<div style="width:100%; height:110px; background:#333; border-radius:6px; display:flex; align-items:center; justify-content:center; color:#f66; font-size:10px;">エラー: {str(e)[:20]}</div>'
+        else:
+            preview_html = '<div style="width:100%; height:110px; background:var(--background-fill-primary); border-radius:6px; display:flex; align-items:center; justify-content:center; color:var(--text-color-secondary); font-size:12px; border:1px dashed var(--border-color-primary);">未登録</div>'
+        
+        # ラベルとスタイルの決定
+        is_fixed = expr in fixed_at_top
+        is_standard = expr in standard_emotions
+        
+        jp_name = constants.EXPRESSION_NAMES_JP.get(expr, "")
+        display_label = f"{expr} ({jp_name})" if jp_name else expr
+        
+        if is_fixed:
+            tag_text = "固定"
+            tag_style = "background:var(--secondary-500); color:white;"
+        elif is_standard:
+            tag_text = "感情"
+            tag_style = "background:var(--primary-500); color:white;"
+        else:
+            tag_text = "カスタム"
+            tag_style = "background:var(--neutral-500); color:white;"
+            
+        html += f'''
+        <div style="background: var(--background-fill-secondary); padding: 10px; border-radius:10px; border: 1px solid var(--border-color-primary); box-shadow: var(--shadow-sm);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-size: 13px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{display_label}</span>
+                <span style="font-size: 10px; padding: 2px 6px; border-radius: 4px; {tag_style}">{tag_text}</span>
+            </div>
+            {preview_html}
+        </div>
+        '''
     
-    return gr.update(value=rows)
+    html += '</div>'
+    return html
+
+def refresh_expressions_list(room_name: str) -> gr.update:
+    """[DEPRECATED] 表情リストをカードHTMLとして返すように更新"""
+    return gr.update(value=refresh_expressions_ui(room_name))
 
 
-def handle_add_expression(room_name: str, expression_name: str, keywords_str: str) -> tuple:
+def get_all_expression_choices(room_name: str) -> list:
     """
-    新しい表情を追加または既存表情のキーワードを更新する。
+    ドロップダウン用の統合表情リストを返す。
+    idle, thinking + expressions.json + DEFAULT_EXPRESSIONS（重複除去）
+    """
+    base = ["idle", "thinking"]
+    config_expressions = room_manager.get_expressions_config(room_name).get("expressions", []) if room_name else []
     
-    Args:
-        room_name: ルームのフォルダ名
-        expression_name: 表情名
-        keywords_str: カンマ区切りのキーワード文字列
-        
-    Returns:
-        (expressions_df, new_expression_name, new_expression_keywords) の更新
+    result = base.copy()
+    for e in config_expressions + constants.DEFAULT_EXPRESSIONS:
+        if e not in result:
+            result.append(e)
+    return result
+
+
+
+def handle_add_expression(room_name: str, expression_name: str) -> tuple:
+    """
+    新しい表情を追加する（または既存の定義を維持する）。
     """
     if not room_name:
         gr.Warning("ルームが選択されていません。")
@@ -6748,86 +6857,51 @@ def handle_add_expression(room_name: str, expression_name: str, keywords_str: st
     
     expression_name = expression_name.strip().lower()
     
-    # キーワードをリストに変換
-    keywords_list = [k.strip() for k in keywords_str.split(",") if k.strip()] if keywords_str else []
-    
     # 表情設定を読み込み
     expressions_config = room_manager.get_expressions_config(room_name)
     
-    # 表情リストに追加
     if expression_name not in expressions_config["expressions"]:
         expressions_config["expressions"].append(expression_name)
-        action = "追加"
+        room_manager.save_expressions_config(room_name, expressions_config)
+        gr.Info(f"表情「{expression_name}」を追加しました。ファイルをアップロードして紐付けてください。")
     else:
-        action = "更新"
-    
-    # キーワードを更新
-    if keywords_list:
-        expressions_config["keywords"][expression_name] = keywords_list
-    
-    # 保存
-    room_manager.save_expressions_config(room_name, expressions_config)
-    gr.Info(f"表情「{expression_name}」を{action}しました。")
+        gr.Info(f"表情「{expression_name}」は既に登録されています。")
     
     # UIを更新
     return (
-        refresh_expressions_list(room_name),
-        gr.update(value=""),  # 入力欄をクリア
-        gr.update(value="")
+        refresh_expressions_ui(room_name),
+        gr.update(value=""),  # テキストボックスをクリア
+        gr.update(choices=get_all_expression_choices(room_name)) # 削除/編集用ドロップダウンを更新
     )
 
 
-def handle_delete_expression(room_name: str, expressions_df_data, selected_index: gr.SelectData) -> gr.update:
+def handle_delete_expression(room_name: str, expression_name: str) -> tuple:
     """
-    選択した表情を削除する。
-    
-    Args:
-        room_name: ルームのフォルダ名
-        expressions_df_data: DataFrameのデータ
-        selected_index: 選択された行のインデックス
-        
-    Returns:
-        expressions_df の更新
+    指定した表情を削除する。
     """
-    if not room_name:
-        gr.Warning("ルームが選択されていません。")
-        return gr.update()
-    
-    if selected_index is None:
+    if not room_name or not expression_name:
         gr.Warning("削除する表情を選択してください。")
-        return gr.update()
+        return gr.update(), gr.update()
     
-    row_index = selected_index.index[0] if hasattr(selected_index, 'index') else selected_index
-    
-    # DataFrameからPandasのDataFrameに変換されている場合
-    if isinstance(expressions_df_data, list) and len(expressions_df_data) > row_index:
-        expression_name = expressions_df_data[row_index][0]
-    elif hasattr(expressions_df_data, 'iloc'):
-        expression_name = expressions_df_data.iloc[row_index, 0]
-    else:
-        gr.Warning("表情の取得に失敗しました。")
-        return gr.update()
-    
-    if expression_name == "idle":
-        gr.Warning("「idle」（待機状態）は削除できません。")
-        return gr.update()
+    if expression_name in ["idle", "thinking"]:
+        gr.Warning(f"「{expression_name}」はシステム予約済み（状態表示用）のため削除できません。アセット（画像/動画）の差し替えのみ可能です。")
+        return gr.update(), gr.update()
     
     # 表情設定を読み込み
     expressions_config = room_manager.get_expressions_config(room_name)
     
-    # 表情リストから削除
     if expression_name in expressions_config["expressions"]:
         expressions_config["expressions"].remove(expression_name)
+        room_manager.save_expressions_config(room_name, expressions_config)
+        gr.Info(f"表情「{expression_name}」をリストから削除しました。")
     
-    # キーワードも削除
-    if expression_name in expressions_config.get("keywords", {}):
-        del expressions_config["keywords"][expression_name]
+    # 注意: アセットファイル自体は削除しない（誤操作防止のため。必要なら手動削除）
     
-    # 保存
-    room_manager.save_expressions_config(room_name, expressions_config)
-    gr.Info(f"表情「{expression_name}」を削除しました。")
     
-    return refresh_expressions_list(room_name)
+    return (
+        refresh_expressions_ui(room_name),
+        gr.update(choices=get_all_expression_choices(room_name), value=None)
+    )
 
 
 def handle_expression_file_upload(file_path: str, room_name: str, expression_name: str) -> tuple:
@@ -6887,9 +6961,8 @@ def handle_expression_file_upload(file_path: str, room_name: str, expression_nam
         traceback.print_exc()
     
     return (
-        refresh_expressions_list(room_name),
-        gr.update(value=""),
-        gr.update(value="")
+        refresh_expressions_ui(room_name),
+        gr.update(choices=get_all_expression_choices(room_name))
     )
 
 

@@ -101,26 +101,29 @@ DEFAULT_THINKING_LEVEL = "auto"
 EXPRESSIONS_FILE = "expressions.json"
 EXPRESSION_TAG_PATTERN = r"【表情】…(\w+)…"  # 正規表現パターン
 
-# デフォルト表情リスト
+# デフォルト表情リスト（感情カテゴリ）
 DEFAULT_EXPRESSIONS = [
-    "idle",        # 待機/通常（必須）
-    "thinking",    # 思考中
-    "happy",       # 嬉しい
-    "sad",         # 悲しい
-    "angry",       # 怒り
-    "surprised",   # 驚き
-    "embarrassed"  # 照れ
+    "neutral",     # 平常、特に強い感情なし（待機時）
+    "joy",         # 喜び、楽しさ、嬉しさ
+    "anxious",     # 不安、心配
+    "sadness",     # 悲しみ、寂しさ
+    "anger"        # 怒り、苛立ち
 ]
 
-# 表情→感情キーワードのマッピング（デフォルト）
-DEFAULT_EXPRESSION_KEYWORDS = {
-    "happy": ["嬉しい", "楽しい", "幸せ", "ありがとう", "わーい", "♪", "笑", "やった"],
-    "sad": ["悲しい", "寂しい", "つらい", "残念", "ごめん"],
-    "angry": ["怒", "許せない", "ムカつく", "イライラ"],
-    "surprised": ["驚", "えっ", "まさか", "びっくり", "！？", "!?"],
-    "embarrassed": ["照れ", "恥ずかしい", "えへへ", "///"],
-    "thinking": ["うーん", "考え", "そうですね", "..."],
+# 表情名の日本語表示用マッピング
+EXPRESSION_NAMES_JP = {
+    "idle": "待機中",
+    "thinking": "思考中",
+    "neutral": "平常",
+    "joy": "喜び",
+    "anxious": "不安",
+    "sadness": "悲しみ",
+    "anger": "怒り"
 }
+
+AVATAR_IDLE_TIMEOUT = 60  # 待機表情への復帰時間（秒）
+
+# 表情→感情キーワードのマッピングは廃止（タグまたは内的状態に連動）
 
 # --- ツール結果のログ保存設定 ---
 # ログに[RAW_RESULT]を含めて保存するツール（再現に必要なもの）

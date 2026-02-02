@@ -1,6 +1,6 @@
 --- Nexus Ark Wiring Validator ---
 
-Checked 144 connections.
+Checked 170 connections.
 
 --- Warnings ---
 [INFO] load_user_memo: Returns a non-literal value, cannot verify count statically.
@@ -18,6 +18,17 @@ Checked 144 connections.
 [INFO] update_token_count_on_input: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_reload_system_prompt: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_reload_system_prompt: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_diary_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_diary_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_diary_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_diary_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_diary_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_diary_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_diary_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_diary_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_diary_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_diary_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_diary_entry: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_notepad_click: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_notepad_click: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_notepad_click: Returns a non-literal value, cannot verify count statically.
@@ -28,24 +39,35 @@ Checked 144 connections.
 [INFO] handle_clear_notepad_click: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_clear_notepad_click: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_clear_notepad_click: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_creative_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_creative_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_creative_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_creative_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_creative_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_creative_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_creative_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_creative_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_creative_entry: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_creative_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_creative_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_creative_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_reload_creative_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_reload_creative_notes: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_clear_creative_notes: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_clear_creative_notes: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_clear_creative_notes: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_research_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_research_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_research_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_research_selection: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_research_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_research_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_research_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_research_entry: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_save_research_entry: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_research_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_research_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_research_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_save_research_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_reload_research_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_reload_research_notes: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_clear_research_notes: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_clear_research_notes: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_clear_research_notes: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_clear_research_notes: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_alarm_selection_for_all_updates: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_timer_submission: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_timer_submission: Returns a non-literal value, cannot verify count statically.
@@ -60,7 +82,6 @@ Checked 144 connections.
 [INFO] handle_episodic_selection_from_dropdown: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_episodic_selection_from_dropdown: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_episodic_selection_from_dropdown: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_episodic_selection_from_dropdown: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_entity_selection_change: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_entity_selection_change: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_entity_selection_change: Returns a non-literal value, cannot verify count statically.
@@ -73,7 +94,6 @@ Checked 144 connections.
 [INFO] handle_save_core_memory: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_reload_core_memory: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_reload_core_memory: Returns a non-literal value, cannot verify count statically.
-[INFO] handle_generate_or_regenerate_scenery_image: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_generate_or_regenerate_scenery_image: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_generate_or_regenerate_scenery_image: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_generate_or_regenerate_scenery_image: Returns a non-literal value, cannot verify count statically.
@@ -91,19 +111,12 @@ Checked 144 connections.
 [INFO] handle_knowledge_file_select: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_show_scenery_prompt: Returns a non-literal value, cannot verify count statically.
 [INFO] handle_outing_update_total_chars: Returns a non-literal value, cannot verify count statically.
+[INFO] handle_room_provider_change: Returns a non-literal value, cannot verify count statically.
 
 --- ERRORS FOUND ---
-[FAIL] handle_initial_load: Signature default expected_count=157 but UI requires 159.
-[FAIL] handle_initial_load: Returns 157 items, but UI defined 159 outputs.
 [FAIL] handle_rerun_button_click: Returns 0 items, but UI defined 16 outputs.
 [FAIL] handle_rerun_button_click: Returns 0 items, but UI defined 16 outputs.
-[FAIL] handle_rerun_button_click: Returns 15 items, but UI defined 16 outputs.
-[FAIL] handle_room_change_for_all_tabs: Signature default expected_count=147 but UI requires 148.
-[FAIL] handle_room_change_for_all_tabs: Returns 147 items, but UI defined 148 outputs.
-[FAIL] handle_room_change_for_all_tabs: Returns 147 items, but UI defined 148 outputs.
-[FAIL] handle_create_room: Returns 5 items, but UI defined 9 outputs.
-[FAIL] handle_delete_room: Signature default expected_count=131 but UI requires 148.
-[FAIL] handle_delete_room: Returns 131 items, but UI defined 148 outputs.
+[FAIL] handle_create_room: Returns 2 items, but UI defined 9 outputs.
 [FAIL] handle_log_punctuation_correction: Returns 0 items, but UI defined 6 outputs.
 [FAIL] handle_log_punctuation_correction: Returns 0 items, but UI defined 6 outputs.
 [FAIL] handle_log_punctuation_correction: Returns 0 items, but UI defined 6 outputs.
@@ -113,18 +126,20 @@ Checked 144 connections.
 [FAIL] handle_log_punctuation_correction: Returns 0 items, but UI defined 6 outputs.
 [FAIL] handle_message_submission: Returns 0 items, but UI defined 16 outputs.
 [FAIL] handle_message_submission: Returns 0 items, but UI defined 16 outputs.
-[FAIL] handle_message_submission: Returns 6 items, but UI defined 16 outputs.
+[FAIL] handle_message_submission: Returns 7 items, but UI defined 16 outputs.
 [FAIL] handle_update_episodic_memory: Returns 0 items, but UI defined 3 outputs.
 [FAIL] handle_update_episodic_memory: Returns 0 items, but UI defined 3 outputs.
-[FAIL] handle_clear_open_questions: Returns 2 items, but UI defined 3 outputs.
-[FAIL] handle_clear_open_questions: Returns 2 items, but UI defined 3 outputs.
-[FAIL] handle_wb_save: Returns 2 items, but UI defined 3 outputs.
-[FAIL] handle_wb_delete_place: Returns 7 items, but UI defined 8 outputs.
-[FAIL] handle_wb_delete_place: Returns 7 items, but UI defined 8 outputs.
-[FAIL] handle_wb_delete_place: Returns 7 items, but UI defined 8 outputs.
-[FAIL] handle_theme_selection: Returns 7 items, but UI defined 8 outputs.
+[FAIL] handle_knowledge_reindex: Returns 0 items, but UI defined 2 outputs.
+[FAIL] handle_knowledge_reindex: Returns 0 items, but UI defined 2 outputs.
 [FAIL] handle_knowledge_reindex: Returns 0 items, but UI defined 2 outputs.
 [FAIL] handle_memory_reindex: Returns 0 items, but UI defined 2 outputs.
+[FAIL] handle_memory_reindex: Returns 0 items, but UI defined 2 outputs.
+[FAIL] handle_memory_reindex: Returns 0 items, but UI defined 2 outputs.
+[FAIL] handle_full_reindex: Returns 0 items, but UI defined 2 outputs.
+[FAIL] handle_full_reindex: Returns 0 items, but UI defined 2 outputs.
+[FAIL] handle_full_reindex: Returns 0 items, but UI defined 2 outputs.
+[FAIL] handle_current_log_reindex: Returns 0 items, but UI defined 2 outputs.
+[FAIL] handle_current_log_reindex: Returns 0 items, but UI defined 2 outputs.
 [FAIL] handle_current_log_reindex: Returns 0 items, but UI defined 2 outputs.
 [FAIL] handle_play_audio_button_click: Returns 0 items, but UI defined 3 outputs.
-[FAIL] handle_refresh_internal_state: Returns 9 items, but UI defined 8 outputs.
+[FAIL] handle_save_groq_key: Returns 0 items, but UI defined 1 outputs.
