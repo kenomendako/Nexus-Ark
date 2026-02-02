@@ -1223,6 +1223,11 @@ class EpisodicMemoryManager:
             updated = False
             
             for ep in episodes:
+                # [修正] IDフォーマットチェック（少なくとも episode_ で始まる必要がある）
+                # ログファイル名 (log_archive_...) などの共鳴報告はここでの保存対象ではないため、静かに無視する
+                if not episode_id.startswith("episode_"):
+                    return False
+                
                 if ep.get("id") == episode_id:
                     # Q値更新式: arousal_new = arousal_old + α(resonance - arousal_old)
                     old_arousal = ep.get("arousal", 0.5)
