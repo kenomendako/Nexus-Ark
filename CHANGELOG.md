@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- **UIのクリーンアップと表示の適正化 (2026-02-02):** 「記憶・メモ・指示」タブを実情に合わせて「記憶・ノート・知識」に改名。古いエンベディング設定の移行案内セクションを削除しUIを整理。[レポート](docs/reports/2026-02-02_UI_Cleanup_and_Markdown_Fix.md)
+- **「文字置き換え」ツールのマークダウン描画不具合の修正 (2026-02-02):** スクリーンショットモード適用時に会話文のマークダウン（太字や引用など）が解除されてしまう問題を修正。HTMLの `<div>` 囲みを廃止し、Markdownの改行規則（末尾2スペース）に従うことで装飾の維持を実現。[レポート](docs/reports/2026-02-02_UI_Cleanup_and_Markdown_Fix.md)
 - **APIキーローテーションの最適化と503エラー対応 (2026-02-02):** 429 RESOURCE_EXHAUSTED 発生時の SDK 内部リトライを抑制（max_retries=1）し、高速なキー切り替えを実現。また、Google側のサーバー過負荷（503 UNAVAILABLE）発生時に、同一キーで最大3回リトライしてからローテーションするロジックを導入し、不必要な有料キー消費を抑制。503によるローテーション時はキーを「枯渇」マークしないよう調整。[レポート](docs/reports/2026-02-02_Fix_Settings_and_API_Rotation.md)
 - **個別プロバイダ設定の永続化と不具合修正 (2026-02-02):** ルームごとの個別設定（provider等）が `null` の場合にUI選択が消えるバグを修正。再起動後も「共通設定に従う」等の選択が正しく維持されるように堅牢化。また、応答生成時に発生していた `UnboundLocalError` を解消。[レポート](docs/reports/2026-02-02_Fix_Settings_and_API_Rotation.md)
 - **SessionArousal蓄積ロジックの改善 (2026-02-02):** AI応答がエラーや空で終わった場合にArousalスコアが蓄積されないようタイミングを調整。また、メッセージを削除したり再生成（Regenerate）したりした際に、対応するArousalデータも自動的に削除されるように修正。ログ保存とJSON記録のタイムスタンプ同期により整合性を確保。[レポート](docs/reports/2026-02-02_SessionArousal_Fixes.md)
