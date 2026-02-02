@@ -12,7 +12,7 @@ import re
 
 def _get_creative_notes_path(room_name: str) -> str:
     """創作ノートのパスを取得する"""
-    return os.path.join(constants.ROOMS_DIR, room_name, "creative_notes.md")
+    return os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME, constants.CREATIVE_NOTES_FILENAME)
 
 
 @tool
@@ -53,9 +53,12 @@ def _apply_creative_notes_edits(instructions: List[Dict[str, Any]], room_name: s
     if not isinstance(instructions, list) or not instructions:
         return "【エラー】編集指示がリスト形式ではないか、空です。"
 
-    path = _get_creative_notes_path(room_name)
+    # [2026-02-02] 書き込み前にアーカイブ判定
+    import room_manager
+    room_manager.archive_large_note(room_name, constants.CREATIVE_NOTES_FILENAME)
     
-    # ファイルが存在しない場合は空のファイルを作成
+    path = _get_creative_notes_path(room_name)
+    # アーカイブ後にパスが空になっている可能性（実際には新規作成される）を確認
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:

@@ -2544,8 +2544,10 @@ try:
                         with gr.Accordion("🎨 創作ノート", open=False):
                             gr.Markdown("ペルソナの創作活動専用スペースです。詩、物語、アイデアスケッチなど。")
                             with gr.Row():
-                                refresh_creative_notes_button = gr.Button("📚 エントリを読み込む", variant="primary")
-                                show_latest_creative_button = gr.Button("📄 最新を表示", variant="secondary")
+                                creative_notes_file_dropdown = gr.Dropdown(label="対象ファイル", choices=[constants.CREATIVE_NOTES_FILENAME], value=constants.CREATIVE_NOTES_FILENAME, scale=3)
+                                refresh_creative_file_list_button = gr.Button("📁 リスト更新", scale=1)
+                                refresh_creative_notes_button = gr.Button("📚 読込", variant="primary", scale=1)
+                                show_latest_creative_button = gr.Button("📄 最新", variant="secondary", scale=1)
                             
                             with gr.Row():
                                 creative_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1)
@@ -2591,8 +2593,10 @@ try:
                         with gr.Accordion("🔬 研究・分析ノート", open=False):
                             gr.Markdown("Web巡回ツールによる分析結果や洞察が蓄積されるスペースです。AIが自律的に更新します。")
                             with gr.Row():
-                                refresh_research_notes_button = gr.Button("📚 エントリを読み込む", variant="primary")
-                                show_latest_research_button = gr.Button("📄 最新を表示", variant="secondary")
+                                research_notes_file_dropdown = gr.Dropdown(label="対象ファイル", choices=[constants.RESEARCH_NOTES_FILENAME], value=constants.RESEARCH_NOTES_FILENAME, scale=3)
+                                refresh_research_file_list_button = gr.Button("📁 リスト更新", scale=1)
+                                refresh_research_notes_button = gr.Button("📚 読込", variant="primary", scale=1)
+                                show_latest_research_button = gr.Button("📄 最新", variant="secondary", scale=1)
                             
                             with gr.Row():
                                 research_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1)
@@ -2969,7 +2973,9 @@ try:
             room_project_exclude_dirs_input,
             room_project_exclude_files_input,
             expressions_html,
-            expression_target_dropdown
+            expression_target_dropdown,
+            creative_notes_file_dropdown,
+            research_notes_file_dropdown
         ]
 
         initial_load_outputs = [
@@ -3655,73 +3661,97 @@ try:
         reload_notepad_button.click(fn=ui_handlers.handle_reload_notepad, inputs=[current_room_name], outputs=[notepad_editor])
         clear_notepad_button.click(fn=ui_handlers.handle_clear_notepad_click, inputs=[current_room_name], outputs=[notepad_editor])
         # --- 創作ノートのイベントハンドラ ---
+        # ファイルリスト更新
+        refresh_creative_file_list_button.click(
+            fn=lambda r: ui_handlers.handle_note_file_list_refresh(r, "creative"),
+            inputs=[current_room_name],
+            outputs=[creative_notes_file_dropdown]
+        )
+        # ファイル選択変更時
+        creative_notes_file_dropdown.change(
+            fn=ui_handlers.handle_load_creative_entries,
+            inputs=[current_room_name, creative_notes_file_dropdown],
+            outputs=[creative_year_filter, creative_month_filter, creative_entry_dropdown, creative_notes_raw_editor]
+        )
         # エントリ読み込み → 年・月フィルタと日付リストを更新
         refresh_creative_notes_button.click(
             fn=ui_handlers.handle_load_creative_entries,
-            inputs=[current_room_name],
+            inputs=[current_room_name, creative_notes_file_dropdown],
             outputs=[creative_year_filter, creative_month_filter, creative_entry_dropdown, creative_notes_raw_editor]
         )
         # 最新を表示ボタン
         show_latest_creative_button.click(
             fn=ui_handlers.handle_show_latest_creative,
-            inputs=[current_room_name],
+            inputs=[current_room_name, creative_notes_file_dropdown],
             outputs=[creative_year_filter, creative_month_filter, creative_entry_dropdown, creative_notes_editor, creative_notes_raw_editor]
         )
         # フィルタ変更時 → ドロップダウン選択肢を更新
         creative_year_filter.change(
             fn=ui_handlers.handle_creative_filter_change,
-            inputs=[current_room_name, creative_year_filter, creative_month_filter],
+            inputs=[current_room_name, creative_year_filter, creative_month_filter, creative_notes_file_dropdown],
             outputs=[creative_entry_dropdown]
         )
         creative_month_filter.change(
             fn=ui_handlers.handle_creative_filter_change,
-            inputs=[current_room_name, creative_year_filter, creative_month_filter],
+            inputs=[current_room_name, creative_year_filter, creative_month_filter, creative_notes_file_dropdown],
             outputs=[creative_entry_dropdown]
         )
         # エントリ選択時 → 詳細表示
         creative_entry_dropdown.change(
             fn=ui_handlers.handle_creative_selection,
-            inputs=[current_room_name, creative_entry_dropdown],
+            inputs=[current_room_name, creative_entry_dropdown, creative_notes_file_dropdown],
             outputs=[creative_notes_editor]
         )
         # 保存・再読込
-        save_creative_notes_button.click(fn=ui_handlers.handle_save_creative_entry, inputs=[current_room_name, creative_entry_dropdown, creative_notes_editor], outputs=[creative_notes_editor])
-        reload_creative_notes_button.click(fn=ui_handlers.handle_creative_selection, inputs=[current_room_name, creative_entry_dropdown], outputs=[creative_notes_editor])
+        save_creative_notes_button.click(fn=ui_handlers.handle_save_creative_entry, inputs=[current_room_name, creative_entry_dropdown, creative_notes_editor, creative_notes_file_dropdown], outputs=[creative_notes_editor])
+        reload_creative_notes_button.click(fn=ui_handlers.handle_creative_selection, inputs=[current_room_name, creative_entry_dropdown, creative_notes_file_dropdown], outputs=[creative_notes_editor])
         # RAW編集
-        save_creative_raw_button.click(fn=ui_handlers.handle_save_creative_notes, inputs=[current_room_name, creative_notes_raw_editor], outputs=[creative_notes_raw_editor])
-        reload_creative_raw_button.click(fn=ui_handlers.handle_reload_creative_notes, inputs=[current_room_name], outputs=[creative_notes_raw_editor])
+        save_creative_raw_button.click(fn=ui_handlers.handle_save_creative_notes, inputs=[current_room_name, creative_notes_raw_editor, creative_notes_file_dropdown], outputs=[creative_notes_raw_editor])
+        reload_creative_raw_button.click(fn=ui_handlers.handle_reload_creative_notes, inputs=[current_room_name, creative_notes_file_dropdown], outputs=[creative_notes_raw_editor])
         
         # --- 研究・分析ノートのイベントハンドラ ---
+        # ファイルリスト更新
+        refresh_research_file_list_button.click(
+            fn=lambda r: ui_handlers.handle_note_file_list_refresh(r, "research"),
+            inputs=[current_room_name],
+            outputs=[research_notes_file_dropdown]
+        )
+        # ファイル選択変更時
+        research_notes_file_dropdown.change(
+            fn=ui_handlers.handle_load_research_entries,
+            inputs=[current_room_name, research_notes_file_dropdown],
+            outputs=[research_year_filter, research_month_filter, research_entry_dropdown, research_notes_raw_editor]
+        )
         refresh_research_notes_button.click(
             fn=ui_handlers.handle_load_research_entries,
-            inputs=[current_room_name],
+            inputs=[current_room_name, research_notes_file_dropdown],
             outputs=[research_year_filter, research_month_filter, research_entry_dropdown, research_notes_raw_editor]
         )
         # 最新を表示ボタン
         show_latest_research_button.click(
             fn=ui_handlers.handle_show_latest_research,
-            inputs=[current_room_name],
+            inputs=[current_room_name, research_notes_file_dropdown],
             outputs=[research_year_filter, research_month_filter, research_entry_dropdown, research_notes_editor, research_notes_raw_editor]
         )
         research_year_filter.change(
             fn=ui_handlers.handle_research_filter_change,
-            inputs=[current_room_name, research_year_filter, research_month_filter],
+            inputs=[current_room_name, research_year_filter, research_month_filter, research_notes_file_dropdown],
             outputs=[research_entry_dropdown]
         )
         research_month_filter.change(
             fn=ui_handlers.handle_research_filter_change,
-            inputs=[current_room_name, research_year_filter, research_month_filter],
+            inputs=[current_room_name, research_year_filter, research_month_filter, research_notes_file_dropdown],
             outputs=[research_entry_dropdown]
         )
         research_entry_dropdown.change(
             fn=ui_handlers.handle_research_selection,
-            inputs=[current_room_name, research_entry_dropdown],
+            inputs=[current_room_name, research_entry_dropdown, research_notes_file_dropdown],
             outputs=[research_notes_editor]
         )
-        save_research_notes_button.click(fn=ui_handlers.handle_save_research_entry, inputs=[current_room_name, research_entry_dropdown, research_notes_editor], outputs=[research_notes_editor])
-        reload_research_notes_button.click(fn=ui_handlers.handle_research_selection, inputs=[current_room_name, research_entry_dropdown], outputs=[research_notes_editor])
-        save_research_raw_button.click(fn=ui_handlers.handle_save_research_notes, inputs=[current_room_name, research_notes_raw_editor], outputs=[research_notes_raw_editor])
-        reload_research_raw_button.click(fn=ui_handlers.handle_reload_research_notes, inputs=[current_room_name], outputs=[research_notes_raw_editor])
+        save_research_notes_button.click(fn=ui_handlers.handle_save_research_entry, inputs=[current_room_name, research_entry_dropdown, research_notes_editor, research_notes_file_dropdown], outputs=[research_notes_editor])
+        reload_research_notes_button.click(fn=ui_handlers.handle_research_selection, inputs=[current_room_name, research_entry_dropdown, research_notes_file_dropdown], outputs=[research_notes_editor])
+        save_research_raw_button.click(fn=ui_handlers.handle_save_research_notes, inputs=[current_room_name, research_notes_raw_editor, research_notes_file_dropdown], outputs=[research_notes_raw_editor])
+        reload_research_raw_button.click(fn=ui_handlers.handle_reload_research_notes, inputs=[current_room_name, research_notes_file_dropdown], outputs=[research_notes_raw_editor])
         alarm_dataframe.select(
             fn=ui_handlers.handle_alarm_selection_for_all_updates,
             inputs=[alarm_dataframe_original_data],

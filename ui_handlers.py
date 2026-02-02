@@ -622,7 +622,9 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
             gr.update(value="gemini"), # embedding_provider_radio (旧: embedding_mode_radio)
             # --- [Avatar Expressions] ---
             gr.update(value=refresh_expressions_ui(room_name)), # expressions_html
-            gr.update(choices=get_all_expression_choices(room_name), value=None) # expression_target_dropdown
+            gr.update(choices=get_all_expression_choices(room_name), value=None), # expression_target_dropdown
+            gr.update(choices=[constants.CREATIVE_NOTES_FILENAME], value=constants.CREATIVE_NOTES_FILENAME), # creative_notes_file_dropdown
+            gr.update(choices=[constants.RESEARCH_NOTES_FILENAME], value=constants.RESEARCH_NOTES_FILENAME) # research_notes_file_dropdown
         )
 
     # --- 【通常モード】 ---
@@ -904,11 +906,13 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         gr.update(value=project_exclude_files), # room_project_exclude_files_input
         # --- [Avatar Expressions] ---
         gr.update(value=refresh_expressions_ui(room_name)), # expressions_html
-        gr.update(choices=get_all_expression_choices(room_name), value=None) # expression_target_dropdown
+        gr.update(choices=get_all_expression_choices(room_name), value=None), # expression_target_dropdown
+        gr.update(choices=room_manager.get_note_files(room_name, 'creative'), value=constants.CREATIVE_NOTES_FILENAME), # creative_notes_file_dropdown
+        gr.update(choices=room_manager.get_note_files(room_name, 'research'), value=constants.RESEARCH_NOTES_FILENAME) # research_notes_file_dropdown
     )
 
 
-def handle_initial_load(room_name: str = None, expected_count: int = 176):
+def handle_initial_load(room_name: str = None, expected_count: int = 178):
     """
     【v11: 時間デフォルト対応版】
     UIセッションが開始されるたびに、UIコンポーネントの初期状態を完全に再構築する、唯一の司令塔。
@@ -2574,7 +2578,7 @@ def handle_save_room_config(folder_name: str, room_name: str, user_display_name:
         traceback.print_exc()
         return gr.update(), gr.update()
 
-def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name: str, current_room_name: str = None, expected_count: int = 153):
+def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name: str, current_room_name: str = None, expected_count: int = 155):
     """
     【v7: 引数順序修正版】
     ルームを削除し、統一契約に従って常に正しい数の戻り値を返す。
@@ -4452,36 +4456,42 @@ def handle_reload_notepad(room_name: str) -> str:
     content = load_notepad_content(room_name); gr.Info(f"「{room_name}」のメモ帳を再読み込みしました。"); return content
 
 # --- 創作ノートのハンドラ ---
-def _get_creative_notes_path(room_name: str) -> str:
+def _get_creative_notes_path(room_name: str, filename: str = None) -> str:
     """創作ノートのパスを取得"""
-    return os.path.join(constants.ROOMS_DIR, room_name, "creative_notes.md")
+    if not filename:
+        filename = constants.CREATIVE_NOTES_FILENAME
+    return os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME, filename)
 
-def load_creative_notes_content(room_name: str) -> str:
+def load_creative_notes_content(room_name: str, filename: str = None) -> str:
     """創作ノートの内容を読み込む"""
     if not room_name: return ""
-    path = _get_creative_notes_path(room_name)
+    path = _get_creative_notes_path(room_name, filename)
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f: return f.read()
     return ""
 
-def handle_save_creative_notes(room_name: str, content: str) -> str:
+def handle_save_creative_notes(room_name: str, content: str, filename: str = None) -> str:
     """創作ノートを保存"""
     if not room_name: gr.Warning("ルームが選択されていません。"); return content
-    path = _get_creative_notes_path(room_name)
+    # 書き込み前にアーカイブ判定 (最新ファイルの場合のみ)
+    if not filename or filename == constants.CREATIVE_NOTES_FILENAME:
+        room_manager.archive_large_note(room_name, constants.CREATIVE_NOTES_FILENAME)
+    
+    path = _get_creative_notes_path(room_name, filename)
     try:
         with open(path, "w", encoding="utf-8") as f: f.write(content)
         gr.Info(f"「{room_name}」の創作ノートを保存しました。"); return content
     except Exception as e: gr.Error(f"創作ノートの保存エラー: {e}"); return content
 
-def handle_reload_creative_notes(room_name: str) -> str:
+def handle_reload_creative_notes(room_name: str, filename: str = None) -> str:
     """創作ノートを再読み込み"""
     if not room_name: gr.Warning("ルームが選択されていません。"); return ""
-    content = load_creative_notes_content(room_name); gr.Info(f"「{room_name}」の創作ノートを再読み込みしました。"); return content
+    content = load_creative_notes_content(room_name, filename); gr.Info(f"「{room_name}」の創作ノートを再読み込みしました。"); return content
 
-def handle_clear_creative_notes(room_name: str) -> str:
+def handle_clear_creative_notes(room_name: str, filename: str = None) -> str:
     """創作ノートを空にする"""
     if not room_name: gr.Warning("ルームが選択されていません。"); return ""
-    path = _get_creative_notes_path(room_name)
+    path = _get_creative_notes_path(room_name, filename)
     try:
         with open(path, "w", encoding="utf-8") as f: f.write("")
         gr.Info(f"「{room_name}」の創作ノートを空にしました。"); return ""
@@ -4543,14 +4553,14 @@ def _parse_notes_entries(content: str) -> list:
     return entries[::-1]
 
 
-def handle_load_creative_entries(room_name: str):
+def handle_load_creative_entries(room_name: str, filename: str = None):
     """創作ノートのエントリを読み込み、UIを更新"""
     if not room_name:
         return gr.update(choices=["すべて"]), gr.update(choices=["すべて"]), gr.update(choices=[]), ""
     
-    content = load_creative_notes_content(room_name)
+    content = load_creative_notes_content(room_name, filename)
     if not content.strip():
-        gr.Info("創作ノートは空です。")
+        gr.Info("対象の創作ノートは空です。")
         return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), content
     
     entries = _parse_notes_entries(content)
@@ -4586,7 +4596,7 @@ def handle_load_creative_entries(room_name: str):
     )
 
 
-def handle_show_latest_creative(room_name: str):
+def handle_show_latest_creative(room_name: str, filename: str = None):
     """創作ノートを読み込み、最新のエントリを自動的に選択して表示する。
     
     Returns:
@@ -4595,9 +4605,9 @@ def handle_show_latest_creative(room_name: str):
     if not room_name:
         return gr.update(choices=["すべて"]), gr.update(choices=["すべて"]), gr.update(choices=[]), "", ""
     
-    content = load_creative_notes_content(room_name)
+    content = load_creative_notes_content(room_name, filename)
     if not content.strip():
-        gr.Info("創作ノートは空です。")
+        gr.Info("対象の創作ノートは空です。")
         return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
     
     entries = _parse_notes_entries(content)
@@ -4631,7 +4641,7 @@ def handle_show_latest_creative(room_name: str):
     latest_entry = entries[0]
     latest_content = latest_entry.get("content", "")
     
-    gr.Info("最新の創作ノートを表示しています。")
+    gr.Info("最新エントリを表示しています。")
     return (
         gr.update(choices=year_choices, value="すべて"),
         gr.update(choices=month_choices, value="すべて"),
@@ -4641,12 +4651,12 @@ def handle_show_latest_creative(room_name: str):
     )
 
 
-def handle_creative_filter_change(room_name: str, year: str, month: str):
+def handle_creative_filter_change(room_name: str, year: str, month: str, filename: str = None):
     """創作ノートのフィルタ変更時にドロップダウン選択肢を更新"""
     if not room_name:
         return gr.update(choices=[])
     
-    content = load_creative_notes_content(room_name)
+    content = load_creative_notes_content(room_name, filename)
     entries = _parse_notes_entries(content)
     
     choices = []
@@ -4667,14 +4677,14 @@ def handle_creative_filter_change(room_name: str, year: str, month: str):
     return gr.update(choices=choices, value=None)
 
 
-def handle_creative_selection(room_name: str, selected_idx: str):
+def handle_creative_selection(room_name: str, selected_idx: str, filename: str = None):
     """創作ノートのエントリ選択時に詳細を表示"""
     if not room_name or selected_idx is None:
         return ""
     
     try:
         idx = int(selected_idx)
-        content = load_creative_notes_content(room_name)
+        content = load_creative_notes_content(room_name, filename)
         entries = _parse_notes_entries(content)
         
         if 0 <= idx < len(entries):
@@ -4686,7 +4696,7 @@ def handle_creative_selection(room_name: str, selected_idx: str):
         return ""
 
 
-def handle_save_creative_entry(room_name: str, selected_idx: str, new_content: str):
+def handle_save_creative_entry(room_name: str, selected_idx: str, new_content: str, filename: str = None):
     """選択された創作ノートエントリを保存（エントリ内容のみ更新）"""
     if not room_name:
         gr.Warning("ルームが選択されていません。")
@@ -4698,7 +4708,7 @@ def handle_save_creative_entry(room_name: str, selected_idx: str, new_content: s
     
     try:
         idx = int(selected_idx)
-        content = load_creative_notes_content(room_name)
+        content = load_creative_notes_content(room_name, filename)
         entries = _parse_notes_entries(content)
         
         if 0 <= idx < len(entries):
@@ -4714,7 +4724,10 @@ def handle_save_creative_entry(room_name: str, selected_idx: str, new_content: s
             # 全文の中で置き換え
             updated_content = content.replace(old_section, new_section, 1)
             
-            path = _get_creative_notes_path(room_name)
+            # 最新ファイルの場合のみ、保存直前にアーカイブチェックを行う (handle_save_creative_notesと同様のロジックを期待するなら)
+            # ただし、ここでは特定エントリの更新なので、そのまま上書きで良い。
+            
+            path = _get_creative_notes_path(room_name, filename)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(updated_content)
             
@@ -4728,28 +4741,36 @@ def handle_save_creative_entry(room_name: str, selected_idx: str, new_content: s
         return new_content
 
 # --- 研究・分析ノートのハンドラ ---
-def load_research_notes_content(room_name: str) -> str:
+def _get_research_notes_path(room_name: str, filename: str = None) -> str:
+    """研究ノートのパスを取得"""
+    if not filename:
+        filename = constants.RESEARCH_NOTES_FILENAME
+    return os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME, filename)
+
+def load_research_notes_content(room_name: str, filename: str = None) -> str:
     """研究ノートの内容を読み込む"""
     if not room_name: return ""
-    _, _, _, _, _, research_notes_path = room_manager.get_room_files_paths(room_name)
-    if research_notes_path and os.path.exists(research_notes_path):
-        with open(research_notes_path, "r", encoding="utf-8") as f:
+    path = _get_research_notes_path(room_name, filename)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
             return f.read()
     return ""
 
-def handle_save_research_notes(room_name: str, content: str) -> str:
+def handle_save_research_notes(room_name: str, content: str, filename: str = None) -> str:
     """研究ノートを保存"""
     if not room_name:
         gr.Warning("ルームが選択されていません。")
         return content
-    _, _, _, _, _, research_notes_path = room_manager.get_room_files_paths(room_name)
-    if not research_notes_path:
-        gr.Error(f"「{room_name}」の研究ノートパス取得失敗。")
-        return content
+    
+    # 書き込み前にアーカイブ判定 (最新ファイルの場合のみ)
+    if not filename or filename == constants.RESEARCH_NOTES_FILENAME:
+        room_manager.archive_large_note(room_name, constants.RESEARCH_NOTES_FILENAME)
+        
+    path = _get_research_notes_path(room_name, filename)
     try:
-        # バックアップ作成（一応ノート系として扱う）
+        # バックアップ作成
         room_manager.create_backup(room_name, 'research_notes')
-        with open(research_notes_path, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         gr.Info(f"「{room_name}」の研究ノートを保存しました。")
         return content
@@ -4757,26 +4778,23 @@ def handle_save_research_notes(room_name: str, content: str) -> str:
         gr.Error(f"研究ノートの保存エラー: {e}")
         return content
 
-def handle_reload_research_notes(room_name: str) -> str:
+def handle_reload_research_notes(room_name: str, filename: str = None) -> str:
     """研究ノートを再読み込み"""
     if not room_name:
         gr.Warning("ルームが選択されていません。")
         return ""
-    content = load_research_notes_content(room_name)
+    content = load_research_notes_content(room_name, filename)
     gr.Info(f"「{room_name}」の研究ノートを再読み込みしました。")
     return content
 
-def handle_clear_research_notes(room_name: str) -> str:
+def handle_clear_research_notes(room_name: str, filename: str = None) -> str:
     """研究ノートを空にする"""
     if not room_name:
         gr.Warning("ルームが選択されていません。")
         return ""
-    _, _, _, _, _, research_notes_path = room_manager.get_room_files_paths(room_name)
-    if not research_notes_path:
-        gr.Error(f"「{room_name}」の研究ノートパス取得失敗。")
-        return ""
+    path = _get_research_notes_path(room_name, filename)
     try:
-        with open(research_notes_path, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("")
         gr.Info(f"「{room_name}」の研究ノートを空にしました。")
         return ""
@@ -4785,16 +4803,16 @@ def handle_clear_research_notes(room_name: str) -> str:
         return f"エラー: {e}"
 
 
-# --- 研究ノート：エントリベースのハンドラ（新規追加） ---
+# --- 研究ノート：エントリベースのハンドラ ---
 
-def handle_load_research_entries(room_name: str):
+def handle_load_research_entries(room_name: str, filename: str = None):
     """研究ノートのエントリを読み込み、UIを更新"""
     if not room_name:
         return gr.update(choices=["すべて"]), gr.update(choices=["すべて"]), gr.update(choices=[]), ""
     
-    content = load_research_notes_content(room_name)
+    content = load_research_notes_content(room_name, filename)
     if not content.strip():
-        gr.Info("研究ノートは空です。")
+        gr.Info("対象の研究ノートは空です。")
         return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), content
     
     entries = _parse_notes_entries(content)
@@ -4829,7 +4847,7 @@ def handle_load_research_entries(room_name: str):
     )
 
 
-def handle_show_latest_research(room_name: str):
+def handle_show_latest_research(room_name: str, filename: str = None):
     """研究ノートを読み込み、最新のエントリを自動的に選択して表示する。
     
     Returns:
@@ -4838,9 +4856,9 @@ def handle_show_latest_research(room_name: str):
     if not room_name:
         return gr.update(choices=["すべて"]), gr.update(choices=["すべて"]), gr.update(choices=[]), "", ""
     
-    content = load_research_notes_content(room_name)
+    content = load_research_notes_content(room_name, filename)
     if not content.strip():
-        gr.Info("研究ノートは空です。")
+        gr.Info("対象の研究ノートは空です。")
         return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
     
     entries = _parse_notes_entries(content)
@@ -4874,7 +4892,7 @@ def handle_show_latest_research(room_name: str):
     latest_entry = entries[0]
     latest_content = latest_entry.get("content", "")
     
-    gr.Info("最新の研究ノートを表示しています。")
+    gr.Info("最新エントリを表示しています。")
     return (
         gr.update(choices=year_choices, value="すべて"),
         gr.update(choices=month_choices, value="すべて"),
@@ -4884,12 +4902,12 @@ def handle_show_latest_research(room_name: str):
     )
 
 
-def handle_research_filter_change(room_name: str, year: str, month: str):
+def handle_research_filter_change(room_name: str, year: str, month: str, filename: str = None):
     """研究ノートのフィルタ変更時にドロップダウン選択肢を更新"""
     if not room_name:
         return gr.update(choices=[])
     
-    content = load_research_notes_content(room_name)
+    content = load_research_notes_content(room_name, filename)
     entries = _parse_notes_entries(content)
     
     choices = []
@@ -4909,14 +4927,14 @@ def handle_research_filter_change(room_name: str, year: str, month: str):
     return gr.update(choices=choices, value=None)
 
 
-def handle_research_selection(room_name: str, selected_idx: str):
+def handle_research_selection(room_name: str, selected_idx: str, filename: str = None):
     """研究ノートのエントリ選択時に詳細を表示"""
     if not room_name or selected_idx is None:
         return ""
     
     try:
         idx = int(selected_idx)
-        content = load_research_notes_content(room_name)
+        content = load_research_notes_content(room_name, filename)
         entries = _parse_notes_entries(content)
         
         if 0 <= idx < len(entries):
@@ -4928,7 +4946,7 @@ def handle_research_selection(room_name: str, selected_idx: str):
         return ""
 
 
-def handle_save_research_entry(room_name: str, selected_idx: str, new_content: str):
+def handle_save_research_entry(room_name: str, selected_idx: str, new_content: str, filename: str = None):
     """選択された研究ノートエントリを保存（エントリ内容のみ更新）"""
     if not room_name:
         gr.Warning("ルームが選択されていません。")
@@ -4940,22 +4958,21 @@ def handle_save_research_entry(room_name: str, selected_idx: str, new_content: s
     
     try:
         idx = int(selected_idx)
-        content = load_research_notes_content(room_name)
+        content = load_research_notes_content(room_name, filename)
         entries = _parse_notes_entries(content)
         
         if 0 <= idx < len(entries):
             old_section = entries[idx]["raw_section"]
             timestamp = entries[idx]["timestamp"]
             if timestamp != "日付なし":
-                # 他のノートと形式を統一し、重複するラベルを削除
                 new_section = f"📝 {timestamp}\n{new_content.strip()}"
             else:
                 new_section = new_content.strip()
             
             updated_content = content.replace(old_section, new_section, 1)
             
-            _, _, _, _, _, research_notes_path = room_manager.get_room_files_paths(room_name)
-            with open(research_notes_path, "w", encoding="utf-8") as f:
+            path = _get_research_notes_path(room_name, filename)
+            with open(path, "w", encoding="utf-8") as f:
                 f.write(updated_content)
             
             gr.Info(f"エントリを保存しました。")
@@ -4966,6 +4983,23 @@ def handle_save_research_entry(room_name: str, selected_idx: str, new_content: s
     except Exception as e:
         gr.Error(f"保存エラー: {e}")
         return new_content
+
+def handle_note_file_list_refresh(room_name: str, note_type: str):
+    """指定されたノート種別のファイルリストを更新してDropdownを返す"""
+    if not room_name:
+        return gr.update(choices=[], value=None)
+    
+    files = room_manager.get_note_files(room_name, note_type)
+    if not files:
+        # フォールバック: デフォルトファイル名を表示
+        default_filenam_map = {
+            'notepad': constants.NOTEPAD_FILENAME,
+            'research': constants.RESEARCH_NOTES_FILENAME,
+            'creative': constants.CREATIVE_NOTES_FILENAME
+        }
+        files = [default_filenam_map.get(note_type, "notes.md")]
+    
+    return gr.update(choices=files, value=files[0])
 
 def render_alarms_as_dataframe():
     alarms = sorted(alarm_manager.load_alarms(), key=lambda x: x.get("time", "")); all_rows = []
@@ -5895,7 +5929,7 @@ def handle_world_builder_load(room_name: str):
         gr.update(choices=place_choices_for_selected_area, value=current_location)
     )
 
-def handle_room_change_for_all_tabs(room_name: str, api_key_name: str, current_room_state: str, expected_count: int = 153):
+def handle_room_change_for_all_tabs(room_name: str, api_key_name: str, current_room_state: str, expected_count: int = 155):
     """
     【v11: 最終契約遵守版】
     ルーム変更時に、全てのUI更新と内部状態の更新を、この単一の関数で完結させる。

@@ -656,26 +656,51 @@ class RAGManager:
                     except Exception as e:
                         print(f"  - 日記ファイル読み込みエラー ({f.name}): {e}")
 
-        # [2026-01-10] 研究・分析ノート収集
-        research_notes_path = self.room_dir / constants.RESEARCH_NOTES_FILENAME
-        if research_notes_path.exists():
-            try:
-                content = research_notes_path.read_text(encoding="utf-8")
-                if content.strip():
-                    content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
-                    record_id = f"research_notes:{content_hash}"
-                    if record_id not in processed_records:
-                        doc = Document(
-                            page_content=content,
-                            metadata={
-                                "source": constants.RESEARCH_NOTES_FILENAME,
-                                "type": "research_notes",
-                                "path": str(research_notes_path)
-                            }
-                        )
-                        pending_items.append((record_id, doc))
-            except Exception as e:
-                print(f"  - 研究ノート読み込みエラー: {e}")
+        # [2026-02-02] ノート類収集 (research_notes, creative_notes およびアーカイブ)
+        notes_dir = self.room_dir / constants.NOTES_DIR_NAME
+        if notes_dir.exists():
+            # 1. 最新のノート (research_notes.md, creative_notes.md)
+            for filename in [constants.RESEARCH_NOTES_FILENAME, constants.CREATIVE_NOTES_FILENAME]:
+                note_path = notes_dir / filename
+                if note_path.exists():
+                    try:
+                        content = note_path.read_text(encoding="utf-8")
+                        if content.strip():
+                            content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
+                            record_id = f"note:{filename}:{content_hash}"
+                            if record_id not in processed_records:
+                                doc = Document(
+                                    page_content=content,
+                                    metadata={
+                                        "source": filename,
+                                        "type": "note",
+                                        "path": str(note_path)
+                                    }
+                                )
+                                pending_items.append((record_id, doc))
+                    except Exception as e:
+                        print(f"  - ノート読み込みエラー ({filename}): {e}")
+
+            # 2. アーカイブされたノート (notes/archives/*.md)
+            archives_dir = notes_dir / "archives"
+            if archives_dir.exists():
+                for arch_f in list(archives_dir.glob("*.md")):
+                    try:
+                        record_id = f"note_archive:{arch_f.name}"
+                        if record_id not in processed_records:
+                            content = arch_f.read_text(encoding="utf-8")
+                            if content.strip():
+                                doc = Document(
+                                    page_content=content,
+                                    metadata={
+                                        "source": arch_f.name,
+                                        "type": "note_archive",
+                                        "path": str(arch_f)
+                                    }
+                                )
+                                pending_items.append((record_id, doc))
+                    except Exception as e:
+                        print(f"  - アーカイブノート読み込みエラー ({arch_f.name}): {e}")
 
         # 5. 現行ログ (log.txt) - 動的インデックスで処理するため、ここでは除外
         # 現行ログは頻繁に変更されるため、毎回再構築する動的インデックス側で処理する方が効率的
@@ -813,26 +838,51 @@ class RAGManager:
                     except Exception as e:
                         print(f"  - 日記ファイル読み込みエラー ({f.name}): {e}")
 
-        # [2026-01-10] 研究・分析ノート収集
-        research_notes_path = self.room_dir / constants.RESEARCH_NOTES_FILENAME
-        if research_notes_path.exists():
-            try:
-                content = research_notes_path.read_text(encoding="utf-8")
-                if content.strip():
-                    content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
-                    record_id = f"research_notes:{content_hash}"
-                    if record_id not in processed_records:
-                        doc = Document(
-                            page_content=content,
-                            metadata={
-                                "source": constants.RESEARCH_NOTES_FILENAME,
-                                "type": "research_notes",
-                                "path": str(research_notes_path)
-                            }
-                        )
-                        pending_items.append((record_id, doc))
-            except Exception as e:
-                print(f"  - 研究ノート読み込みエラー: {e}")
+        # [2026-02-02] ノート類収集 (research_notes, creative_notes およびアーカイブ)
+        notes_dir = self.room_dir / constants.NOTES_DIR_NAME
+        if notes_dir.exists():
+            # 1. 最新のノート (research_notes.md, creative_notes.md)
+            for filename in [constants.RESEARCH_NOTES_FILENAME, constants.CREATIVE_NOTES_FILENAME]:
+                note_path = notes_dir / filename
+                if note_path.exists():
+                    try:
+                        content = note_path.read_text(encoding="utf-8")
+                        if content.strip():
+                            content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
+                            record_id = f"note:{filename}:{content_hash}"
+                            if record_id not in processed_records:
+                                doc = Document(
+                                    page_content=content,
+                                    metadata={
+                                        "source": filename,
+                                        "type": "note",
+                                        "path": str(note_path)
+                                    }
+                                )
+                                pending_items.append((record_id, doc))
+                    except Exception as e:
+                        print(f"  - ノート読み込みエラー ({filename}): {e}")
+
+            # 2. アーカイブされたノート (notes/archives/*.md)
+            archives_dir = notes_dir / "archives"
+            if archives_dir.exists():
+                for arch_f in list(archives_dir.glob("*.md")):
+                    try:
+                        record_id = f"note_archive:{arch_f.name}"
+                        if record_id not in processed_records:
+                            content = arch_f.read_text(encoding="utf-8")
+                            if content.strip():
+                                doc = Document(
+                                    page_content=content,
+                                    metadata={
+                                        "source": arch_f.name,
+                                        "type": "note_archive",
+                                        "path": str(arch_f)
+                                    }
+                                )
+                                pending_items.append((record_id, doc))
+                    except Exception as e:
+                        print(f"  - アーカイブノート読み込みエラー ({arch_f.name}): {e}")
 
         if not pending_items:
             yield (0, 0, "記憶索引: 差分なし")

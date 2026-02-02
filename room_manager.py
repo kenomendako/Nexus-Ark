@@ -65,7 +65,9 @@ def ensure_room_files(room_name: str) -> bool:
             os.path.join(base_path, "log_archives", "processed"),
             os.path.join(base_path, "log_import_source", "processed"),
             os.path.join(base_path, "memory"),
-            os.path.join(base_path, "private")
+            os.path.join(base_path, "private"),
+            os.path.join(base_path, constants.NOTES_DIR_NAME),
+            os.path.join(base_path, constants.NOTES_DIR_NAME, "archives")
         ]
         # ▼▼▼【ここから下のブロックをまるごと追加】▼▼▼
         # バックアップ用のサブディレクトリを追加
@@ -80,6 +82,7 @@ def ensure_room_files(room_name: str) -> bool:
             os.path.join(backup_base_dir, "secret_diaries"),
             os.path.join(backup_base_dir, "configs"),
             os.path.join(backup_base_dir, "research_notes"),
+            os.path.join(backup_base_dir, "creative_notes"),
         ]
         dirs_to_create.append(backup_base_dir)
         dirs_to_create.extend(backup_sub_dirs)
@@ -112,6 +115,9 @@ def ensure_room_files(room_name: str) -> bool:
             if not os.path.exists(file_path):
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(content)
+
+        # レガシーなノートファイルを新しい場所へ移動
+        _migrate_legacy_notes(room_name)
 
         # JSONベースのファイル
         json_files_to_create = {
@@ -243,10 +249,107 @@ def get_room_files_paths(room_name: str) -> Optional[Tuple[str, str, Optional[st
     profile_image_path = os.path.join(base_path, constants.PROFILE_IMAGE_FILENAME)
     # memory.txt へのパスを memory/memory_main.txt に変更
     memory_main_path = os.path.join(base_path, "memory", "memory_main.txt")
-    notepad_path = os.path.join(base_path, constants.NOTEPAD_FILENAME)
-    research_notes_path = os.path.join(base_path, constants.RESEARCH_NOTES_FILENAME)
+    
+    # ノート類を notes/ フォルダへ集約 (v2026-02-02)
+    notes_base = os.path.join(base_path, constants.NOTES_DIR_NAME)
+    notepad_path = os.path.join(notes_base, constants.NOTEPAD_FILENAME)
+    research_notes_path = os.path.join(notes_base, constants.RESEARCH_NOTES_FILENAME)
+    
     if not os.path.exists(profile_image_path): profile_image_path = None
     return log_file, system_prompt_file, profile_image_path, memory_main_path, notepad_path, research_notes_path
+
+def get_creative_notes_path(room_name: str) -> str:
+    """創作ノートの最新ファイルパスを返す"""
+    return os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME, constants.CREATIVE_NOTES_FILENAME)
+
+def _migrate_legacy_notes(room_name: str):
+    """ルーム直下の古いノートファイルを notes/ へ移動する"""
+    base_path = os.path.join(constants.ROOMS_DIR, room_name)
+    notes_dir = os.path.join(base_path, constants.NOTES_DIR_NAME)
+    
+    legacy_files = [
+        constants.NOTEPAD_FILENAME,
+        constants.RESEARCH_NOTES_FILENAME,
+        constants.CREATIVE_NOTES_FILENAME
+    ]
+    
+    for filename in legacy_files:
+        old_path = os.path.join(base_path, filename)
+        new_path = os.path.join(notes_dir, filename)
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            print(f"--- [移行] {filename} を {constants.NOTES_DIR_NAME}/ へ移動します ---")
+            shutil.move(old_path, new_path)
+
+def get_note_files(room_name: str, note_type: str) -> List[str]:
+    """
+    指定されたノート種別のファイルリスト（最新 + アーカイブ）を返す。
+    最新がリストの先頭になります。
+    note_type: 'notepad', 'research', 'creative'
+    """
+    if not room_name: return []
+    notes_dir = os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME)
+    archives_dir = os.path.join(notes_dir, "archives")
+    
+    filename_map = {
+        'notepad': constants.NOTEPAD_FILENAME,
+        'research': constants.RESEARCH_NOTES_FILENAME,
+        'creative': constants.CREATIVE_NOTES_FILENAME
+    }
+    base_filename = filename_map.get(note_type)
+    if not base_filename: return []
+    
+    files = []
+    # 最新
+    main_file = os.path.join(notes_dir, base_filename)
+    if os.path.exists(main_file):
+        files.append(base_filename)
+        
+    # アーカイブ
+    if os.path.exists(archives_dir):
+        # archive_YYYYMMDD_HHMMSS_filename.md のような形式を想定
+        prefix = f"archive_"
+        suffix = f"_{base_filename}"
+        archives = [f for f in os.listdir(archives_dir) if f.startswith(prefix) and f.endswith(suffix)]
+        # 新しい順にソート
+        archives.sort(reverse=True)
+        files.extend(archives)
+        
+    return files
+
+def archive_large_note(room_name: str, filename: str) -> bool:
+    """
+    指定されたノートファイルが上限サイズを超えている場合、
+    内容をアーカイブフォルダへ移動（分割）する。
+    """
+    if not room_name or not filename: return False
+    
+    notes_dir = os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME)
+    archives_dir = os.path.join(notes_dir, "archives")
+    file_path = os.path.join(notes_dir, filename)
+    
+    if not os.path.exists(file_path):
+        return False
+        
+    if os.path.getsize(file_path) < constants.NOTES_MAX_SIZE_BYTES:
+        return False
+        
+    try:
+        os.makedirs(archives_dir, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_name = f"archive_{timestamp}_{filename}"
+        archive_path = os.path.join(archives_dir, archive_name)
+        
+        print(f"--- [アーカイブ] {filename} が制限を超えたため、{archive_name} へ退避します ---")
+        shutil.copy2(file_path, archive_path)
+        
+        # 元ファイルをクリア（またはヘッダーだけ残すなどの処理も検討可能だが、基本は空にする）
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("")
+            
+        return True
+    except Exception as e:
+        print(f"!!! アーカイブ処理失敗: {e}")
+        return False
 
 def get_world_settings_path(room_name: str):
     if not room_name or not ensure_room_files(room_name): return None
@@ -312,8 +415,9 @@ def create_backup(room_name: str, file_type: str) -> Optional[str]:
         'core_memory': ("core_memory.txt", os.path.join(constants.ROOMS_DIR, room_name, "core_memory.txt")),
         'secret_diary': ("secret_diary.txt", os.path.join(constants.ROOMS_DIR, room_name, "private", "secret_diary.txt")),
         'room_config': ("room_config.json", os.path.join(constants.ROOMS_DIR, room_name, "room_config.json")),
-        'creative_notes': ("creative_notes.md", os.path.join(constants.ROOMS_DIR, room_name, "creative_notes.md")),
-        'research_notes': (constants.RESEARCH_NOTES_FILENAME, os.path.join(constants.ROOMS_DIR, room_name, constants.RESEARCH_NOTES_FILENAME))
+        'creative_notes': (constants.CREATIVE_NOTES_FILENAME, get_creative_notes_path(room_name)),
+        'research_notes': (constants.RESEARCH_NOTES_FILENAME, os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME, constants.RESEARCH_NOTES_FILENAME)),
+        'notepad': (constants.NOTEPAD_FILENAME, os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME, constants.NOTEPAD_FILENAME))
     }
     folder_map = {
         'log': "logs", 'memory': "memories", 'notepad': "notepads",

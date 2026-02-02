@@ -18,6 +18,9 @@ RESEARCH_NOTES_FILENAME = "research_notes.md"  # Phase 3: 研究・分析ノー�
 CONFIG_FILE = "config.json"
 ALARMS_FILE = "alarms.json"
 REDACTION_RULES_FILE = "redaction_rules.json"
+NOTES_DIR_NAME = "notes"
+CREATIVE_NOTES_FILENAME = "creative_notes.md"
+NOTES_MAX_SIZE_BYTES = 200 * 1024  # 200KB
 
 
 # --- UIとAPIの挙動に関する定数 ---

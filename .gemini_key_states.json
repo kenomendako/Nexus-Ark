@@ -1,10 +1,10 @@
 {
   "bakeno": {
-    "exhausted": false,
-    "exhausted_at": 1769927476.1240208
+    "exhausted": true,
+    "exhausted_at": 1770039741.7323472
   },
   "menkenongi": {
-    "exhausted": true,
+    "exhausted": false,
     "exhausted_at": 1769930067.770082
   }
 }

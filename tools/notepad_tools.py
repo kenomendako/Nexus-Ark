@@ -41,6 +41,11 @@ def _apply_notepad_edits(instructions: List[Dict[str, Any]], room_name: str) -> 
     if not notepad_path or not os.path.exists(notepad_path):
         return f"【エラー】ルーム'{room_name}'のメモ帳ファイルパスが見つかりません。"
 
+    # [2026-02-02] 書き込み前にアーカイブ判定
+    import room_manager
+    import constants
+    room_manager.archive_large_note(room_name, constants.NOTEPAD_FILENAME)
+
     try:
         with open(notepad_path, 'r', encoding='utf-8') as f:
             lines = f.read().split('\n')
