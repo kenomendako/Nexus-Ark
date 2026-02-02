@@ -1646,7 +1646,7 @@ def _stream_and_handle_response(
                                 if emotion_match:
                                     detected_category = emotion_match.group(1).lower()
                                     detected_intensity = float(emotion_match.group(2))
-                                    valid_categories = ["joy", "anxious", "sadness", "anger", "neutral"]
+                                    valid_categories = ["joy", "contentment", "protective", "anxious", "sadness", "anger", "neutral"]
                                     if detected_category in valid_categories:
                                         try:
                                             from motivation_manager import MotivationManager

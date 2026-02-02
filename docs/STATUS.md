@@ -1,5 +1,6 @@
 # 📊 プロジェクトステータス
 
+| 2026-02-02 | **感情カテゴリ同期の不整合修正**<br>・AIが出力する内的感情タグのパース時ホワイトリストを更新<br>・`contentment` と `protective` を正しく内的状態に反映するよう修正 | - |
 | 2026-02-02 | **SessionArousal蓄積ロジックの改善**<br>・エラー時や空応答時のArousal蓄積を防止<br>・メッセージ削除・再生成時に対応するArousalデータを自動クリーンアップ<br>・`session_arousal_manager.py` にセッション削除機能を追加 | [レポート](reports/2026-02-02_fix_session_arousal_accumulation.md) |
 | 2026-02-02 | **表情管理システムの洗練とプロンプト同期の改善**<br>・UIの表情リストとAIシステムプロンプトの完全同期を実装<br>・表情ドロップダウンの項目整理と標準感情カテゴリの管理解放<br>・内的感情としての `contentment`/`protective` 保持と表情タグの整合性修正 | [レポート](reports/2026-02-02_refine_avatar_expressions.md) |
 | 2026-02-01 | **APIキーローテーションの高速化（429 発生時の冗長リトライ削減）**<br>・`agent_node` の 429 発生時リトライを廃止し、即座に例外を送出<br>・ローテーション時の待機時間を 10分の1 (0.1s) に短縮 | [レポート](reports/2026-02-01_retry_fix_report.md) |
