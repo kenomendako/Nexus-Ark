@@ -1867,8 +1867,12 @@ def _stream_and_handle_response(
                     print(f"    - ペルソナ感情: {persona_emotion_before} → {persona_emotion_after}")
                 
                 # --- [Phase 2] Arousalを永続保存 ---
-                import session_arousal_manager
-                session_arousal_manager.add_arousal_score(soul_vessel_room, arousal_score)
+                # [修正] AIメッセージが正常に生成された（文字数がある）場合のみ蓄積する
+                if last_ai_message:
+                    import session_arousal_manager
+                    session_arousal_manager.add_arousal_score(soul_vessel_room, arousal_score)
+                else:
+                    print(f"  - [Arousal] AI応答が空または未完成のため、蓄積をスキップします")
         except Exception as e:
             print(f"  - [Arousal] 計算エラー: {e}")
         # --- Arousal計算ここまで ---
@@ -2251,10 +2255,11 @@ def handle_rerun_button_click(
     is_ai_or_system_message = selected_message.get("role") in ("AGENT", "SYSTEM")
 
     restored_input_text = None
+    deleted_timestamp = None
     if is_ai_or_system_message:
-        restored_input_text = utils.delete_and_get_previous_user_input(log_f, selected_message)
+        restored_input_text, deleted_timestamp = utils.delete_and_get_previous_user_input(log_f, selected_message)
     else: # ユーザー発言の場合
-        restored_input_text = utils.delete_user_message_and_after(log_f, selected_message)
+        restored_input_text, _ = utils.delete_user_message_and_after(log_f, selected_message)
 
     if restored_input_text is None:
         gr.Error("ログの巻き戻しに失敗しました。再生成できません。")
@@ -2265,6 +2270,12 @@ def handle_rerun_button_click(
                gr.update(), gr.update(), gr.update(), console_content, console_content,
                gr.update(visible=True, interactive=True), gr.update(interactive=True), gr.update(), gr.update(), gr.update())  # [v21] 16要素
         return
+
+    # [SessionArousal] 再生成対象のAIメッセージのArousalデータを削除
+    if deleted_timestamp:
+        import session_arousal_manager
+        today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+        session_arousal_manager.remove_arousal_session(room_name, today_str, deleted_timestamp)
 
     # 2. 巻き戻したユーザー発言に、新しいタイムスタンプを付加してログに再保存
     timestamp = f"\n\n{datetime.datetime.now().strftime('%Y-%m-%d (%a) %H:%M:%S')}"
@@ -3066,8 +3077,14 @@ def handle_delete_button_click(
     # ▲▲▲【書き換えここまで】▲▲▲
 
     log_f, _, _, _, _, _ = get_room_files_paths(room_name)
-    if utils.delete_message_from_log(log_f, message_to_delete):
+    deleted_timestamp = utils.delete_message_from_log(log_f, message_to_delete)
+    if deleted_timestamp:
         gr.Info("ログからメッセージを削除しました。")
+        # [SessionArousal] 対応するArousalデータも削除
+        if message_to_delete.get("role") in ("AGENT", "SYSTEM"):
+            import session_arousal_manager
+            today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+            session_arousal_manager.remove_arousal_session(room_name, today_str, deleted_timestamp)
     else:
         gr.Error("メッセージの削除に失敗しました。詳細はターミナルを確認してください。")
 

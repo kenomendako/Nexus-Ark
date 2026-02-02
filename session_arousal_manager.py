@@ -253,3 +253,34 @@ def clear_daily_data(room_name: str, date_str: Optional[str] = None):
         del data[date_str]
         _save_arousal_data(room_name, data)
         print(f"  - [SessionArousal] {date_str}のデータをクリア")
+
+
+def remove_arousal_session(room_name: str, date_str: str, time_str: str) -> bool:
+    """
+    指定した時刻のセッションをArousalデータから削除する。
+    
+    Args:
+        room_name: ルーム名
+        date_str: 日付文字列 (YYYY-MM-DD)
+        time_str: 時刻文字列 (HH:MM:SS)
+        
+    Returns:
+        削除に成功したかどうか
+    """
+    data = _load_arousal_data(room_name)
+    
+    if date_str not in data or "sessions" not in data[date_str]:
+        return False
+    
+    sessions = data[date_str]["sessions"]
+    original_len = len(sessions)
+    
+    # 時刻が一致するセッションを除外
+    data[date_str]["sessions"] = [s for s in sessions if s.get("time") != time_str]
+    
+    if len(data[date_str]["sessions"]) < original_len:
+        _save_arousal_data(room_name, data)
+        print(f"  - [SessionArousal] {date_str} {time_str} のセッションを削除しました")
+        return True
+    
+    return False

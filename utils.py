@@ -255,16 +255,32 @@ def save_message_to_log(log_file_path: str, header: str, text_content: str) -> O
         print(f"エラー: ログファイル '{log_file_path}' 書き込みエラー: {e}"); traceback.print_exc()
         return None
 
-def delete_message_from_log(log_file_path: str, message_to_delete: Dict[str, str]) -> bool:
-    if not log_file_path or not os.path.exists(log_file_path) or not message_to_delete: return False
+def delete_message_from_log(log_file_path: str, message_to_delete: Dict[str, str]) -> Optional[str]:
+    """
+    ログからメッセージを削除し、成功した場合は削除されたメッセージのタイムスタンプ(HH:MM:SS)を返す。
+    """
+    if not log_file_path or not os.path.exists(log_file_path) or not message_to_delete: return None
     try:
         all_messages = load_chat_log(log_file_path)
         original_len = len(all_messages)
-        all_messages = [msg for msg in all_messages if not (msg.get("content") == message_to_delete.get("content") and msg.get("responder") == message_to_delete.get("responder"))]
-        if len(all_messages) >= original_len:
-            print(f"警告: ログファイル内に削除対象のメッセージが見つかりませんでした。"); return False
-        log_content_parts = []
+        
+        deleted_timestamp = None
+        new_messages = []
         for msg in all_messages:
+            if (msg.get("content") == message_to_delete.get("content") and msg.get("responder") == message_to_delete.get("responder")):
+                # タイムスタンプを抽出 (例: 2026-02-02 (Mon) 14:02:31 | model -> 14:02:31)
+                content = msg.get("content", "")
+                match = re.search(r'(\d{2}:\d{2}:\d{2})(?: \| .*)?$', content)
+                if match:
+                    deleted_timestamp = match.group(1)
+                continue
+            new_messages.append(msg)
+            
+        if len(new_messages) >= original_len:
+            print(f"警告: ログファイル内に削除対象のメッセージが見つかりませんでした。"); return None
+            
+        log_content_parts = []
+        for msg in new_messages:
             role = msg.get("role", "AGENT").upper(); responder_id = msg.get("responder", "不明")
             header = f"## {role}:{responder_id}"
             content = msg.get('content', '').strip()
@@ -273,10 +289,11 @@ def delete_message_from_log(log_file_path: str, message_to_delete: Dict[str, str
         with open(log_file_path, "w", encoding="utf-8") as f: f.write(new_log_content)
         if new_log_content:
             with open(log_file_path, "a", encoding="utf-8") as f: f.write("\n\n")
-        print("--- Successfully deleted message from log ---"); return True
+        print("--- Successfully deleted message from log ---")
+        return deleted_timestamp or "00:00:00" # タイムスタンプがない場合はダミーを返す(成功の印)
     except Exception as e:
         print(f"エラー: ログからのメッセージ削除中に予期せぬエラー: {e}"); traceback.print_exc()
-        return False
+        return None
 
 def remove_thoughts_from_text(text: str) -> str:
     """
@@ -647,20 +664,32 @@ def parse_world_file(file_path: str) -> dict:
         for place, text in places.items(): world_data[area][place] = text.strip()
     return world_data
 
-def delete_and_get_previous_user_input(log_file_path: str, ai_message_to_delete: Dict[str, str]) -> Optional[str]:
-    if not all([log_file_path, os.path.exists(log_file_path), ai_message_to_delete]): return None
+def delete_and_get_previous_user_input(log_file_path: str, ai_message_to_delete: Dict[str, str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    AIメッセージを削除し、その直前のユーザー入力を取得して返す。
+    Returns: (restored_input, deleted_timestamp)
+    """
+    if not all([log_file_path, os.path.exists(log_file_path), ai_message_to_delete]): return None, None
     try:
         all_messages = load_chat_log(log_file_path)
         target_start_index = -1
+        deleted_timestamp = None
         for i, msg in enumerate(all_messages):
             if (msg.get("content") == ai_message_to_delete.get("content") and msg.get("responder") == ai_message_to_delete.get("responder")):
-                target_start_index = i; break
-        if target_start_index == -1: return None
+                target_start_index = i
+                # タイムスタンプを抽出
+                match = re.search(r'(\d{2}:\d{2}:\d{2})(?: \| .*)?$', msg.get("content", ""))
+                if match:
+                    deleted_timestamp = match.group(1)
+                break
+        if target_start_index == -1: return None, None
+        
         last_user_message_index = -1
         for i in range(target_start_index - 1, -1, -1):
             if all_messages[i].get("role") == "USER":
                 last_user_message_index = i; break
-        if last_user_message_index == -1: return None
+        if last_user_message_index == -1: return None, deleted_timestamp
+        
         user_message_content = all_messages[last_user_message_index].get("content", "")
         messages_to_keep = all_messages[:last_user_message_index]
         log_content_parts = []
@@ -675,10 +704,10 @@ def delete_and_get_previous_user_input(log_file_path: str, ai_message_to_delete:
         content_without_timestamp = re.sub(r'\n\n\d{4}-\d{2}-\d{2} \(...\) \d{2}:\d{2}:\d{2}$', '', user_message_content, flags=re.MULTILINE)
         restored_input = content_without_timestamp.strip()
         print("--- Successfully reset conversation to the last user input for rerun ---")
-        return restored_input
+        return restored_input, deleted_timestamp
     except Exception as e:
         print(f"エラー: 再生成のためのログ削除中に予期せぬエラー: {e}"); traceback.print_exc()
-        return None
+        return None, None
 
 @contextlib.contextmanager
 def capture_prints():
@@ -688,15 +717,19 @@ def capture_prints():
     try: yield string_io
     finally: sys.stdout = original_stdout; sys.stderr = original_stderr
 
-def delete_user_message_and_after(log_file_path: str, user_message_to_delete: Dict[str, str]) -> Optional[str]:
-    if not all([log_file_path, os.path.exists(log_file_path), user_message_to_delete]): return None
+def delete_user_message_and_after(log_file_path: str, user_message_to_delete: Dict[str, str]) -> Tuple[Optional[str], Optional[str]]:
+    """
+    ユーザーメッセージ以降をすべて削除する。
+    Returns: (restored_input, None) ※戻り値の型を合わせるためのダミー
+    """
+    if not all([log_file_path, os.path.exists(log_file_path), user_message_to_delete]): return None, None
     try:
         all_messages = load_chat_log(log_file_path)
         target_index = -1
         for i, msg in enumerate(all_messages):
             if (msg.get("content") == user_message_to_delete.get("content") and msg.get("responder") == user_message_to_delete.get("responder")):
                 target_index = i; break
-        if target_index == -1: return None
+        if target_index == -1: return None, None
         user_message_content = all_messages[target_index].get("content", "")
         messages_to_keep = all_messages[:target_index]
         log_content_parts = []
@@ -711,10 +744,10 @@ def delete_user_message_and_after(log_file_path: str, user_message_to_delete: Di
         content_without_timestamp = re.sub(r'\n\n\d{4}-\d{2}-\d{2} \(...\) \d{2}:\d{2}:\d{2}$', '', user_message_content, flags=re.MULTILINE)
         restored_input = content_without_timestamp.strip()
         print("--- Successfully reset conversation to before the selected user input for rerun ---")
-        return restored_input
+        return restored_input, None
     except Exception as e:
         print(f"エラー: ユーザー発言以降のログ削除中に予期せぬエラー: {e}"); traceback.print_exc()
-        return None
+        return None, None
 
 def create_dynamic_sanctuary(main_log_path: str, user_start_phrase: str) -> Optional[str]:
     if not main_log_path or not os.path.exists(main_log_path) or not user_start_phrase: return None
