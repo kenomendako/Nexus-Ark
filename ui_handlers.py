@@ -3236,9 +3236,16 @@ def format_history_for_gradio(
             content_for_parsing = content_to_parse
             if not display_thoughts:
                 content_for_parsing = re.sub(r"(\[THOUGHT\][\s\S]*?\[/THOUGHT\])", "", content_for_parsing, flags=re.IGNORECASE)
-                content_for_parsing = re.sub(r"【Thoughts】[\s\S]*?【/Thoughts】", "", content_for_parsing, flags=re.IGNORECASE)
+                content_for_parsing = re.sub(r"【/?Thoughts】", "", content_for_parsing, flags=re.IGNORECASE)
                 lines = content_for_parsing.split('\n')
                 content_for_parsing = "\n".join([line for line in lines if not line.strip().upper().startswith("THOUGHT:")])
+
+            # --- [新ロジック v5: メタデータタグの非表示化] ---
+            # 【表情】…表情名…、<persona_emotion.../>、<memory_trace.../> を表示から除去
+            content_for_parsing = re.sub(r"【表情】…\w+…", "", content_for_parsing)
+            content_for_parsing = re.sub(r"<persona_emotion\s+[^>]*/>", "", content_for_parsing)
+            content_for_parsing = re.sub(r"<memory_trace\s+[^>]*/>", "", content_for_parsing)
+            content_for_parsing = content_for_parsing.strip()
 
             # 思考ログのタグを、標準的なコードブロック記法に統一する
             content_for_parsing = re.sub(r"\[/?THOUGHT\]", "```", content_for_parsing, flags=re.IGNORECASE)
