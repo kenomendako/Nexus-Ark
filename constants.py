@@ -53,11 +53,11 @@ DEFAULT_INTENT = "factual"  # Intent分類失敗時のデフォルト
 TIME_DECAY_RATE = 0.05  # 時間減衰率（約14日で半減）
 
 # --- 自動会話要約設定 ---
-AUTO_SUMMARY_DEFAULT_THRESHOLD = 20000  # デフォルト閾値（文字数）
+AUTO_SUMMARY_DEFAULT_THRESHOLD = 12000  # デフォルト閾値（文字数）
 AUTO_SUMMARY_MIN_THRESHOLD = 5000       # 最小閾値
 AUTO_SUMMARY_MAX_THRESHOLD = 100000     # 最大閾値
 AUTO_SUMMARY_KEEP_RECENT_TURNS = 5      # 要約せず保持する直近往復数
-AUTO_SUMMARY_TARGET_LENGTH = 2500       # 要約の目標トークン数
+AUTO_SUMMARY_TARGET_LENGTH = 1200       # 要約の目標トークン数
 
 # --- ツール専用AIモデル ---
 SEARCH_MODEL = "gemini-2.5-flash"
@@ -160,12 +160,16 @@ TOOLS_SAVE_ANNOUNCEMENT_ONLY = {
     "plan_notepad_edit",
     "plan_world_edit",
     "plan_creative_notes_edit",
+    "read_entity_memory",
+    "list_entity_memories",
+    "search_entity_memory",
+    "read_current_plan",
 }
 
 # --- エピソード記憶予算設定 (2026-01-17) ---
-EPISODIC_BUDGET_HIGH = 600    # 高Arousal (>= 0.6): 詳細な記録
-EPISODIC_BUDGET_MEDIUM = 350  # 中Arousal (>= 0.3): 適度な記録
-EPISODIC_BUDGET_LOW = 150     # 低Arousal (< 0.3): 簡潔な記録
+EPISODIC_BUDGET_HIGH = 450    # 高Arousal (>= 0.6): 詳細な記録
+EPISODIC_BUDGET_MEDIUM = 250  # 中Arousal (>= 0.3): 適度な記録
+EPISODIC_BUDGET_LOW = 100     # 低Arousal (< 0.3): 簡潔な記録
 
 # --- Arousal正規化設定 (2026-01-17) ---
 # 長期運用でのArousalインフレ防止
@@ -176,8 +180,8 @@ AROUSAL_NORMALIZATION_FACTOR = 0.9     # 減衰係数（10%減衰）
 # 日次→週次→月次の階層的圧縮で長期記憶を低コスト化
 EPISODIC_WEEKLY_COMPRESSION_DAYS = 3    # 3日経過後に週次圧縮
 EPISODIC_MONTHLY_COMPRESSION_WEEKS = 4  # 4週経過後に月次圧縮
-EPISODIC_WEEKLY_BUDGET = 600            # 週次圧縮の目標文字数
-EPISODIC_MONTHLY_BUDGET = 800           # 月次圧縮の目標文字数
+EPISODIC_WEEKLY_BUDGET = 450            # 週次圧縮の目標文字数
+EPISODIC_MONTHLY_BUDGET = 600           # 月次圧縮の目標文字数
 
 # --- Zhipu AI Models ---
 ZHIPU_MODELS = [
