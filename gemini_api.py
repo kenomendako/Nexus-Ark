@@ -123,9 +123,10 @@ def count_tokens_from_lc_messages(messages: List, model_name: str, api_key: str)
             if content:
                 total_tokens += len(encoding.encode(content))
         
-        # 安全係数（システムプロンプトやツール定義の分を少し上乗せ）
-        # ※ tiktoken は cl100k_base を使用。Geminiのトークナイザーとは異なるが、経験上この係数で概ね収まる
-        return int(total_tokens * 1.1) + 100
+        # 安全係数
+        # tiktoken (cl100k_base) は Gemini のトークナイザーとは異なるが、
+        # 余裕を持って 1.15倍 程度を見積もる。
+        return int(total_tokens * 1.15) + 500
         
     except Exception as e:
         print(f"ローカル・トークン計算エラー: {e}")
@@ -1073,7 +1074,8 @@ def count_input_tokens(**kwargs):
                 print(f"エピソード記憶期間のパースエラー: {parse_e}")
             
             if days_num > 0:
-                estimated_chars = min(300 + days_num * 50, 3000)
+                # 推定文字数の算出（安全のため少し多めに見積もる）
+                estimated_chars = min(500 + days_num * 50, 3000)
                 episodic_memory_section = f"\n### エピソード記憶（直近{lookback_days_str}の要約）\n" + "x" * estimated_chars + "\n"
                 
                 # 実際の日付ベースの検索を試みる（見積もり精度向上のため）
@@ -1183,14 +1185,14 @@ def count_input_tokens(**kwargs):
             
             situation_prompt_estimate = (
                 "【現在の状況】\n"
-                "- 現在時刻: 2026-01-18(土) 20:00:00\n"
+                "- 現在時刻: 2026-02-02(月) 12:00:00\n"
                 "- 季節: 冬\n"
-                "- 時間帯: 夜\n\n"
+                "- 時間帯: 昼\n\n"
                 "【現在の場所と情景】\n"
-                "- 場所: [サンプルエリア] サンプル場所\n"
-                "- 今の情景: 冬の夜、静かな空間に月明かりが差し込んでいる。\n"
+                "- 場所: 自室\n"
+                "- 今の情景: 陽光が差し込む静かな部屋。\n"
                 "- 場所の設定（自由記述）:\n"
-                "ここは想像上の場所です。様々な設定が書かれています。\n\n"
+                "（場所の詳細設定が入ります）\n\n"
                 "【移動可能な場所】\n"
                 f"{location_list_str}"
             )
@@ -1200,20 +1202,17 @@ def count_input_tokens(**kwargs):
         # 記憶想起のプレースホルダー（RAG検索結果）
         retrieved_info_placeholder = ""
         if effective_settings.get("enable_auto_retrieval", True):
-            # 実際のRAG検索結果は約2000〜5000文字程度になることが多い
+            # 実際のRAG検索結果を模倣（安全のため長めに見積もる）
             retrieved_info_placeholder = (
                 "\n### 想起された関連情報\n"
-                "【記憶検索の結果：日記・エピソード記憶から3件】\n"
-                "--- エピソード記憶 (2026-01-15) ---\n"
-                "サンプルの記憶内容がここに表示されます。過去の会話や出来事の要約が含まれ、\n"
-                "通常は数百文字から千文字程度の内容になります。\n\n"
-                "--- 日記 (2026-01-10) ---\n"
-                "日記からの検索結果もここに表示されます。関連するトピックについての\n"
-                "過去の記録が含まれます。\n\n"
+                "【記憶検索の結果：日記・エピソード記憶から3件程度】\n"
+                "--- エピソード記憶 (YYYY-MM-DD) ---\n"
+                "過去の出来事の要約（約1000文字程度）。\n\n"
+                "--- 日記 (YYYY-MM-DD) ---\n"
+                "日記からの記録（約500文字程度）。\n\n"
                 "【過去の会話ログからの検索結果】\n"
-                "--- [log.txt(2026-01-17頃)] ---\n"
-                "過去の会話ログからキーワード検索でヒットした内容がここに表示されます。\n"
-                "通常は500文字程度に切り詰められます。\n"
+                "--- [log.txt(過去分)] ---\n"
+                "過去の会話の一部（約1000文字程度）。\n"
             )
         
         # 自己意識コンテキストの見積もり
@@ -1222,20 +1221,13 @@ def count_input_tokens(**kwargs):
             # 実際の context_generator_node で注入される内容を模倣
             dream_insights_text = (
                 "\n### 深層意識（今日の指針）\n"
-                "今日の指針として、AIペルソナが持つ深層意識からの洞察が含まれます。\n"
-                "通常は1〜3行程度の短いテキストです。\n\n"
+                "（指針の短いテキスト）\n\n"
                 "### あなたの目標\n"
-                "**短期目標:**\n"
-                "- サンプル目標1: 進行中\n"
-                "- サンプル目標2: 進行中\n\n"
-                "**長期目標:**\n"
-                "- サンプル長期目標: 進行中\n\n"
+                "（目標リスト）\n\n"
                 "### 今のあなたの気持ち\n"
-                "- 最も強い動機: 好奇心（強さ: 0.6）\n"
-                "- サンプルの動機説明文がここに入ります。\n\n"
+                "- 最も強い動機: 好奇心\n\n"
                 "### あなたが今気になっていること\n"
-                "- サンプルの未解決の問い\n"
-                "  （背景: この問いの背景情報）\n"
+                "（未解決の問い）\n"
             )
         
         # 思考ログマニュアル
@@ -1260,8 +1252,8 @@ def count_input_tokens(**kwargs):
         tool_schema_overhead = 0
         if tool_use_enabled:
             tools_list_str = "\n".join([f"- `{tool.name}`: {tool.description[:50]}..." for tool in all_tools])
-            # ツールスキーマのオーバーヘッドを推定（各ツール約400トークン）
-            tool_schema_overhead = len(all_tools) * 400
+            # ツールスキーマのオーバーヘッドを推定（実測値: 約160 / 安全のため 250 で計算）
+            tool_schema_overhead = len(all_tools) * 250
         else:
             tools_list_str = "（現在、利用可能なツールはありません）"
         
