@@ -265,14 +265,21 @@ def delete_message_from_log(log_file_path: str, message_to_delete: Dict[str, str
         original_len = len(all_messages)
         
         deleted_timestamp = None
-        new_messages = []
         for msg in all_messages:
             if (msg.get("content") == message_to_delete.get("content") and msg.get("responder") == message_to_delete.get("responder")):
-                # タイムスタンプを抽出 (例: 2026-02-02 (Mon) 14:02:31 | model -> 14:02:31)
+                # タイムスタンプを抽出
                 content = msg.get("content", "")
+                responder = msg.get("responder", "")
+                
+                # 1. コンテンツ末尾から抽出 (標準形式)
                 match = re.search(r'(\d{2}:\d{2}:\d{2})(?: \| .*)?$', content)
                 if match:
                     deleted_timestamp = match.group(1)
+                else:
+                    # 2. レスポンダー表示値（ヘッダー行）から抽出 (フォールバック)
+                    match = re.search(r'(\d{2}:\d{2}:\d{2})$', responder)
+                    if match:
+                        deleted_timestamp = match.group(1)
                 continue
             new_messages.append(msg)
             
@@ -678,9 +685,18 @@ def delete_and_get_previous_user_input(log_file_path: str, ai_message_to_delete:
             if (msg.get("content") == ai_message_to_delete.get("content") and msg.get("responder") == ai_message_to_delete.get("responder")):
                 target_start_index = i
                 # タイムスタンプを抽出
-                match = re.search(r'(\d{2}:\d{2}:\d{2})(?: \| .*)?$', msg.get("content", ""))
+                content = msg.get("content", "")
+                responder = msg.get("responder", "")
+                
+                # 1. コンテンツ末尾から抽出
+                match = re.search(r'(\d{2}:\d{2}:\d{2})(?: \| .*)?$', content)
                 if match:
                     deleted_timestamp = match.group(1)
+                else:
+                    # 2. レスポンダー表示値（ヘッダー行）から抽出
+                    match = re.search(r'(\d{2}:\d{2}:\d{2})$', responder)
+                    if match:
+                        deleted_timestamp = match.group(1)
                 break
         if target_start_index == -1: return None, None
         

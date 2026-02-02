@@ -45,17 +45,19 @@ def _save_arousal_data(room_name: str, data: Dict):
         print(f"[SessionArousal] 保存タイムアウト - 他のプロセスが使用中")
 
 
-def add_arousal_score(room_name: str, arousal_score: float):
+def add_arousal_score(room_name: str, arousal_score: float, time_str: Optional[str] = None):
     """
     会話のArousalスコアを蓄積する。
     
     Args:
         room_name: ルーム名
         arousal_score: 会話のArousalスコア（0.0〜1.0）
+        time_str: 指定のタイムスタンプ (HH:MM:SS) 。指定がない場合は現在時刻を使用。
     """
     now = datetime.datetime.now()
     today_str = now.strftime('%Y-%m-%d')
-    time_str = now.strftime('%H:%M:%S')
+    if not time_str:
+        time_str = now.strftime('%H:%M:%S')
     
     data = _load_arousal_data(room_name)
     

@@ -1363,6 +1363,9 @@ def _stream_and_handle_response(
     # [v21] GeneratorExit後はyieldをスキップするためのフラグ
     generator_exited = False
 
+    # Arousal記録とログ保存を同期させるための変数
+    last_ai_timestamp_str = None
+
     # [v20] 動画アバター対応: thinking状態のアバターHTMLを生成
     # 動画がない場合は静止画にフォールバックし、CSSアニメーションで表現
     current_profile_update = gr.update(value=get_avatar_html(soul_vessel_room, state="thinking"))
@@ -1693,8 +1696,13 @@ def _stream_and_handle_response(
                                     actual_model_name = effective_settings.get("model_name", global_model)
                                 
                                 # システムの正しいタイムスタンプを追加
-                                timestamp = f"\n\n{datetime.datetime.now().strftime('%Y-%m-%d (%a) %H:%M:%S')} | {utils.sanitize_model_name(actual_model_name)}"
+                                now_obj = datetime.datetime.now()
+                                timestamp_str = now_obj.strftime('%H:%M:%S')
+                                timestamp = f"\n\n{now_obj.strftime('%Y-%m-%d (%a) %H:%M:%S')} | {utils.sanitize_model_name(actual_model_name)}"
                                 content_to_log = content_str + timestamp
+                                
+                                if isinstance(msg, AIMessage):
+                                    last_ai_timestamp_str = timestamp_str
                                 
                                 # (System): プレフィックスのチェックと処理
                                 if content_to_log.startswith("(System):"):
@@ -1870,7 +1878,7 @@ def _stream_and_handle_response(
                 # [修正] AIメッセージが正常に生成された（文字数がある）場合のみ蓄積する
                 if last_ai_message:
                     import session_arousal_manager
-                    session_arousal_manager.add_arousal_score(soul_vessel_room, arousal_score)
+                    session_arousal_manager.add_arousal_score(soul_vessel_room, arousal_score, time_str=last_ai_timestamp_str)
                 else:
                     print(f"  - [Arousal] AI応答が空または未完成のため、蓄積をスキップします")
         except Exception as e:
