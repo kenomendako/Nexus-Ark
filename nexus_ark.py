@@ -2169,8 +2169,8 @@ try:
                             reload_chat_log_button = gr.Button("🔄 最後に保存した内容を読み込む", variant="secondary")
 
 
-            with gr.TabItem("📝 記憶・メモ・指示"):
-                gr.Markdown("##  記憶・メモ・指示\nルームの根幹をなす設定ファイルを、ここで直接編集できます。")
+            with gr.TabItem("📝 記憶・ノート・知識"):
+                gr.Markdown("##  記憶・ノート・知識\nルームの根幹をなす設定ファイルを、ここで直接編集できます。")
                 with gr.Tabs():
                     with gr.TabItem("記憶"):
                         # --- システムプロンプト (Accordion) ---
@@ -2515,12 +2515,7 @@ try:
                             reset_internal_state_button = gr.Button("🧹 内部状態をリセット", variant="stop")
                             reset_internal_state_status = gr.Textbox(label="リセットステータス", interactive=False)
 
-                        # --- エンベディング設定（移行案内） ---
-                        gr.Markdown("---")
-                        gr.Markdown(
-                            "### 🧠 エンベディング設定\n\n"
-                            "⚠️ **この設定は「⚙️ 共通設定 → 🔧 内部処理モデル設定」に移動しました。**"
-                        )
+
 
                     with gr.TabItem("知識グラフ管理", visible=False):
                         gr.Markdown("## 知識グラフの管理")

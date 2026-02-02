@@ -17,9 +17,6 @@ Antigravityが定期的に確認し、優先順位をつけてタスクリスト
 
 ---
 
----
-
-
 ## 関連リンク
 
 - **ステータス**: [docs/STATUS.md](STATUS.md)

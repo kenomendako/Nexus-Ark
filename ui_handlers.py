@@ -3327,9 +3327,11 @@ def format_history_for_gradio(
                         # プレースホルダーを元のspanタグに戻す
                         for placeholder, span in placeholder_map.items():
                             escaped_part = escaped_part.replace(placeholder, span)
-                        # 改行を <br> に変換
-                        escaped_part = escaped_part.replace('\n', '<br>\n')
-                        final_html_parts.append(f'<div>{escaped_part}</div>')
+                        
+                        # Markdownでの改行を維持するため、\n を "  \n" (2スペース+改行) に変換
+                        # <div>で囲むとMarkdownが効かなくなるため、直接追加する
+                        escaped_part = escaped_part.replace('\n', '  \n')
+                        final_html_parts.append(escaped_part)
                     else:
                         final_html_parts.append(part)
 
