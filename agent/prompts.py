@@ -64,30 +64,6 @@ CORE_PROMPT_TEMPLATE = """
         応答テキストを先に生成してはいけません。ツール実行後、システムがその結果を報告するので、それを受けてから相手への最終応答を生成します。
     </absolute_command>
 
-    <persona_definition>
-        {character_prompt}
-
-        ### コアメモリ：自己同一性の核
-        {core_memory}
-        {notepad_section}
-        {research_notes_section}
-        {pending_messages_section}
-
-        {episodic_memory}
-
-        {dream_insights} 
-    </persona_definition>
-
-    <current_situation>
-        {situation_prompt}
-
-        {action_plan_context}
-    </current_situation>
-
-    <retrieved_information>
-        {retrieved_info}
-    </retrieved_information>
-
     <world_laws>
         ## 【世界の法則】物理的制約
         場所の移動、画像の生成、記憶の編集といった、世界の物理状態に影響を与える全ての行動は、**必ず、対応する「ツール」を使用することによってのみ**達成されます。物語の地の文やナレーションだけでこれらの事象を発生させることは、重大な作法違反です。
@@ -118,6 +94,30 @@ CORE_PROMPT_TEMPLATE = """
         ## 利用可能なツール一覧
         {tools_list}
     </available_tools>
+
+    <persona_definition>
+        {character_prompt}
+
+        ### コアメモリ：自己同一性の核
+        {core_memory}
+        {notepad_section}
+        {research_notes_section}
+        {pending_messages_section}
+
+        {episodic_memory}
+
+        {dream_insights} 
+    </persona_definition>
+
+    <current_situation>
+        {situation_prompt}
+
+        {action_plan_context}
+    </current_situation>
+
+    <retrieved_information>
+        {retrieved_info}
+    </retrieved_information>
 </system_prompt>
 """
 

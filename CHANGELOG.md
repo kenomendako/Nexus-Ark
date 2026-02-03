@@ -15,6 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 - **睡眠時RAG索引更新と記憶整理のAPIキーローテーション不具合の修正 (2026-02-03):** 睡眠モード中のRAG索引更新やエピソード記憶生成において、APIキーが正しくローテーションされず無限ループに陥る問題を修正。`alarm_manager.py` でルームごとにキーを再取得、`rag_manager.py` に動的ローテーション対応の `RotatingEmbeddings` ラッパーと意図分類のリトライロジックを導入、`episodic_memory_manager.py` に回転対応の `_invoke_llm` ヘルパーを実装し `UnboundLocalError` を解消。また、`dreaming_manager.py` において影の僕のJSONパースを堅牢化し、夢日記（洞察）を月次分割サブディレクトリ（`dreaming/`）へ移行・自動移行ロジックを実装。`entity_memory_manager.py` の統合処理にもローテーションを適用。
+### Added
+- **System Prompt Caching Optimization**: Reordered prompt sections to place static content (Rules, World Laws, Tools) before dynamic content (Memories, Situation) to maximize API cache hit rate.
+
+### Fixed
+- `utils.py`: Fixed `NameError` due to missing `new_messages` definition during message deletion.
 - ログからメッセージを削除する際の `NameError: name 'new_messages' is not defined` を修正。
 
 ### Changed
