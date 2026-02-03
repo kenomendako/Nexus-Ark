@@ -1628,8 +1628,42 @@ def get_next_available_gemini_key(current_exhausted_key: str = None, excluded_ke
         if not is_key_exhausted(k):
             return k
             
-    # 全滅の場合
-    print("--- [API Key Rotation] CRITICAL: All keys (Free and Paid) are exhausted! ---")
+    # フェーズ3: 救済措置 (Rescue Strategy) - [2026-02-03 Fix]
+    # 全てのキーが枯渇している場合、最も回復している可能性が高い（枯渇してから時間が経過している）キーを再利用する。
+    # これにより、一時的な429エラーで全てのキーがロックされるデッドロックを防ぐ。
+    
+    print("--- [API Key Rotation] All keys are exhausted. Attempting to rescue the oldest one... ---")
+    
+    candidates = []
+    # 除外されていない全ての有効なキーを対象にする
+    for k in all_valid_keys:
+        state = GEMINI_KEY_STATES.get(k)
+        if state and state.get('exhausted'):
+            candidates.append((k, state.get('exhausted_at', 0)))
+            
+    if candidates:
+        # exhausted_at (タイムスタンプ) が古い順（昇順）にソート
+        candidates.sort(key=lambda x: x[1])
+        rescued_key = candidates[0][0]
+        rescued_time = candidates[0][1]
+        
+        elapsed = time.time() - rescued_time
+        print(f"--- [API Key Rotation] RESCUED Key '{rescued_key}' (Exhausted {elapsed:.1f}s ago). Retry possible. ---")
+        
+        # 状態をリセットせずに返す？ -> リセットしないとまた回ってきた時に除外される可能性はあるが、
+        # ここで返すことで呼び出し元は使用を試みる。成功すればその後の呼び出しでexhaustedがクリアされるわけではないが、
+        # 使用自体は可能。呼び出し元が成功時に明示的にクリアするロジックはないため、
+        # 自動復帰(1時間)を待つか、再度ここに来て再利用されるかになる。
+        # 本質的な解決として、ここでexhaustedフラグを降ろしてしまう手もあるが、
+        # すぐにまた429が出たら意味がない。
+        # しかし、RAGManagerなどが「ローテーションしたのに同じキーが来た」と判断するのを防ぐため、
+        # 呼び出し元(RAGManager)は `tried_keys` に追加していく。
+        # 救済されたキーが `tried_keys` に入っていないなら試行される。
+        
+        return rescued_key
+
+    # 全滅かつ救済候補なし（ありえないはずだが）
+    print("--- [API Key Rotation] CRITICAL: All keys exhausted and NO candidates for rescue! ---")
     return None
 
 def get_key_name_by_value(key_value: str) -> str:
