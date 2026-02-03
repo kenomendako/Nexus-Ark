@@ -29,6 +29,23 @@ import psutil
 logger = logging.getLogger(__name__)
 
 
+class RotatingEmbeddings(Embeddings):
+    """
+    APIキーローテーションに対応したエンベディングラッパー。
+    FAISSオブジェクト等に渡された後でも、RAGManagerの最新のAPIキーに基づく
+    エンベディングモデルを動的に使用する。
+    """
+    def __init__(self, manager: 'RAGManager'):
+        self.manager = manager
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        # 呼び出しのたびにmanager._get_actual_embeddings()を介して最新インスタンスを取得
+        return self.manager._get_actual_embeddings().embed_documents(texts)
+    
+    def embed_query(self, text: str) -> List[float]:
+        return self.manager._get_actual_embeddings().embed_query(text)
+
+
 class LangChainEmbeddingWrapper(Embeddings):
     """ローカルエンベディングをLangChainのインターフェースでラップ"""
     
@@ -74,7 +91,8 @@ class RAGManager:
         self.embedding_mode = effective_settings.get("embedding_mode", "api")
         
         # エンベディングの初期化
-        self.embeddings = None  # 常に遅延初期化
+        self.actual_embeddings = None  # 実際のGoogle/Localインスタンス
+        self.wrapper_embeddings = RotatingEmbeddings(self) # FAISS等に渡す永続ラッパー
         print(f"[RAGManager] エンベディングモード: {self.embedding_mode} (遅延初期化待ち)")
 
     def _get_embedding_model_id(self) -> str:
@@ -87,16 +105,20 @@ class RAGManager:
             return f"google:{constants.EMBEDDING_MODEL}"
 
     def _get_embeddings(self):
-        """エンベディングインスタンスを取得（必要に応じて初期化）"""
-        if self.embeddings is not None:
-            return self.embeddings
+        """FAISS等に渡すための、キー回転に追従するラッパーを取得する"""
+        return self.wrapper_embeddings
+
+    def _get_actual_embeddings(self):
+        """実際のエンベディングインスタンスを取得（必要に応じて初期化/再生成）"""
+        if self.actual_embeddings is not None:
+            return self.actual_embeddings
         
         if self.embedding_mode == "local":
             try:
                 # 非常に重いライブラリをここで初めて呼ぶ
                 from topic_cluster_manager import LocalEmbeddingProvider
                 local_provider = LocalEmbeddingProvider()
-                self.embeddings = LangChainEmbeddingWrapper(local_provider)
+                self.actual_embeddings = LangChainEmbeddingWrapper(local_provider)
                 print(f"[RAGManager] ローカルエンベディング ({self._get_embedding_model_id()}) を初期化しました")
             except Exception as e:
                 # 警告を強調
@@ -113,7 +135,7 @@ class RAGManager:
                 print(f"!"*60 + "\n")
                 
                 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-                self.embeddings = GoogleGenerativeAIEmbeddings(
+                self.actual_embeddings = GoogleGenerativeAIEmbeddings(
                     model=constants.EMBEDDING_MODEL,
                     google_api_key=self.api_key,
                     task_type="retrieval_document"
@@ -121,14 +143,15 @@ class RAGManager:
         else:
             # Gemini API エンベディングを使用
             from langchain_google_genai import GoogleGenerativeAIEmbeddings
-            self.embeddings = GoogleGenerativeAIEmbeddings(
+            self.actual_embeddings = GoogleGenerativeAIEmbeddings(
                 model=constants.EMBEDDING_MODEL,
                 google_api_key=self.api_key,
                 task_type="retrieval_document"
             )
-            print(f"[RAGManager] Gemini API エンベディング ({self._get_embedding_model_id()}) を初期化しました")
+            print(f"[RAGManager] Gemini API エンベディング ({self._get_embedding_model_id()}) を初期化しました (Key: {config_manager.get_key_name_by_value(self.api_key)})")
             
-        return self.embeddings
+        return self.actual_embeddings
+
         
     def _rotate_api_key(self, error_str: str) -> bool:
         """
@@ -166,7 +189,7 @@ class RAGManager:
                     self.tried_keys.add(next_key_name)
                     # 永続化
                     config_manager.save_config_if_changed("last_api_key_name", next_key_name)
-                    self.embeddings = None # 次の _get_embeddings() で新キーで再生成
+                    self.actual_embeddings = None # 次の _get_actual_embeddings() で新キーで再生成
                     return True
         
         print(f"      [RAG Rotation] No more keys available to try in this session.")
@@ -224,16 +247,18 @@ class RAGManager:
                 "weights": {"alpha": float, "beta": float, "gamma": float}
             }
         """
-        try:
-            from llm_factory import LLMFactory
-            
-            llm = LLMFactory.create_chat_model(
-                api_key=self.api_key,
-                generation_config={},
-                internal_role="processing"
-            )
-            
-            prompt = """あなたはクエリ分類の専門家です。以下のクエリを5つのカテゴリのいずれか1つに分類してください。
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                from llm_factory import LLMFactory
+                
+                llm = LLMFactory.create_chat_model(
+                    api_key=self.api_key,
+                    generation_config={},
+                    internal_role="processing"
+                )
+                
+                prompt = """あなたはクエリ分類の専門家です。以下のクエリを5つのカテゴリのいずれか1つに分類してください。
 
 カテゴリ:
 - emotional: 感情・体験・思い出を問う（例：「あの時どう思った？」「嬉しかったこと」「初めて会った日」）
@@ -246,26 +271,35 @@ class RAGManager:
 
 カテゴリ名のみを1単語で回答してください（emotional/factual/technical/temporal/relational）:"""
 
-            response = llm.invoke(prompt.format(query=query)).content.strip().lower()
-            
-            # 応答からIntentを抽出
-            intent = constants.DEFAULT_INTENT
-            for valid_intent in constants.INTENT_WEIGHTS.keys():
-                if valid_intent in response:
-                    intent = valid_intent
-                    break
-            
-            weights = constants.INTENT_WEIGHTS.get(intent, constants.INTENT_WEIGHTS[constants.DEFAULT_INTENT])
-            print(f"  - [Intent] Query: '{query[:30]}...' -> {intent} (α={weights['alpha']}, β={weights['beta']}, γ={weights['gamma']})")
-            
-            return {"intent": intent, "weights": weights}
-            
-        except Exception as e:
-            print(f"  - [Intent] 分類エラー、デフォルト使用: {e}")
-            return {
-                "intent": constants.DEFAULT_INTENT,
-                "weights": constants.INTENT_WEIGHTS[constants.DEFAULT_INTENT]
-            }
+                response = llm.invoke(prompt.format(query=query)).content.strip().lower()
+                
+                # 応答からIntentを抽出
+                intent = constants.DEFAULT_INTENT
+                for valid_intent in constants.INTENT_WEIGHTS.keys():
+                    if valid_intent in response:
+                        intent = valid_intent
+                        break
+                
+                weights = constants.INTENT_WEIGHTS.get(intent, constants.INTENT_WEIGHTS[constants.DEFAULT_INTENT])
+                print(f"  - [Intent] Query: '{query[:30]}...' -> {intent} (α={weights['alpha']}, β={weights['beta']}, γ={weights['gamma']})")
+                
+                return {"intent": intent, "weights": weights}
+                
+            except Exception as e:
+                error_str = str(e)
+                if "429" in error_str or "ResourceExhausted" in error_str:
+                    print(f"  - [Intent] API制限検知 (試行 {attempt+1}/{max_retries}): {e}")
+                    if self._rotate_api_key(error_str):
+                        print(f"    -> キーを切り替えました。リトライ中...")
+                        continue
+                
+                if attempt == max_retries - 1:
+                    print(f"  - [Intent] 分類エラー、デフォルト使用: {e}")
+                    return {
+                        "intent": constants.DEFAULT_INTENT,
+                        "weights": constants.INTENT_WEIGHTS[constants.DEFAULT_INTENT]
+                    }
+                time.sleep(2)
 
     def calculate_time_decay(self, metadata: dict) -> float:
         """

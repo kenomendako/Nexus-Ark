@@ -21,6 +21,7 @@ REDACTION_RULES_FILE = "redaction_rules.json"
 NOTES_DIR_NAME = "notes"
 CREATIVE_NOTES_FILENAME = "creative_notes.md"
 NOTES_MAX_SIZE_BYTES = 200 * 1024  # 200KB
+LOGS_DIR_NAME = "logs"             # [NEW] チャットログ分割用フォルダ
 
 
 # --- UIとAPIの挙動に関する定数 ---

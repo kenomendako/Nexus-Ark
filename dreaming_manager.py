@@ -26,35 +26,126 @@ class DreamingManager:
         self.api_key = api_key
         self.room_dir = Path(constants.ROOMS_DIR) / room_name
         self.memory_dir = self.room_dir / "memory"
-        self.insights_file = self.memory_dir / "insights.json"
+        self.dreaming_dir = self.memory_dir / "dreaming"  # [NEW] 専用フォルダ
+        self.legacy_insights_file = self.memory_dir / "insights.json"
         
+        # ディレクトリの保証
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self.dreaming_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_monthly_file_path(self, date_str: str) -> Path:
+        """
+        日付文字列から対応する月次ファイルのパスを返す。
+        例: "2026-02-03 11:43:08" -> memory/dreaming/2026-02.json
+        """
+        try:
+            # YYYY-MM形式を抽出
+            match = re.match(r'^(\d{4}-\d{2})', date_str.strip())
+            if match:
+                month_str = match.group(1)
+                return self.dreaming_dir / f"{month_str}.json"
+        except Exception:
+            pass
+        
+        # パース失敗時は最新の月、または現在時刻
+        month_str = datetime.datetime.now().strftime("%Y-%m")
+        return self.dreaming_dir / f"{month_str}.json"
 
     def _load_insights(self) -> List[Dict]:
-        """洞察データを読み込む（ロック付き）"""
+        """
+        全ての月次ファイル + レガシーファイルから洞察データを読み込む（ロック付き）。
+        """
         from file_lock_utils import safe_json_read
         
-        if self.insights_file.exists():
-            try:
-                data = safe_json_read(str(self.insights_file), default=[])
-                return data if isinstance(data, list) else []
-            except Exception:
-                return []
-        return []
+        # 先に移行が必要かチェック
+        self._migrate_legacy_insights()
+        
+        all_insights = []
+        
+        # 月次ファイル（dreaming/*.json）を読み込み
+        if self.dreaming_dir.exists():
+            # 降順（新しい月が先）で読み込む
+            for monthly_file in sorted(self.dreaming_dir.glob("*.json"), reverse=True):
+                try:
+                    data = safe_json_read(str(monthly_file), default=[])
+                    if isinstance(data, list):
+                        all_insights.extend(data)
+                except Exception as e:
+                    print(f"Warning: Monthly dreaming file error ({monthly_file.name}): {e}")
+        
+        return all_insights
+
+    def _migrate_legacy_insights(self):
+        """
+        既存の insights.json を月次ファイルに振り分けて移行する。
+        """
+        from file_lock_utils import safe_json_read, safe_json_update
+        
+        if not self.legacy_insights_file.exists():
+            return
+            
+        print(f"  - [Dreaming Migration] {self.legacy_insights_file.name} を月次分割に移行中...")
+        
+        try:
+            legacy_data = safe_json_read(str(self.legacy_insights_file), default=[])
+            if not isinstance(legacy_data, list) or not legacy_data:
+                self.legacy_insights_file.unlink()
+                return
+
+            # 日付（月）ごとにグループ化
+            groups = {}
+            for item in legacy_data:
+                date_str = item.get("created_at", "")
+                path = self._get_monthly_file_path(date_str)
+                if path not in groups:
+                    groups[path] = []
+                groups[path].append(item)
+            
+            # 各ファイルに保存
+            for path, items in groups.items():
+                def update_func(existing_data):
+                    if not isinstance(existing_data, list):
+                        existing_data = []
+                    # 既存データと統合（重複はcreated_at等で簡易チェック可能だが、移行時は全統合）
+                    # 重複排除が必要ならここで行う
+                    existing_ids = {f"{i.get('created_at')}_{i.get('trigger_topic')[:20]}" for i in existing_data}
+                    for item in items:
+                        item_id = f"{item.get('created_at')}_{item.get('trigger_topic', '')[:20]}"
+                        if item_id not in existing_ids:
+                            existing_data.append(item)
+                    
+                    # 日付降順でソート
+                    existing_data.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+                    return existing_data
+                
+                safe_json_update(str(path), update_func, default=[])
+
+            # 移行完了後に削除（またはリネーム）
+            backup_path = self.legacy_insights_file.with_suffix(".json.migrated")
+            self.legacy_insights_file.replace(backup_path)
+            print(f"  - [Dreaming Migration] 移行完了: {backup_path}")
+            
+        except Exception as e:
+            print(f"  - [Dreaming Migration] Error: {e}")
+            traceback.print_exc()
 
     def _save_insight(self, insight_data: Dict):
-        """洞察データを保存する（ロック付き）"""
+        """洞察データを月次ファイルに保存する（ロック付き）"""
         from file_lock_utils import safe_json_update
+        
+        date_str = insight_data.get("created_at", "")
+        monthly_file = self._get_monthly_file_path(date_str)
         
         def update_func(data):
             if not isinstance(data, list):
                 data = []
             # 最新のものが先頭に来るように追加
             data.insert(0, insight_data)
-            # 肥大化を防ぐため、最新50件程度に保つ
-            return data[:50]
+            
+            # 夢日記は1ファイルあたりの肥大化を防ぐ（月ごと100件程度で十分）
+            return data[:100]
         
-        safe_json_update(str(self.insights_file), update_func, default=[])
+        safe_json_update(str(monthly_file), update_func, default=[])
 
     def get_recent_insights_text(self, limit: int = 1) -> str:
         """プロンプト注入用：最新の「指針」のみをテキスト化して返す（コスト最適化）"""
@@ -535,13 +626,13 @@ class DreamingManager:
 """
             
             try:
-                response = llm.invoke(prompt).content.strip()
-                # JSON部分を抽出
-                json_match = re.search(r'\{.*\}', response, re.DOTALL)
-                if not json_match:
+                response_msg, current_api_key = self._invoke_llm("summarization", prompt, effective_settings)
+                self.api_key = current_api_key  # キーを同期
+                
+                result = self._parse_json_robust(response_msg.content)
+                if not result:
                     continue
                 
-                result = json.loads(json_match.group(0))
                 convert_type = result.get("type", "SKIP")
                 content = result.get("content", "")
                 entity_name = result.get("entity_name", "")
@@ -670,12 +761,10 @@ class DreamingManager:
 候補がない場合は空配列 `[]` を出力してください。
 """
         try:
-            response = llm.invoke(prompt).content.strip()
-            # JSON部分を抽出
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group(0))
-            return []
+            response_msg, current_api_key = self._invoke_llm("processing", prompt, effective_settings)
+            self.api_key = current_api_key  # キーを同期
+            
+            return self._parse_json_robust(response_msg.content) or []
         except Exception as e:
             print(f"  - [Shadow] 候補抽出エラー: {e}")
             return []
@@ -768,6 +857,36 @@ class DreamingManager:
         except Exception as e:
             print(f"  - [Shadow] メッセージ取得エラー: {e}")
             return ""
+
+    def _parse_json_robust(self, text: str) -> Any:
+        """
+        LLMの出力からJSON部分を抽出し、可能な限りパースする。
+        """
+        if not text:
+            return None
+        
+        # Markdownのコードブロックを除去
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        
+        # JSONの境界を探す（{...} または [...]）
+        match = re.search(r'(\{.*\}|\[.*\])', text, re.DOTALL)
+        if not match:
+            return None
+            
+        json_str = match.group(1).strip()
+        
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            # よくあるミス：末尾のカンマやコメントを除去してみる
+            try:
+                # 非常に単純なクリーンアップ（実用レベル）
+                cleaned = re.sub(r',\s*([\]\}])', r'\1', json_str)
+                cleaned = re.sub(r'//.*$', '', cleaned, flags=re.MULTILINE)
+                return json.loads(cleaned)
+            except Exception:
+                return None
 
     def _invoke_llm(self, role: str, prompt: str, settings: dict) -> Any:
         tried_keys = set()

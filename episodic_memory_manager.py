@@ -5,7 +5,7 @@ import json
 import datetime
 import traceback
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import time
 import re
 import glob # <--- 追加
@@ -184,14 +184,11 @@ class EpisodicMemoryManager:
         user_name = room_config.get("user_display_name", "ユーザー")
         agent_name = room_config.get("agent_display_name") or room_config.get("room_name", "AI")
         
-        # 1. 全ログファイルの収集
-        log_files = []
-        current_log = self.room_dir / "log.txt"
-        if current_log.exists(): log_files.append(str(current_log))
-        archives_dir = self.room_dir / "log_archives"
-        if archives_dir.exists(): log_files.extend(glob.glob(str(archives_dir / "*.txt")))
+        # 1. 全ログファイルの収集 (v4: 統合された load_chat_log を使用)
+        log_f, _, _, _, _, _ = room_manager.get_room_files_paths(self.room_name)
+        all_messages = utils.load_chat_log(log_f)
 
-        if not log_files: return "ログファイルが見つかりません。"
+        if not all_messages: return "ログメッセージが見つかりません。"
 
         print(f"  - 読み込み対象ファイル数: {len(log_files)}")
 
@@ -199,34 +196,29 @@ class EpisodicMemoryManager:
         logs_by_date = {}
         date_pattern = re.compile(r'(\d{4}-\d{2}-\d{2}) \(...\) \d{2}:\d{2}:\d{2}')
         
-        for file_path in log_files:
+        for msg in all_messages:
             try:
-                raw_logs = utils.load_chat_log(file_path)
-                for msg in raw_logs:
-                    content = msg.get('content', '')
-                    match = date_pattern.search(content)
-                    current_date = match.group(1) if match else None
+                content = msg.get('content', '')
+                match = date_pattern.search(content)
+                current_date = match.group(1) if match else None
+                
+                if current_date:
+                    if current_date not in logs_by_date:
+                        logs_by_date[current_date] = []
                     
-                    if current_date:
-                        if current_date not in logs_by_date:
-                            logs_by_date[current_date] = []
-                        
-                        role = msg.get('role', 'UNKNOWN')
-                        responder = msg.get('responder', '')
-                        
-                        # ▼▼▼【修正】固定の「ユーザー/AI」ではなく、設定された名前を使う ▼▼▼
-                        if role == 'USER':
-                            speaker = user_name
-                        else:
-                            # responderが具体的な名前ならそれを使う、なければ設定上の名前
-                            speaker = responder if responder and responder != "model" else agent_name
-                        # ▲▲▲【修正ここまで】▲▲▲
-                        
-                        clean_text = utils.remove_thoughts_from_text(content)
-                        clean_text = re.sub(r'\n\n\d{4}-\d{2}-\d{2}.*$', '', clean_text).strip()
-                        
-                        if clean_text:
-                            logs_by_date[current_date].append(f"{speaker}: {clean_text}")
+                    role = msg.get('role', 'UNKNOWN')
+                    responder = msg.get('responder', '')
+                    
+                    if role == 'USER':
+                        speaker = user_name
+                    else:
+                        speaker = responder if responder and responder != "model" else agent_name
+                    
+                    clean_text = utils.remove_thoughts_from_text(content)
+                    clean_text = re.sub(r'\n\n\d{4}-\d{2}-\d{2}.*$', '', clean_text).strip()
+                    
+                    if clean_text:
+                        logs_by_date[current_date].append(f"{speaker}: {clean_text}")
             except Exception as e:
                 print(f"  - Error reading {file_path}: {e}")
 
@@ -304,6 +296,7 @@ class EpisodicMemoryManager:
         
         success_count = 0
         error_count = 0
+        current_api_key = api_key # ローテーション追従用
         
         print(f"  - 処理対象の日付: {target_dates}")
 
@@ -347,50 +340,15 @@ class EpisodicMemoryManager:
 【出力（内省ノートの本文のみ、前置きや解説は一切禁止）】
 """
 
-            summary_result = None
-            is_temporary_error = False
-            max_retries = 3
-            
-            for attempt in range(max_retries):
-                try:
-                    # invokeの結果が空の場合も考慮
-                    result = llm.invoke(prompt)
-                    content = result.content.strip()
-                    
-                    if content:
-                        summary_result = content
-                        is_temporary_error = False
-                        break
-                    else:
-                        # コンテンツが空（ブロック等）の場合
-                        print(f"  - Warning: Empty response for {date_str} (Attempt {attempt+1})")
-                        summary_result = "（コンテンツポリシーにより要約できませんでした）"
-                        is_temporary_error = False
-                        break # リトライしても恐らく同じなので抜ける
+            try:
+                summary_result, current_api_key = self._invoke_llm("summarization", prompt, current_api_key, effective_settings)
+                
+                if not summary_result:
+                    summary_result = "（コンテンツポリシーにより要約できませんでした）"
+            except Exception as e:
+                print(f"  - {date_str}: 要約生成に失敗しました: {e}")
+                summary_result = f"（エラーにより要約できませんでした: {e}）"
 
-                except Exception as e:
-                    error_str = str(e)
-                    # 一時的なエラー（リトライすべきもの）
-                    if any(code in error_str for code in ["429", "ResourceExhausted", "500", "503", "504", "deadline exceeded"]):
-                        is_temporary_error = True
-                        if "429" in error_str or "ResourceExhausted" in error_str:
-                            wait_time = 10
-                            match = re.search(r"retry_delay {\s*seconds: (\d+)", error_str)
-                            if match: wait_time = int(match.group(1)) + 2
-                            print(f"    -> API制限検知({attempt+1}/{max_retries})。{wait_time}秒待機...")
-                            time.sleep(wait_time)
-                        else:
-                            print(f"    -> 一時的エラー検知({attempt+1}/{max_retries}): {e}")
-                        
-                        # ループの最後なら次へ行く（自然に attempt が増える）
-                        continue
-                    else:
-                        # 恒久的なエラー（このまま保存して終わるもの）
-                        print(f"  - 恒久的なエラーまたは未知のエラー: {e}")
-                        summary_result = f"（エラーにより要約できませんでした: {e}）"
-                        is_temporary_error = False
-                        break
-            
             # --- 保存判定 ---
             if summary_result:
                 # 成功したか、恒久的に失敗した場合は保存して「完了」とする
@@ -413,11 +371,6 @@ class EpisodicMemoryManager:
                     error_count += 1
                 else:
                     success_count += 1
-            elif is_temporary_error:
-                # すべてのリトライが一時的エラーで終わった場合。
-                # 保存しないことで、次回の update_memory 実行時に再度対象に含まれるようにする。
-                print(f"  - {date_str}: 一時的エラーが解消されなかったため、保存せずに今回はスキップします（次回再試行）。")
-                error_count += 1
             else:
                 # 予期せぬケース
                 print(f"  - {date_str}: 要約結果が得られなかったため、保存をスキップしました。")
@@ -506,11 +459,7 @@ class EpisodicMemoryManager:
         
         # 3. 各セッションについて要約生成
         effective_settings = config_manager.get_effective_settings(self.room_name)
-        llm = LLMFactory.create_chat_model(
-            api_key=api_key,
-            generation_config=effective_settings,
-            internal_role="summarization"
-        )
+        current_api_key = api_key # ローテーション追従用
         
         success_count = 0
         processed_times = []
@@ -571,8 +520,8 @@ class EpisodicMemoryManager:
 """
             
             try:
-                result = llm.invoke(prompt)
-                summary = result.content.strip()
+                summary_raw, current_api_key = self._invoke_llm("summarization", prompt, current_api_key, effective_settings)
+                summary = summary_raw.strip()
                 
                 if summary:
                     # 文字数制限を強制 (2026-01-17: 予算の1.2倍でカット)
@@ -881,6 +830,7 @@ class EpisodicMemoryManager:
         )
         
         compressed_episodes = []
+        current_api_key = api_key
         
         for week_start, week_episodes in sorted(weekly_groups.items()):
             # 週の終了日を計算（実データの最終日を使用）
@@ -943,8 +893,8 @@ class EpisodicMemoryManager:
 """
             
             try:
-                result = llm.invoke(prompt)
-                summary = result.content.strip()
+                summary, current_api_key = self._invoke_llm("summarization", prompt, current_api_key, effective_settings)
+                summary = summary.strip()
                 
                 if summary:
                     compressed_episodes.append({
@@ -1109,6 +1059,7 @@ class EpisodicMemoryManager:
         )
         
         new_monthly_episodes = []
+        current_api_key = api_key
         
         for month_key, month_episodes in sorted(monthly_groups.items()):
             # 月の開始日と終了日を計算
@@ -1176,8 +1127,8 @@ class EpisodicMemoryManager:
 """
             
             try:
-                result = llm.invoke(prompt)
-                summary = result.content.strip()
+                summary, current_api_key = self._invoke_llm("summarization", prompt, current_api_key, effective_settings)
+                summary = summary.strip()
                 
                 if summary:
                     new_monthly_episodes.append({
@@ -1350,3 +1301,66 @@ class EpisodicMemoryManager:
             "after_avg": round(after_avg, 3),
             "episode_count": len(arousal_episodes)
         }
+
+    def _invoke_llm(self, role: str, prompt: str, api_key: str, settings: dict) -> Tuple[str, str]:
+        """
+        Gemini APIを呼び出す。429エラー時はキーをローテーションしてリトライする。
+        
+        Args:
+            role: LLMFactoryのinternal_role ("summarization" 等)
+            prompt: プロンプト
+            api_key: 現在のAPIキー
+            settings: 生成設定
+            
+        Returns:
+            (生成されたテキスト, 使用したAPIキー)
+        """
+        from llm_factory import LLMFactory
+        tried_keys = set()
+        current_api_key = api_key
+        from typing import Tuple
+        
+        # 現在のキー名を特定
+        current_key_name = config_manager.get_key_name_by_value(current_api_key)
+        if current_key_name != "Unknown":
+            tried_keys.add(current_key_name)
+        
+        max_retries = 5
+        for attempt in range(max_retries):
+            # 1. 枯渇チェック
+            if config_manager.is_key_exhausted(current_key_name):
+                print(f"  [Episodic Rotation] Key '{current_key_name}' is exhausted. Swapping...")
+                next_key_name = config_manager.get_next_available_gemini_key(
+                    current_exhausted_key=current_key_name,
+                    excluded_keys=tried_keys
+                )
+                if next_key_name:
+                    current_key_name = next_key_name
+                    current_api_key = config_manager.GEMINI_API_KEYS[next_key_name]
+                    tried_keys.add(next_key_name)
+                    # 永続化
+                    config_manager.save_config_if_changed("last_api_key_name", next_key_name)
+                else:
+                    raise Exception("利用可能なAPIキーがありません（枯渇）。")
+
+            # 2. 生成
+            llm = LLMFactory.create_chat_model(
+                api_key=current_api_key,
+                generation_config=settings,
+                internal_role=role
+            )
+            
+            try:
+                response = llm.invoke(prompt)
+                return response.content, current_api_key
+            except Exception as e:
+                err_str = str(e).upper()
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    print(f"  [Episodic Rotation] 429 Error with key '{current_key_name}'.")
+                    config_manager.mark_key_as_exhausted(current_key_name)
+                    time.sleep(1 * (attempt + 1)) # バックオフ
+                    continue
+                else:
+                    raise e
+        
+        raise Exception("Max retries exceeded in EpisodicMemoryManager._invoke_llm")

@@ -57,11 +57,12 @@ def ensure_room_files(room_name: str) -> bool:
         dirs_to_create = [
             base_path,
             os.path.join(base_path, "attachments"),
-            os.path.join(base_path, "audio_cache"), # ← この行を追加
+            os.path.join(base_path, "audio_cache"),
             os.path.join(base_path, "generated_images"),
             spaces_dir,
             os.path.join(spaces_dir, "images"),
             cache_dir,
+            os.path.join(base_path, constants.LOGS_DIR_NAME), # [NEW] チャットログ分割
             os.path.join(base_path, "log_archives", "processed"),
             os.path.join(base_path, "log_import_source", "processed"),
             os.path.join(base_path, "memory"),
@@ -244,7 +245,8 @@ def get_room_files_paths(room_name: str) -> Optional[Tuple[str, str, Optional[st
     """
     if not room_name or not ensure_room_files(room_name): return None, None, None, None, None, None
     base_path = os.path.join(constants.ROOMS_DIR, room_name)
-    log_file = os.path.join(base_path, "log.txt")
+    current_month = datetime.datetime.now().strftime("%Y-%m")
+    log_file = os.path.join(base_path, constants.LOGS_DIR_NAME, f"{current_month}.txt")
     system_prompt_file = os.path.join(base_path, "SystemPrompt.txt")
     profile_image_path = os.path.join(base_path, constants.PROFILE_IMAGE_FILENAME)
     # memory.txt へのパスを memory/memory_main.txt に変更

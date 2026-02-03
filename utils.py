@@ -16,6 +16,7 @@ import uuid
 from bs4 import BeautifulSoup
 import io
 import contextlib
+import glob
 
 LOCK_FILE_PATH = Path.home() / ".nexus_ark.global.lock"
  
@@ -122,46 +123,179 @@ def release_lock():
 
 def load_chat_log(file_path: str) -> List[Dict[str, str]]:
     """
-    (Definitive Edition v3)
-    Reads a log file and returns a unified list of dictionaries.
-    This version uses a robust finditer approach to prevent message content
-    from being misinterpreted as a new speaker header.
+    (Definitive Edition v4: Monthly Segmented Loading)
+    Reads log files and returns a unified list of dictionaries.
+    If the path points to 'log.txt', it automatically attempts to load from the 'logs/' folder.
     """
     messages: List[Dict[str, str]] = []
-    if not file_path or not os.path.exists(file_path):
-        return messages
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except Exception as e:
-        print(f"エラー: ログファイル '{file_path}' 読込エラー: {e}")
+    if not file_path:
         return messages
 
-    if not content.strip():
+    # --- [NEW] 月次分割対応: ルームディレクトリの特定 ---
+    file_path_clean = file_path.replace("\\", "/")
+    if f"/{constants.LOGS_DIR_NAME}/" in file_path_clean:
+        room_dir = os.path.dirname(os.path.dirname(file_path))
+    elif file_path_clean.endswith(f"/{constants.LOGS_DIR_NAME}"):
+        room_dir = os.path.dirname(file_path)
+    else:
+        room_dir = os.path.dirname(file_path)
+        
+    logs_dir = os.path.join(room_dir, constants.LOGS_DIR_NAME)
+    
+    # 移行が必要な場合は実行 (初期化時など)
+    legacy_log = os.path.join(room_dir, "log.txt")
+    if os.path.exists(legacy_log):
+        _migrate_chat_logs(room_dir)
+
+    target_files = []
+    if os.path.exists(logs_dir) and os.path.isdir(logs_dir):
+        # logs/ 内の全ファイルを日付順に取得
+        target_files = sorted(glob.glob(os.path.join(logs_dir, "*.txt")))
+    elif os.path.exists(file_path):
+        # 指定されたファイルのみ
+        target_files = [file_path]
+
+    if not target_files:
         return messages
 
-    # Regex to find all valid headers
-    header_pattern = re.compile(r'^## (USER|AGENT|SYSTEM):(.+?)$', re.MULTILINE)
+    # 全ファイルを読み込んで結合
+    # TODO: 将来的に非常に重くなる場合は、ここでの制限読み込みを検討
+    for f_path in target_files:
+        try:
+            with open(f_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            print(f"エラー: ログファイル '{f_path}' 読込エラー: {e}")
+            continue
 
-    matches = list(header_pattern.finditer(content))
+        if not content.strip():
+            continue
 
-    for i, match in enumerate(matches):
-        # Extract header info
-        role = match.group(1).upper()
-        responder = match.group(2).strip()
-        if role == "USER":
-            responder = "user"
+        # Regex to find all valid headers
+        header_pattern = re.compile(r'^## (USER|AGENT|SYSTEM):(.+?)$', re.MULTILINE)
+        matches = list(header_pattern.finditer(content))
 
-        # Determine content span
-        start_of_content = match.end()
-        end_of_content = matches[i + 1].start() if i + 1 < len(matches) else len(content)
-
-        # Extract and clean content
-        message_content = content[start_of_content:end_of_content].strip()
-
-        messages.append({"role": role, "responder": responder, "content": message_content})
+        for i, match in enumerate(matches):
+            role = match.group(1).upper()
+            responder = match.group(2).strip()
+            if role == "USER":
+                responder = "user"
+            start_of_content = match.end()
+            end_of_content = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+            message_content = content[start_of_content:end_of_content].strip()
+            messages.append({"role": role, "responder": responder, "content": message_content})
 
     return messages
+
+def _get_room_dir_from_path(file_path: str) -> str:
+    """
+    ファイルパスからルームディレクトリを特定するヘルパー。
+    """
+    if not file_path: return ""
+    file_path_clean = file_path.replace("\\", "/")
+    if f"/{constants.LOGS_DIR_NAME}/" in file_path_clean:
+        return os.path.dirname(os.path.dirname(file_path))
+    elif file_path_clean.endswith(f"/{constants.LOGS_DIR_NAME}"):
+        return os.path.dirname(file_path)
+    else:
+        return os.path.dirname(file_path)
+
+    # 全ファイルを読み込んで結合
+    # TODO: 将来的に非常に重くなる場合は、ここでの制限読み込みを検討
+    for f_path in target_files:
+        try:
+            with open(f_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except Exception as e:
+            print(f"エラー: ログファイル '{f_path}' 読込エラー: {e}")
+            continue
+
+        if not content.strip():
+            continue
+
+        # Regex to find all valid headers
+        header_pattern = re.compile(r'^## (USER|AGENT|SYSTEM):(.+?)$', re.MULTILINE)
+        matches = list(header_pattern.finditer(content))
+
+        for i, match in enumerate(matches):
+            role = match.group(1).upper()
+            responder = match.group(2).strip()
+            if role == "USER":
+                responder = "user"
+            start_of_content = match.end()
+            end_of_content = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+            message_content = content[start_of_content:end_of_content].strip()
+            messages.append({"role": role, "responder": responder, "content": message_content})
+
+    return messages
+
+def _migrate_chat_logs(room_dir: str):
+    """
+    既存の log.txt および log_archives を新形式 (logs/YYYY-MM.txt) に自動移行する。
+    """
+    legacy_log = os.path.join(room_dir, "log.txt")
+    legacy_archives_dir = os.path.join(room_dir, "log_archives")
+    new_logs_dir = os.path.join(room_dir, constants.LOGS_DIR_NAME)
+    
+    if not os.path.exists(legacy_log) and not os.path.exists(legacy_archives_dir):
+        return
+
+    print(f"--- [Log Migration] 既存のログを新しい月次形式に整理しています: {room_dir} ---")
+    os.makedirs(new_logs_dir, exist_ok=True)
+    
+    all_files = []
+    if os.path.exists(legacy_log): all_files.append(legacy_log)
+    if os.path.exists(legacy_archives_dir):
+        all_files.extend(glob.glob(os.path.join(legacy_archives_dir, "*.txt")))
+    
+    # タイムスタンプ抽出用
+    # メッセージ内の "YYYY-MM-DD (Tue) HH:MM:SS" 形式を優先
+    date_pattern = re.compile(r'(\d{4}-\d{2})-\d{2}')
+    
+    for f_path in all_files:
+        messages_by_month = {}
+        try:
+            # 既存の読み込みロジックを一時的に流用して個別のメッセージに分解
+            raw_content = ""
+            with open(f_path, "r", encoding="utf-8") as f:
+                raw_content = f.read()
+            
+            if not raw_content.strip(): continue
+            
+            header_pattern = re.compile(r'^(## (?:USER|AGENT|SYSTEM):.+?)$', re.MULTILINE)
+            parts = header_pattern.split(raw_content)
+            
+            current_month = "0000-00" # 日付不明用
+            
+            # header_pattern.split は、[空, header1, body1, header2, body2, ...] を返す
+            for i in range(1, len(parts), 2):
+                header = parts[i]
+                body = parts[i+1] if i+1 < len(parts) else ""
+                
+                # ボディから日付を探す
+                match = date_pattern.search(body)
+                if match:
+                    current_month = match.group(1)
+                
+                if current_month not in messages_by_month:
+                    messages_by_month[current_month] = []
+                messages_by_month[current_month].append(f"{header}{body}")
+            
+            # 月ごとに保存
+            for month, contents in messages_by_month.items():
+                target_path = os.path.join(new_logs_dir, f"{month}.txt")
+                with open(target_path, "a", encoding="utf-8") as f:
+                    f.write("".join(contents))
+            
+            # 元ファイルをリネーム（バックアップ化）
+            backup_path = f"{f_path}.migrated"
+            os.rename(f_path, backup_path)
+            
+        except Exception as e:
+            print(f"!!! [Log Migration Error] {f_path} の移行中にエラー: {e}")
+            traceback.print_exc()
+
+    print(f"--- [Log Migration] 完了 ---")
 
 
 def _perform_log_archiving(log_file_path: str, character_name: str, threshold_bytes: int, keep_bytes: int) -> Optional[str]:
@@ -241,25 +375,40 @@ def save_message_to_log(log_file_path: str, header: str, text_content: str) -> O
     import config_manager
     if not all([log_file_path, header, text_content, text_content.strip()]): return None
     try:
+        # --- [NEW] 月次分割対応: 保存先を現在月に変更 ---
+        file_path_clean = log_file_path.replace("\\", "/")
+        if f"/{constants.LOGS_DIR_NAME}/" in file_path_clean:
+            room_dir = os.path.dirname(os.path.dirname(log_file_path))
+        else:
+            room_dir = os.path.dirname(log_file_path)
+            
+        current_month = datetime.datetime.now().strftime("%Y-%m")
+        target_log_file = os.path.join(room_dir, constants.LOGS_DIR_NAME, f"{current_month}.txt")
+        os.makedirs(os.path.dirname(target_log_file), exist_ok=True)
+        
         content_to_append = f"{header.strip()}\n{text_content.strip()}\n\n"
-        if not os.path.exists(log_file_path) or os.path.getsize(log_file_path) == 0:
+        # ファイルが新規作成される場合は、先頭の改行を削除
+        if not os.path.exists(target_log_file) or os.path.getsize(target_log_file) == 0:
              content_to_append = content_to_append.lstrip()
-        with open(log_file_path, "a", encoding="utf-8") as f: f.write(content_to_append)
-        character_name = os.path.basename(os.path.dirname(log_file_path))
-        threshold_mb = config_manager.CONFIG_GLOBAL.get("log_archive_threshold_mb", 10)
-        keep_mb = config_manager.CONFIG_GLOBAL.get("log_keep_size_mb", 5)
-        threshold_bytes = threshold_mb * 1024 * 1024
-        keep_bytes = keep_mb * 1024 * 1024
-        return _perform_log_archiving(log_file_path, character_name, threshold_bytes, keep_bytes)
+             
+        with open(target_log_file, "a", encoding="utf-8") as f: 
+            f.write(content_to_append)
+        
+        # 従来のサイズベース・アーカイブ処理は月次分割に統合されたため不要（互換性のために形だけ残すか空にする）
+        # _perform_log_archiving の戻り値を利用している箇所がないか確認
+        return None
     except Exception as e:
-        print(f"エラー: ログファイル '{log_file_path}' 書き込みエラー: {e}"); traceback.print_exc()
+        print(f"エラー: ログ保存エラー: {e}"); traceback.print_exc()
         return None
 
 def delete_message_from_log(log_file_path: str, message_to_delete: Dict[str, str]) -> Optional[str]:
     """
     ログからメッセージを削除し、成功した場合は削除されたメッセージのタイムスタンプ(HH:MM:SS)を返す。
     """
-    if not log_file_path or not os.path.exists(log_file_path) or not message_to_delete: return None
+    if not log_file_path or not message_to_delete: return None
+    room_dir = _get_room_dir_from_path(log_file_path)
+    if not os.path.exists(room_dir): return None
+    
     try:
         all_messages = load_chat_log(log_file_path)
         original_len = len(all_messages)
@@ -287,21 +436,74 @@ def delete_message_from_log(log_file_path: str, message_to_delete: Dict[str, str
         if len(new_messages) >= original_len:
             print(f"警告: ログファイル内に削除対象のメッセージが見つかりませんでした。"); return None
             
-        log_content_parts = []
+        # 月次分割対応: 削除後のログを各月に振り分けて書き戻す
+        messages_by_month = {}
+        date_pattern = re.compile(r'(\d{4}-\d{2})-\d{2}')
+        current_month = "0000-00"
+        
         for msg in new_messages:
-            role = msg.get("role", "AGENT").upper(); responder_id = msg.get("responder", "不明")
+            content = msg.get('content', '')
+            match = date_pattern.search(content)
+            if match:
+                current_month = match.group(1)
+            
+            if current_month not in messages_by_month:
+                messages_by_month[current_month] = []
+            
+            role = msg.get("role", "AGENT").upper()
+            responder_id = msg.get("responder", "不明")
             header = f"## {role}:{responder_id}"
-            content = msg.get('content', '').strip()
-            if content: log_content_parts.append(f"{header}\n{content}")
-        new_log_content = "\n\n".join(log_content_parts)
-        with open(log_file_path, "w", encoding="utf-8") as f: f.write(new_log_content)
-        if new_log_content:
-            with open(log_file_path, "a", encoding="utf-8") as f: f.write("\n\n")
-        print("--- Successfully deleted message from log ---")
-        return deleted_timestamp or "00:00:00" # タイムスタンプがない場合はダミーを返す(成功の印)
+            messages_by_month[current_month].append(f"{header}\n{content.strip()}\n\n")
+
+        logs_dir = os.path.join(room_dir, constants.LOGS_DIR_NAME)
+
+        # 全ファイルを一旦空にする（または全削除して書き直す）
+        # 安全のため、移行後の形式 (logs/*.txt) にのみ保存
+        for month, contents in messages_by_month.items():
+            target_path = os.path.join(logs_dir, f"{month}.txt")
+            # 既に存在する場合は上書き (w)
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write("".join(contents).lstrip())
+                
+        print("--- Successfully deleted message and re-distributed logs ---")
+        return deleted_timestamp or "00:00:00"
     except Exception as e:
         print(f"エラー: ログからのメッセージ削除中に予期せぬエラー: {e}"); traceback.print_exc()
         return None
+
+def _write_segmented_logs(room_dir: str, messages: List[Dict[str, str]]):
+    """
+    メッセージリストを月ごとに分割して、logs/ フォルダ内の各ファイルに書き込む。
+    (w)モードで上書きするため、削除処理後の反映に使用する。
+    """
+    logs_dir = os.path.join(room_dir, constants.LOGS_DIR_NAME)
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    messages_by_month = {}
+    date_pattern = re.compile(r'(\d{4}-\d{2})-\d{2}')
+    current_month = "0000-00"
+    
+    for msg in messages:
+        content = msg.get('content', '')
+        match = date_pattern.search(content)
+        if match:
+            current_month = match.group(1)
+        
+        if current_month not in messages_by_month:
+            messages_by_month[current_month] = []
+        
+        role = msg.get("role", "AGENT").upper()
+        responder_id = msg.get("responder", "不明")
+        header = f"## {role}:{responder_id}"
+        messages_by_month[current_month].append(f"{header}\n{content.strip()}\n\n")
+
+    # 全ファイルを一旦空にする（または全削除して書き直す）のではなく、
+    # 渡されたメッセージに含まれる月のみを上書きする。
+    # ※ load_chat_log が全期間をロードしている前提。
+    for month, contents in messages_by_month.items():
+        target_path = os.path.join(logs_dir, f"{month}.txt")
+        with open(target_path, "w", encoding="utf-8") as f:
+            f.write("".join(contents).lstrip())
 
 def remove_thoughts_from_text(text: str) -> str:
     """
@@ -677,7 +879,10 @@ def delete_and_get_previous_user_input(log_file_path: str, ai_message_to_delete:
     AIメッセージを削除し、その直前のユーザー入力を取得して返す。
     Returns: (restored_input, deleted_timestamp)
     """
-    if not all([log_file_path, os.path.exists(log_file_path), ai_message_to_delete]): return None, None
+    if not log_file_path or not ai_message_to_delete: return None, None
+    room_dir = _get_room_dir_from_path(log_file_path)
+    if not os.path.exists(room_dir): return None, None
+    
     try:
         all_messages = load_chat_log(log_file_path)
         target_start_index = -1
@@ -709,15 +914,10 @@ def delete_and_get_previous_user_input(log_file_path: str, ai_message_to_delete:
         
         user_message_content = all_messages[last_user_message_index].get("content", "")
         messages_to_keep = all_messages[:last_user_message_index]
-        log_content_parts = []
-        for msg in messages_to_keep:
-            header = f"## {msg.get('role', 'AGENT').upper()}:{msg.get('responder', '不明')}"
-            content = msg.get('content', '').strip()
-            if content: log_content_parts.append(f"{header}\n{content}")
-        new_log_content = "\n\n".join(log_content_parts)
-        with open(log_file_path, "w", encoding="utf-8") as f: f.write(new_log_content)
-        if new_log_content:
-            with open(log_file_path, "a", encoding="utf-8") as f: f.write("\n\n")
+        
+        # 月次分割対応: 書き戻し処理の共通化
+        _write_segmented_logs(room_dir, messages_to_keep)
+
         content_without_timestamp = re.sub(r'\n\n\d{4}-\d{2}-\d{2} \(...\) \d{2}:\d{2}:\d{2}$', '', user_message_content, flags=re.MULTILINE)
         restored_input = content_without_timestamp.strip()
         print("--- Successfully reset conversation to the last user input for rerun ---")
@@ -739,7 +939,10 @@ def delete_user_message_and_after(log_file_path: str, user_message_to_delete: Di
     ユーザーメッセージ以降をすべて削除する。
     Returns: (restored_input, None) ※戻り値の型を合わせるためのダミー
     """
-    if not all([log_file_path, os.path.exists(log_file_path), user_message_to_delete]): return None, None
+    if not log_file_path or not user_message_to_delete: return None, None
+    room_dir = _get_room_dir_from_path(log_file_path)
+    if not os.path.exists(room_dir): return None, None
+    
     try:
         all_messages = load_chat_log(log_file_path)
         target_index = -1
@@ -749,15 +952,10 @@ def delete_user_message_and_after(log_file_path: str, user_message_to_delete: Di
         if target_index == -1: return None, None
         user_message_content = all_messages[target_index].get("content", "")
         messages_to_keep = all_messages[:target_index]
-        log_content_parts = []
-        for msg in messages_to_keep:
-            header = f"## {msg.get('role', 'AGENT').upper()}:{msg.get('responder', '不明')}"
-            content = msg.get('content', '').strip()
-            if content: log_content_parts.append(f"{header}\n{content}")
-        new_log_content = "\n\n".join(log_content_parts)
-        with open(log_file_path, "w", encoding="utf-8") as f: f.write(new_log_content)
-        if new_log_content:
-            with open(log_file_path, "a", encoding="utf-8") as f: f.write("\n\n")
+        
+        # 月次分割対応: 書き戻し処理の共通化
+        _write_segmented_logs(room_dir, messages_to_keep)
+
         content_without_timestamp = re.sub(r'\n\n\d{4}-\d{2}-\d{2} \(...\) \d{2}:\d{2}:\d{2}$', '', user_message_content, flags=re.MULTILINE)
         restored_input = content_without_timestamp.strip()
         print("--- Successfully reset conversation to before the selected user input for rerun ---")

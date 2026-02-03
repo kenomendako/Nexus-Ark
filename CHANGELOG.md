@@ -5,6 +5,15 @@ All notable changes to Nexus Ark will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Added
+- 影の僕（Shadow Servant）からの提案を独立したセクション `{pending_messages_section}` に分離。
+
+### Fixed
+- **睡眠時RAG索引更新と記憶整理のAPIキーローテーション不具合の修正 (2026-02-03):** 睡眠モード中のRAG索引更新やエピソード記憶生成において、APIキーが正しくローテーションされず無限ループに陥る問題を修正。`alarm_manager.py` でルームごとにキーを再取得、`rag_manager.py` に動的ローテーション対応の `RotatingEmbeddings` ラッパーと意図分類のリトライロジックを導入、`episodic_memory_manager.py` に回転対応の `_invoke_llm` ヘルパーを実装し `UnboundLocalError` を解消。また、`dreaming_manager.py` において影の僕のJSONパースを堅牢化し、夢日記（洞察）を月次分割サブディレクトリ（`dreaming/`）へ移行・自動移行ロジックを実装。`entity_memory_manager.py` の統合処理にもローテーションを適用。
+- ログからメッセージを削除する際の `NameError: name 'new_messages' is not defined` を修正。
+
+### Changed
+- システムプロンプトから「記憶しているエンティティ一覧」を削除し、トークン消費を抑制。
 
 ### Added
 - **推定入力トークン数の計算精度の改善 (2026-02-02):** 推定値と実入力の乖離（51k vs 32k等）を大幅に削減し、安全かつ正確なコスト予測を実現。ツールオーバーヘッドの見積もりを実測値に基づく 250 トークン/ツールへ適正化し、安全係数を 1.15倍 + 500トークンに微調整。コンテキスト・プレースホルダー（RAG検索結果等）を現実的な長さに更新し、実際の送信ロジックとの整合性を強化。[レポート](docs/reports/2026-02-02_Token_Count_Accuracy_Improvement.md)

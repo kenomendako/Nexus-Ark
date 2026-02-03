@@ -4,8 +4,11 @@ import os
 import json
 from pathlib import Path
 from datetime import datetime
+import time
+import re
 import constants
 from llm_factory import LLMFactory
+import config_manager
 
 class EntityMemoryManager:
     """
@@ -76,13 +79,6 @@ class EntityMemoryManager:
             style_reference = "（参考ファイルなし - 既存の記憶の文体を維持してください）"
         
         # LLMによる統合処理
-        llm = LLMFactory.create_chat_model(
-            model_name=constants.INTERNAL_PROCESSING_MODEL,
-            api_key=api_key,
-            generation_config={},
-            force_google=True
-        )
-        
         prompt = f"""あなたは、あるAIエージェントの「内省的な深層意識」です。
 対象（{entity_name}）に関する既存の知見と新しく得られた情報を統合し、
 永続的な「エンティティ知識・考察録（内部Wikipedia/辞書）」として更新・洗練させてください。
@@ -120,7 +116,8 @@ class EntityMemoryManager:
 【統合後のコンテンツのみを出力せよ。前置きや解説は一切禁止】
 """
         try:
-            response = llm.invoke(prompt).content.strip()
+            response_msg, _ = self._invoke_llm("processing", prompt, api_key)
+            response = response_msg.content.strip()
             
             # 保存
             with open(path, "w", encoding="utf-8") as f:
@@ -212,3 +209,53 @@ class EntityMemoryManager:
             path.unlink()
             return True
         return False
+
+    def _invoke_llm(self, role: str, prompt: str, initial_api_key: str) -> tuple:
+        """
+        APIキーローテーション対応のLLM呼び出し。
+        dreaming_managerと同様のロジック。
+        """
+        current_api_key = initial_api_key
+        tried_keys = set()
+        
+        # 現在のキー名を特定
+        current_key_name = config_manager.get_key_name_by_value(current_api_key)
+        if current_key_name != "Unknown":
+            tried_keys.add(current_key_name)
+        
+        max_retries = 5
+        for attempt in range(max_retries):
+            # 1. 枯渇チェック
+            if config_manager.is_key_exhausted(current_key_name):
+                next_key = config_manager.get_next_available_gemini_key(
+                    current_exhausted_key=current_key_name,
+                    excluded_keys=tried_keys
+                )
+                if next_key:
+                    current_key_name = next_key
+                    current_api_key = config_manager.GEMINI_API_KEYS[next_key]
+                    tried_keys.add(next_key)
+                    config_manager.save_config_if_changed("last_api_key_name", next_key)
+                else:
+                    raise Exception("利用可能なAPIキーがありません（枯渇）。")
+
+            # 2. モデル生成
+            llm = LLMFactory.create_chat_model(
+                api_key=current_api_key,
+                generation_config={},
+                internal_role=role
+            )
+            
+            try:
+                return llm.invoke(prompt), current_api_key
+            except Exception as e:
+                err_str = str(e).upper()
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    print(f"  [Entity Rotation] 429 Error with key '{current_key_name}'.")
+                    config_manager.mark_key_as_exhausted(current_key_name)
+                    time.sleep(1 * (attempt+1))
+                    continue
+                else:
+                    raise e
+        
+        raise Exception("Max retries exceeded in EntityMemoryManager._invoke_llm")

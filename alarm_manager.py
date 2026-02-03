@@ -772,10 +772,6 @@ def check_autonomous_actions():
     """全ルームの動機モデルをチェックし、必要なら自律行動または夢想をトリガーする"""
     from motivation_manager import MotivationManager
 
-    current_api_key = config_manager.get_latest_api_key_name_from_config()
-    if not current_api_key:
-        return
-
     all_rooms = room_manager.get_room_list_for_ui()
     now = datetime.datetime.now()
 
@@ -823,6 +819,9 @@ def check_autonomous_actions():
                 if is_quiet:
                     # --- [Project Morpheus] 夢想モード ---
                     # 通知禁止時間帯は「睡眠時間」とみなし、夢を見るか、静観するかを判断する
+                    
+                    # ルームごとの処理開始時に、最新の有効なAPIキー（名称）を再取得する
+                    current_api_key = config_manager.get_active_gemini_api_key_name(room_folder)
                     
                     # APIキーの実体を取得
                     api_key_val = config_manager.GEMINI_API_KEYS.get(current_api_key)
@@ -939,6 +938,9 @@ def check_autonomous_actions():
                         print(f"🤖 {room_folder}: 動機「{motivation_log.get('dominant_drive_label', '不明')}」-> 自律行動トリガー！")
                     else:
                         print(f"🤖 {room_folder}: 無操作{int(elapsed_minutes)}分 -> 自律行動トリガー！")
+                    
+                    # 【新規追加】最新のAPIキーを取得して実行
+                    current_api_key = config_manager.get_active_gemini_api_key_name(room_folder)
                     
                     # 【Phase 3】通常の自律行動に加え、一定確率または条件で「分析」も検討
                     # ここでは単純に trigger_autonomous_action を呼ぶが、AIはプロンプトで分析ツールを使える
