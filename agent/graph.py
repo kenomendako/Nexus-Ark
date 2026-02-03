@@ -705,28 +705,17 @@ def context_generator_node(state: AgentState):
         print(f"--- 警告: 研究ノートの読み込み中にエラー: {e}")
         research_notes_section = "\n### 研究・分析ノート\n（研究ノートの読み込み中にエラーが発生しました）\n"
 
-    # --- [Entity Memory v2] エンティティ一覧（目次）の注入 ---
-    entity_list_section = ""
+    # --- [Phase 2] ペンディングシステムメッセージ（影の僕からの提案）の注入 ---
+    pending_messages_section = ""
     try:
-        em_manager = EntityMemoryManager(room_name)
-        entities = em_manager.list_entries()
-        if entities:
-            entity_list_str = "\n".join([f"- {name}" for name in sorted(entities)])
-            entity_list_section = (
-                f"\n### 記憶しているエンティティ一覧\n"
-                f"以下は記憶している人物・事物の名前です。詳細は `read_entity_memory(\"名前\")` で確認できます。\n\n"
-                f"{entity_list_str}\n"
-            )
-        
-        # --- [Phase 2] ペンディングシステムメッセージ（影の僕からの提案）の注入 ---
         from dreaming_manager import DreamingManager
         dm = DreamingManager(room_name, state.get("api_key", ""))
         pending_msg = dm.get_pending_system_messages()
         if pending_msg:
-            entity_list_section += f"\n\n{pending_msg}\n"
+            pending_messages_section = f"\n\n{pending_msg}\n"
             print(f"  - [Context] ペンディングシステムメッセージを注入しました")
     except Exception as e:
-        print(f"  - [Context] エンティティ一覧取得エラー: {e}")
+        print(f"  - [Context] ペンディングメッセージ取得エラー: {e}")
 
     episodic_memory_section = ""
     
@@ -992,7 +981,7 @@ def context_generator_node(state: AgentState):
         'core_memory': core_memory,
         'notepad_section': notepad_section,
         'research_notes_section': research_notes_section,
-        'entity_list_section': entity_list_section,
+        'pending_messages_section': pending_messages_section,
         'episodic_memory': episodic_memory_section,
         'dream_insights': dream_insights_text,
         'thought_generation_manual': thought_generation_manual_text,

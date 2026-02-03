@@ -1150,19 +1150,14 @@ def count_input_tokens(**kwargs):
         except Exception:
             pass
         
-        # エンティティ一覧を実際に読み込む
-        entity_list_section = ""
+        # --- [Phase 2] ペンディングシステムメッセージ（影の僕からの提案）の見積もり ---
+        pending_messages_section = ""
         try:
-            from entity_memory_manager import EntityMemoryManager
-            em_manager = EntityMemoryManager(room_name)
-            entities = em_manager.list_entries()
-            if entities:
-                entity_list_str = "\n".join([f"- {name}" for name in sorted(entities)])
-                entity_list_section = (
-                    f"\n### 記憶しているエンティティ一覧\n"
-                    f"以下は記憶している人物・事物の名前です。\n\n"
-                    f"{entity_list_str}\n"
-                )
+            from dreaming_manager import DreamingManager
+            # トークン計算時は読み込むだけでクリアしないように注意（本来は get_pending_system_messages ではなく閲覧のみが良いが、
+            # 簡易化のためここでは静的な長いテキストで代用するか、ロジックを共通化する）
+            # ここでは「ペンディングメッセージがあった場合」の平均的な長さ（約500文字）で見積もる
+            pending_messages_section = "\n\n【影の僕からの提案：記憶の記録について】\n" + "x" * 500 + "\n"
         except Exception:
             pass
         
@@ -1273,7 +1268,7 @@ def count_input_tokens(**kwargs):
             'core_memory': core_memory,
             'notepad_section': notepad_section,
             'research_notes_section': research_notes_section,
-            'entity_list_section': entity_list_section,
+            'pending_messages_section': pending_messages_section,
             'episodic_memory': episodic_memory_section,
             'thought_generation_manual': thought_generation_manual_text,
             'image_generation_manual': '',

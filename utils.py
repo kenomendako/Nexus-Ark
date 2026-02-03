@@ -265,6 +265,7 @@ def delete_message_from_log(log_file_path: str, message_to_delete: Dict[str, str
         original_len = len(all_messages)
         
         deleted_timestamp = None
+        new_messages = []
         for msg in all_messages:
             if (msg.get("content") == message_to_delete.get("content") and msg.get("responder") == message_to_delete.get("responder")):
                 # タイムスタンプを抽出
