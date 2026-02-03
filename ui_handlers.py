@@ -1,4 +1,5 @@
 import sys
+import glob
 import subprocess
 import gradio as gr
 import tempfile
@@ -4223,7 +4224,7 @@ def handle_show_latest_episodic(room_name: str):
 def handle_refresh_entity_list(room_name: str):
     """エンティティの一覧を取得してドロップダウンを更新する"""
     if not room_name:
-        return gr.update(choices=[]), ""
+        return gr.update(choices=[], value=None), ""
     
     from entity_memory_manager import EntityMemoryManager
     em = EntityMemoryManager(room_name)
@@ -4236,6 +4237,66 @@ def handle_refresh_entity_list(room_name: str):
     entities.sort()
     
     return gr.update(choices=entities, value=None), "エンティティを選択してください。"
+
+def handle_search_chat_log_keyword(room_name: str, keyword: str) -> gr.update:
+    """
+    指定されたキーワードを含むログ月を検索し、ドロップダウンの選択肢をフィルタリングする。
+    キーワードが空の場合は全件表示に戻す。
+    """
+    if not room_name:
+        return gr.update()
+        
+    base_path = os.path.join(constants.ROOMS_DIR, room_name)
+    logs_dir = os.path.join(base_path, constants.LOGS_DIR_NAME)
+    
+    if not os.path.exists(logs_dir):
+        return gr.update(choices=["最新"], value="最新")
+
+    # 全ファイル取得 (年月リスト構築ロジックの再利用)
+    all_files = glob.glob(os.path.join(logs_dir, "*.txt"))
+    month_map = {} # "YYYY-MM" -> path
+    for fpath in all_files:
+        filename = os.path.basename(fpath)
+        if re.match(r"\d{4}-\d{2}\.txt", filename):
+            month = filename.replace(".txt", "")
+            month_map[month] = fpath
+    
+    # 検索実行
+    if not keyword or not keyword.strip():
+        # キーワードなし -> 全件表示
+        choices = ["最新"] + sorted(list(month_map.keys()), reverse=True)
+        return gr.update(choices=choices, value="最新")
+    
+    matched_months = []
+    
+    # キーワード検索
+    for month, fpath in month_map.items():
+        try:
+            with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                if keyword in content:
+                    matched_months.append(month)
+        except:
+            continue
+            
+    if not matched_months:
+        gr.Info(f"キーワード「{keyword}」を含むログは見つかりませんでした。")
+        # 0件でも空にするよりは全件表示する方が親切か？ あるいは空リストにするか。
+        # ここではリストはそのまま（あるいは "該当なし" を出す？）だが、
+        # フィルタ結果として空を返すと操作不能になるので、Warningを出してリセットしない、あるいは空にする。
+        # 直感的には「絞り込み結果0件」を表示すべき。
+        return gr.update(choices=[], value=None)
+    
+    # ヒットした月 + (ヒットした中に最新月が含まれるかは不明だが、「最新」という概念はファイルではないので検索対象外)
+    # だが、「最新」ログ（=現在進行中の月）も当然検索対象に含めたい。
+    # 現在の月を特定して検索結果に含める必要がある。
+    # しかし month_map には全ての月が含まれているはずなので、current_month がヒットしていればそれでよい。
+    # UI上、「最新」という選択肢を残すかどうか。
+    # 「最新」は便利ショートカットなので、検索時は具体的な月 "YYYY-MM" を指定させる形で良い。
+    
+    choices = sorted(matched_months, reverse=True)
+    gr.Info(f"{len(choices)} 件のログファイルがヒットしました。")
+    return gr.update(choices=choices, value=choices[0] if choices else None)
 
 def handle_entity_selection_change(room_name: str, entity_name: str):
     """選択されたエンティティの内容を読み込む"""
@@ -9834,24 +9895,60 @@ def handle_clear_user_memo(room_name: str) -> str:
 # 会話ログ RAWエディタ (Chat Log Raw Editor)
 # =============================================================================
 
-def handle_load_chat_log_raw(room_name: str) -> gr.update:
+def handle_load_chat_log_raw(
+    room_name: str, 
+    selected_month: Optional[str] = None,
+    add_timestamp: bool = True,
+    display_thoughts: bool = True,
+    screenshot_mode: bool = False,
+    redaction_rules: list = None
+) -> tuple:
     """
-    RAWログエディタタブが選択された時に、log.txtを全文読み込む。
+    RAWログエディタタブが選択された時、または月が変更された時に、指定された月（または最新）のログを読み込む。
+    RAWテキストと、プレビュー用の整形済み履歴の両方を返す。
     """
     if not room_name:
         gr.Warning("ルームが選択されていません。")
-        return gr.update(value="")
+        return gr.update(value=""), []
     
-    log_path, _, _, _, _, _ = get_room_files_paths(room_name)
+    # 月が指定されていない、または「最新」の場合は、本来のcurrent_monthのパスを取得
+    if not selected_month or selected_month == "最新":
+        log_path, _, _, _, _, _ = get_room_files_paths(room_name)
+        single_file = False # 「最新」の場合は、通常のload_chat_logの挙動（全結合）を許容しても良いが、
+                            # エディタに表示するのは「現在の最新ファイル」のみにするべきなので True にする。
+        single_file = True
+    else:
+        # 指定された月のファイルを構築 (YYYY-MM.txt)
+        base_path = os.path.join(constants.ROOMS_DIR, room_name)
+        log_path = os.path.join(base_path, constants.LOGS_DIR_NAME, f"{selected_month}.txt")
+        single_file = True
+
     if log_path and os.path.exists(log_path):
         try:
+            # RAWテキスト読込
             with open(log_path, "r", encoding="utf-8") as f:
                 content = f.read()
-            return gr.update(value=content)
+            
+            # プレビュー用履歴生成 (utils.load_chat_log の single_file_only を利用)
+            raw_messages = utils.load_chat_log(log_path, single_file_only=single_file)
+            formatted_history, _ = format_history_for_gradio(
+                messages=raw_messages,
+                current_room_folder=room_name,
+                add_timestamp=add_timestamp,
+                display_thoughts=display_thoughts,
+                screenshot_mode=screenshot_mode,
+                redaction_rules=redaction_rules
+            )
+            
+            return gr.update(value=content), formatted_history
         except Exception as e:
             gr.Error(f"ログファイルの読み込みに失敗しました: {e}")
-            return gr.update(value="")
-    return gr.update(value="")
+            return gr.update(value=""), []
+    
+    # ファイルが存在しない場合
+    if selected_month and selected_month != "最新":
+         gr.Warning(f"指定された月のログファイルが見つかりません: {selected_month}.txt")
+    return gr.update(value=""), []
 
 
 def handle_save_chat_log_raw(
@@ -9861,17 +9958,23 @@ def handle_save_chat_log_raw(
     add_timestamp: bool,
     display_thoughts: bool,
     screenshot_mode: bool,
-    redaction_rules: list
+    redaction_rules: list,
+    selected_month: Optional[str] = None
 ) -> tuple:
     """
     RAWログを保存し、チャット表示を更新する。
-    保存前にバックアップを作成して安全性を確保。
     """
     if not room_name:
         gr.Warning("ルームが選択されていません。")
         return gr.update(), gr.update(), gr.update()
     
-    log_path, _, _, _, _, _ = get_room_files_paths(room_name)
+    # 保存先パスの決定
+    if not selected_month or selected_month == "最新":
+        log_path, _, _, _, _, _ = get_room_files_paths(room_name)
+    else:
+        base_path = os.path.join(constants.ROOMS_DIR, room_name)
+        log_path = os.path.join(base_path, constants.LOGS_DIR_NAME, f"{selected_month}.txt")
+
     if not log_path:
         gr.Error("ログファイルのパスが取得できませんでした。")
         return gr.update(), gr.update(), gr.update()
@@ -9885,46 +9988,128 @@ def handle_save_chat_log_raw(
             raw_content += '\n'
 
         # ファイル保存
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
         with open(log_path, "w", encoding="utf-8") as f:
             f.write(raw_content)
-        gr.Info("会話ログを保存しました。")
+        gr.Info(f"会話ログを保存しました ({os.path.basename(log_path)})")
         
         # チャット表示を更新（reload_chat_log を再利用）
-        history, mapping = reload_chat_log(
+        # ※ reload_chat_log は utils.load_chat_log を呼ぶため、最新の統合的な履歴が反映される
+        main_history, mapping = reload_chat_log(
             room_name, api_history_limit, add_timestamp, 
             display_thoughts, screenshot_mode, redaction_rules
         )
         
+        # プレビュー表示も更新
+        raw_messages = utils.load_chat_log(log_path, single_file_only=True)
+        preview_history, _ = format_history_for_gradio(
+            messages=raw_messages,
+            current_room_folder=room_name,
+            add_timestamp=add_timestamp,
+            display_thoughts=display_thoughts,
+            screenshot_mode=screenshot_mode,
+            redaction_rules=redaction_rules
+        )
+
         return (
-            gr.update(value=raw_content),  # chat_log_raw_editor
-            history,                        # chatbot_display
-            mapping                         # current_log_map_state
+            gr.update(value=raw_content),    # chat_log_raw_editor
+            main_history,                   # chatbot_display
+            mapping,                        # current_log_map_state
+            preview_history                 # chat_log_preview_chatbot
         )
     except Exception as e:
         gr.Error(f"ログの保存中にエラーが発生しました: {e}")
         traceback.print_exc()
-        return gr.update(), gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(), []
 
 
-def handle_reload_chat_log_raw(room_name: str) -> gr.update:
+def handle_reload_chat_log_raw(
+    room_name: str, 
+    selected_month: Optional[str] = None,
+    add_timestamp: bool = True,
+    display_thoughts: bool = True,
+    screenshot_mode: bool = False,
+    redaction_rules: list = None
+) -> tuple:
     """
     RAWログを再読込する（保存せずに最後に保存した状態に戻す）。
     """
+    return handle_load_chat_log_raw(
+        room_name, selected_month, add_timestamp, 
+        display_thoughts, screenshot_mode, redaction_rules
+    )
+
+
+def handle_update_log_preview(
+    room_name: str, 
+    selected_month: Optional[str] = None,
+    add_timestamp: bool = True,
+    display_thoughts: bool = True,
+    screenshot_mode: bool = False,
+    redaction_rules: list = None
+) -> List[Tuple]:
+    """
+    プレビュー用チャットボットのみを更新する（RAWエディタの内容は変更しない）。
+    設定変更（スクリーンショットモード等）時の反映に使用。
+    """
     if not room_name:
-        gr.Warning("ルームが選択されていません。")
-        return gr.update(value="")
+        return []
     
-    log_path, _, _, _, _, _ = get_room_files_paths(room_name)
+    # 月が指定されていない、または「最新」の場合は、本来のcurrent_monthのパスを取得
+    if not selected_month or selected_month == "最新":
+        log_path, _, _, _, _, _ = get_room_files_paths(room_name)
+    else:
+        # 指定された月のファイルを構築
+        base_path = os.path.join(constants.ROOMS_DIR, room_name)
+        log_path = os.path.join(base_path, constants.LOGS_DIR_NAME, f"{selected_month}.txt")
+
     if log_path and os.path.exists(log_path):
         try:
-            with open(log_path, "r", encoding="utf-8") as f:
-                content = f.read()
-            gr.Info("ログファイルを再読み込みしました。")
-            return gr.update(value=content)
+            # プレビュー用履歴生成 (utils.load_chat_log の single_file_only を利用)
+            raw_messages = utils.load_chat_log(log_path, single_file_only=True)
+            formatted_history, _ = format_history_for_gradio(
+                messages=raw_messages,
+                current_room_folder=room_name,
+                add_timestamp=add_timestamp,
+                display_thoughts=display_thoughts,
+                screenshot_mode=screenshot_mode,
+                redaction_rules=redaction_rules
+            )
+            return formatted_history
         except Exception as e:
-            gr.Error(f"ログファイルの読み込みに失敗しました: {e}")
-            return gr.update(value="")
-    return gr.update(value="")
+            print(f"プレビュー生成に失敗しました: {e}")
+            return []
+    
+    return []
+
+
+def handle_refresh_chat_log_months(room_name: str) -> gr.update:
+    """
+    logs/ ディレクトリ内の .txt ファイルを抽出し、年月リストを返す。
+    """
+    if not room_name:
+        return gr.update(choices=["最新"], value="最新")
+    
+    base_path = os.path.join(constants.ROOMS_DIR, room_name)
+    logs_dir = os.path.join(base_path, constants.LOGS_DIR_NAME)
+    
+    if not os.path.exists(logs_dir):
+        return gr.update(choices=["最新"], value="最新")
+    
+    files = glob.glob(os.path.join(logs_dir, "*.txt"))
+    # ファイル名 (YYYY-MM.txt) から YYYY-MM を抽出
+    months = []
+    for f in files:
+        basename = os.path.basename(f)
+        month = os.path.splitext(basename)[0]
+        # YYYY-MM 形式か、あるいは 0000-00 などの特殊なもの
+        months.append(month)
+    
+    # 逆順（新しい順）に並び替える
+    months.sort(reverse=True)
+    
+    choices = ["最新"] + months
+    return gr.update(choices=choices, value="最新")
 
 
 # =============================================================================

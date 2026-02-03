@@ -18,7 +18,8 @@ import io
 import contextlib
 import glob
 
-LOCK_FILE_PATH = Path.home() / ".nexus_ark.global.lock"
+LOCK_FILE_PATH = Path("nexus_ark.lock")
+_MIGRATION_DONE_CACHE = set()
  
 # --- [Phase 7] システム通知バッファ ---
 # フォールバックなどの警告を一時的に保持し、チャット応答時にユーザーに提示する
@@ -121,11 +122,11 @@ def release_lock():
     except Exception as e:
         print(f"\n警告: ロックファイルの解放中にエラーが発生しました: {e}")
 
-def load_chat_log(file_path: str) -> List[Dict[str, str]]:
+def load_chat_log(file_path: str, single_file_only: bool = False) -> List[Dict[str, str]]:
     """
-    (Definitive Edition v4: Monthly Segmented Loading)
+    (Definitive Edition v5: Monthly Segmented Loading with Single File option)
     Reads log files and returns a unified list of dictionaries.
-    If the path points to 'log.txt', it automatically attempts to load from the 'logs/' folder.
+    If 'single_file_only' is True and file_path points to a specific month file, only that file is loaded.
     """
     messages: List[Dict[str, str]] = []
     if not file_path:
@@ -143,12 +144,16 @@ def load_chat_log(file_path: str) -> List[Dict[str, str]]:
     logs_dir = os.path.join(room_dir, constants.LOGS_DIR_NAME)
     
     # 移行が必要な場合は実行 (初期化時など)
+    # 頻繁な実行を防ぐため、セッション内でのキャッシュを確認
     legacy_log = os.path.join(room_dir, "log.txt")
     if os.path.exists(legacy_log):
         _migrate_chat_logs(room_dir)
 
     target_files = []
-    if os.path.exists(logs_dir) and os.path.isdir(logs_dir):
+    # single_file_only かつ 指定パスがファイルとして存在する場合
+    if single_file_only and os.path.isfile(file_path):
+        target_files = [file_path]
+    elif os.path.exists(logs_dir) and os.path.isdir(logs_dir):
         # logs/ 内の全ファイルを日付順に取得
         target_files = sorted(glob.glob(os.path.join(logs_dir, "*.txt")))
     elif os.path.exists(file_path):
@@ -233,6 +238,14 @@ def _migrate_chat_logs(room_dir: str):
     """
     既存の log.txt および log_archives を新形式 (logs/YYYY-MM.txt) に自動移行する。
     """
+    if not room_dir:
+        return
+        
+    # グローバルキャッシュでチェック (セッションごとの重複実行防止)
+    global _MIGRATION_DONE_CACHE
+    if room_dir in _MIGRATION_DONE_CACHE:
+        return
+
     legacy_log = os.path.join(room_dir, "log.txt")
     legacy_archives_dir = os.path.join(room_dir, "log_archives")
     new_logs_dir = os.path.join(room_dir, constants.LOGS_DIR_NAME)
@@ -295,7 +308,9 @@ def _migrate_chat_logs(room_dir: str):
             print(f"!!! [Log Migration Error] {f_path} の移行中にエラー: {e}")
             traceback.print_exc()
 
+
     print(f"--- [Log Migration] 完了 ---")
+    _MIGRATION_DONE_CACHE.add(room_dir)
 
 
 def _perform_log_archiving(log_file_path: str, character_name: str, threshold_bytes: int, keep_bytes: int) -> Optional[str]:

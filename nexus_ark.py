@@ -2152,21 +2152,51 @@ try:
                                     return game_instance.get_fen()
                                 board_sync_timer.tick(fn=sync_board_if_normal, inputs=[free_move_mode_cb], outputs=[board_fen_state])
 
-                    with gr.TabItem("📝 RAWログエディタ") as chat_raw_editor_tab:
+                    with gr.TabItem("📝 ログ管理") as chat_log_management_tab:
                         gr.Markdown(
-                            "会話ログファイル (`log.txt`) を直接編集できます。\n\n"
-                            "> **⚠️ 注意:** 保存前にバックアップが自動作成されますが、書式を崩すとチャット表示に影響が出る可能性があります。"
-                        )
-                        chat_log_raw_editor = gr.Code(
-                            label="log.txt",
-                            language="markdown",
-                            interactive=True,
-                            lines=25,
-                            elem_id="chat_log_raw_editor"
+                            "過去の会話ログの閲覧・編集・検索ができます。\n\n"
+                            "> **⚠️ 注意:** 保存前に自動バックアップが作成されますが、書式（## USER: 等）を崩すと表示が壊れる可能性があります。"
                         )
                         with gr.Row():
-                            save_chat_log_button = gr.Button("💾 ログを保存", variant="primary")
-                            reload_chat_log_button = gr.Button("🔄 最後に保存した内容を読み込む", variant="secondary")
+                            chat_log_month_dropdown = gr.Dropdown(
+                                choices=["最新"],
+                                value="最新",
+                                label="表示する月を選択",
+                                interactive=True,
+                                scale=2
+                            )
+                            refresh_chat_log_months_button = gr.Button("🔄 リスト更新", scale=1)
+
+                        with gr.Row():
+                            chat_log_search_textbox = gr.Textbox(
+                                label="ログ内をキーワード検索",
+                                placeholder="検索したい単語を入力（空欄で検索すると全件表示）",
+                                scale=3
+                            )
+                            chat_log_search_button = gr.Button("🔍 検索", variant="secondary", scale=1)
+
+                        with gr.Tabs():
+                            with gr.TabItem("📄 RAWエディタ"):
+                                chat_log_raw_editor = gr.Code(
+                                    label="ログの内容 (Markdown形式)",
+                                    language="markdown",
+                                    interactive=True,
+                                    lines=25,
+                                    elem_id="chat_log_raw_editor"
+                                )
+                                with gr.Row():
+                                    save_chat_log_button = gr.Button("💾 編集内容を保存", variant="primary")
+                                    reload_chat_log_button = gr.Button("🔄 変更を破棄して再読込", variant="secondary")
+                            
+                            with gr.TabItem("💬 チャット形式プレビュー") as chat_log_preview_tab:
+                                chat_log_preview_chatbot = gr.Chatbot(
+                                    label="ログのプレビュー (閲覧専用)",
+                                    elem_id="chat_log_preview_chatbot",
+                                    height=600,
+                                    latex_delimiters=[],
+                                    show_copy_button=True,
+                                    type="tuples"
+                                )
 
 
             with gr.TabItem("📝 記憶・ノート・知識"):
@@ -3324,6 +3354,19 @@ try:
             fn=ui_handlers.handle_add_or_update_redaction_rule,
             inputs=[redaction_rules_state, selected_redaction_rule_state, redaction_find_textbox, redaction_replace_textbox, redaction_rule_color_state],
             outputs=[redaction_rules_df, redaction_rules_state, selected_redaction_rule_state, redaction_find_textbox, redaction_replace_textbox, redaction_color_picker]
+        ).then(
+            # メインチャットの更新（reload_chat_log を強制的に呼ぶ必要があるが、現状のロジックでは自動更新されない仕様の可能性がある）
+            # ここではプレビューの更新のみを追加する（要望範囲）
+            fn=ui_handlers.handle_update_log_preview,
+            inputs=[
+                current_room_name, 
+                chat_log_month_dropdown,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chat_log_preview_chatbot]
         )
         clear_rule_form_button.click(
             fn=lambda: (None, "", "", "#62827e", "#62827e"),
@@ -3333,11 +3376,33 @@ try:
             fn=ui_handlers.handle_delete_redaction_rule,
             inputs=[redaction_rules_state, selected_redaction_rule_state],
             outputs=[redaction_rules_df, redaction_rules_state, selected_redaction_rule_state, redaction_find_textbox, redaction_replace_textbox, redaction_color_picker]
+        ).then(
+            fn=ui_handlers.handle_update_log_preview,
+            inputs=[
+                current_room_name, 
+                chat_log_month_dropdown,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chat_log_preview_chatbot]
         )
         screenshot_mode_checkbox.change(
             fn=ui_handlers.reload_chat_log,
             inputs=[current_room_name, api_history_limit_state, room_add_timestamp_checkbox, room_display_thoughts_checkbox, screenshot_mode_checkbox, redaction_rules_state],
             outputs=[chatbot_display, current_log_map_state]
+        ).then(
+            fn=ui_handlers.handle_update_log_preview,
+            inputs=[
+                current_room_name, 
+                chat_log_month_dropdown,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chat_log_preview_chatbot]
         )
 
         correct_punctuation_button.click(
@@ -4432,30 +4497,40 @@ try:
             outputs=world_builder_raw_outputs
         )
 
-        # --- 会話ログ RAWエディタのイベント接続 ---
-        # タブが選択された時にログを読み込む → 最下部にスクロール
-        chat_raw_editor_tab.select(
-            fn=ui_handlers.handle_load_chat_log_raw,
+        # --- 会話ログ管理のイベント接続 ---
+        # タブが選択された時にリストを更新し、最新ログを読み込む → 最下部にスクロール
+        chat_log_management_tab.select(
+            fn=ui_handlers.handle_refresh_chat_log_months,
             inputs=[current_room_name],
-            outputs=[chat_log_raw_editor]
+            outputs=[chat_log_month_dropdown]
+        ).then(
+            fn=ui_handlers.handle_load_chat_log_raw,
+            inputs=[
+                current_room_name, 
+                chat_log_month_dropdown,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chat_log_raw_editor, chat_log_preview_chatbot]
         ).then(
             fn=None,
             inputs=None,
             outputs=None,
             js="""
             () => {
-                // gr.Code は内部的にCodeMirrorを使用しているので、.cm-scroller をスクロールさせる
                 setTimeout(() => {
                     const editor = document.querySelector('#chat_log_raw_editor .cm-scroller');
                     if (editor) {
                         editor.scrollTop = editor.scrollHeight;
                     }
-                }, 100);  // コンテンツ更新を待つために少し遅延
+                }, 100);
             }
             """
         )
         
-        # 保存ボタン: ログを保存してチャット表示を更新 → 最下部にスクロール
+        # 保存ボタン: ログを保存してチャット表示・プレビューを更新 → 最下部にスクロール
         save_chat_log_button.click(
             fn=ui_handlers.handle_save_chat_log_raw,
             inputs=[
@@ -4465,9 +4540,10 @@ try:
                 room_add_timestamp_checkbox,
                 room_display_thoughts_checkbox,
                 screenshot_mode_checkbox,
-                redaction_rules_state
+                redaction_rules_state,
+                chat_log_month_dropdown
             ],
-            outputs=[chat_log_raw_editor, chatbot_display, current_log_map_state]
+            outputs=[chat_log_raw_editor, chatbot_display, current_log_map_state, chat_log_preview_chatbot]
         ).then(
             fn=None,
             inputs=None,
@@ -4487,8 +4563,15 @@ try:
         # 再読込ボタン: 最後に保存した内容を読み込む → 最下部にスクロール
         reload_chat_log_button.click(
             fn=ui_handlers.handle_reload_chat_log_raw,
-            inputs=[current_room_name],
-            outputs=[chat_log_raw_editor]
+            inputs=[
+                current_room_name, 
+                chat_log_month_dropdown,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chat_log_raw_editor, chat_log_preview_chatbot]
         ).then(
             fn=None,
             inputs=None,
@@ -4504,6 +4587,93 @@ try:
             }
             """
         )
+
+        # 月選択ドロップダウン変更時
+        chat_log_month_dropdown.change(
+            fn=ui_handlers.handle_load_chat_log_raw,
+            inputs=[
+                current_room_name, 
+                chat_log_month_dropdown,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chat_log_raw_editor, chat_log_preview_chatbot]
+        ).then(
+            fn=None,
+            inputs=None,
+            outputs=None,
+            js="""
+            () => {
+                setTimeout(() => {
+                    const editor = document.querySelector('#chat_log_raw_editor .cm-scroller');
+                    if (editor) {
+                        editor.scrollTop = editor.scrollHeight;
+                    }
+                }, 100);
+            }
+            """
+        )
+
+        # リスト更新ボタン
+        refresh_chat_log_months_button.click(
+            fn=ui_handlers.handle_refresh_chat_log_months,
+            inputs=[current_room_name],
+            outputs=[chat_log_month_dropdown]
+        )
+
+        # 検索ボタン
+        chat_log_search_button.click(
+            fn=ui_handlers.handle_search_chat_log_keyword,
+            inputs=[current_room_name, chat_log_search_textbox],
+            outputs=[chat_log_month_dropdown]
+        ).then(
+            # 検索後に（もしヒットして選択値が変わっていれば）その月のログを読み込む
+            fn=ui_handlers.handle_load_chat_log_raw,
+            inputs=[
+                current_room_name, 
+                chat_log_month_dropdown,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chat_log_raw_editor, chat_log_preview_chatbot]
+        ).then(
+            fn=None,
+            inputs=None,
+            outputs=None,
+            js="""
+            () => {
+                setTimeout(() => {
+                    const editor = document.querySelector('#chat_log_raw_editor .cm-scroller');
+                    if (editor) {
+                        editor.scrollTop = editor.scrollHeight;
+                    }
+                }, 100);
+            }
+            """
+        )
+
+        # 検索ボックスでEnterキーを押した時も同様
+        chat_log_search_textbox.submit(
+            fn=ui_handlers.handle_search_chat_log_keyword,
+            inputs=[current_room_name, chat_log_search_textbox],
+            outputs=[chat_log_month_dropdown]
+        ).then(
+            fn=ui_handlers.handle_load_chat_log_raw,
+            inputs=[
+                current_room_name, 
+                chat_log_month_dropdown,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chat_log_raw_editor, chat_log_preview_chatbot]
+        )
+
         clear_debug_console_button.click(
             fn=lambda: ("", ""),
             outputs=[debug_console_state, debug_console_output]

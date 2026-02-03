@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 ### Added
 - 影の僕（Shadow Servant）からの提案を独立したセクション `{pending_messages_section}` に分離。
+- **チャットログの月次分割管理と移行機能の実装 (2026-02-03):** `log.txt` を `logs/YYYY-MM.txt` に分割管理する機能を実装。旧形式のログからの自動移行、シームレスな全期間読み込み、分割を考慮したメッセージ削除・再生成ロジックを統合。さらに、旧RAWログエディタを「ログ管理」タブへ刷新し、過去ログのチャット形式プレビュー機能、バックナンバーからの全文検索機能を追加。[レポート](docs/reports/2026-02-03_segmented_chat_log.md)
 
 ### Fixed
 - **睡眠時RAG索引更新と記憶整理のAPIキーローテーション不具合の修正 (2026-02-03):** 睡眠モード中のRAG索引更新やエピソード記憶生成において、APIキーが正しくローテーションされず無限ループに陥る問題を修正。`alarm_manager.py` でルームごとにキーを再取得、`rag_manager.py` に動的ローテーション対応の `RotatingEmbeddings` ラッパーと意図分類のリトライロジックを導入、`episodic_memory_manager.py` に回転対応の `_invoke_llm` ヘルパーを実装し `UnboundLocalError` を解消。また、`dreaming_manager.py` において影の僕のJSONパースを堅牢化し、夢日記（洞察）を月次分割サブディレクトリ（`dreaming/`）へ移行・自動移行ロジックを実装。`entity_memory_manager.py` の統合処理にもローテーションを適用。
