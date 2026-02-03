@@ -1184,18 +1184,55 @@ class RAGManager:
             print(f"--- [RAG Search Debug] Query: '{query}' (Intent: disabled, Threshold: {score_threshold}) ---")
 
         dynamic_db = self._safe_load_index(self.dynamic_index_path)
-        if dynamic_db:
-            try:
-                dynamic_results = dynamic_db.similarity_search_with_score(query, k=k)
-                results_with_scores.extend(dynamic_results)
-            except Exception as e: print(f"  - [RAG Warning] Dynamic index search failed: {e}")
-
         static_db = self._safe_load_index(self.static_index_path)
-        if static_db:
-            try:
-                static_results = static_db.similarity_search_with_score(query, k=k)
-                results_with_scores.extend(static_results)
-            except Exception as e: print(f"  - [RAG Warning] Static index search failed: {e}")
+
+        # [2026-02-03 Fix] 429エラー時のリトライ & ローテーションロジック
+        max_retries = 5
+        for attempt in range(max_retries):
+            results_with_scores = []
+            error_429_detected = False
+            
+            # 1. 動的インデックス検索
+            if dynamic_db:
+                try:
+                    dynamic_results = dynamic_db.similarity_search_with_score(query, k=k)
+                    results_with_scores.extend(dynamic_results)
+                except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str or "ResourceExhausted" in err_str:
+                        if self._rotate_api_key(err_str):
+                            print(f"  - [RAG Rotation] Dynamic search hit 429. Rotating and retrying (Attempt {attempt+1})...")
+                            error_429_detected = True
+                            # ローテーション成功時、埋め込みモデルが再初期化されるのでループ先頭に戻る
+                        else:
+                            print(f"  - [RAG Warning] Dynamic search hit 429 but rotation failed: {e}")
+                    else:
+                        print(f"  - [RAG Warning] Dynamic index search failed: {e}")
+
+            if error_429_detected:
+                continue
+
+            # 2. 静的インデックス検索
+            if static_db:
+                try:
+                    static_results = static_db.similarity_search_with_score(query, k=k)
+                    results_with_scores.extend(static_results)
+                except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str or "ResourceExhausted" in err_str:
+                        if self._rotate_api_key(err_str):
+                            print(f"  - [RAG Rotation] Static search hit 429. Rotating and retrying (Attempt {attempt+1})...")
+                            error_429_detected = True
+                        else:
+                            print(f"  - [RAG Warning] Static search hit 429 but rotation failed: {e}")
+                    else:
+                        print(f"  - [RAG Warning] Static index search failed: {e}")
+            
+            if error_429_detected:
+                continue
+                
+            # エラーなく完了したらループを抜ける
+            break
 
         # [Intent-Aware] 3項式複合スコアリング:
         # Score = α × similarity + β × (1 - arousal) + γ × (1 - decay) × (1 - arousal)
