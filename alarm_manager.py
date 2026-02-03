@@ -286,6 +286,9 @@ def trigger_alarm(alarm_config, current_api_key_name):
     max_retries = 5
     base_delay = 5
     
+    # 失敗理由を追跡する変数を追加
+    failure_reason = None
+    
     for attempt in range(max_retries):
         try:
             # --- ストリーム処理の開始 ---
@@ -321,6 +324,7 @@ def trigger_alarm(alarm_config, current_api_key_name):
             if "PerDay" in error_str or "Daily" in error_str:
                 print(f"  - 致命的エラー: 回復不能なAPI上限（日間など）に達しました。リトライしません。")
                 final_response_text = "" # 応答を空にして、システムメッセージにフォールバックさせる
+                failure_reason = "api_limit_daily"
                 break
 
             wait_time = base_delay * (2 ** attempt)
@@ -334,11 +338,13 @@ def trigger_alarm(alarm_config, current_api_key_name):
             else:
                 print(f"  - APIレート制限: 最大リトライ回数に達しました。")
                 final_response_text = "" # 応答を空にしてフォールバック
+                failure_reason = "api_limit_rate"
                 break
         except Exception as e:
             print(f"--- アラームのAI応答生成中に予期せぬエラーが発生しました ---")
             traceback.print_exc()
             final_response_text = "" # 応答を空にしてフォールバック
+            failure_reason = "unknown_error"
             break
             
     # --- ログ記録と通知 ---
@@ -366,8 +372,18 @@ def trigger_alarm(alarm_config, current_api_key_name):
     # AIの応答生成に失敗した場合（フォールバック）
     else:
         print(f"警告: アラーム応答の生成に失敗したため、システムメッセージを通知します (ID:{alarm_id})")
+        
+        # 失敗理由に応じてメッセージを切り分け
+        if failure_reason in ["api_limit_daily", "api_limit_rate"]:
+            reason_msg = "APIの利用上限に達したため、AIの応答を生成できませんでした。"
+        elif failure_reason == "unknown_error":
+            reason_msg = "内部エラーが発生したため、AIの応答を生成できませんでした。"
+        else:
+            # APIエラーなしでここに来た＝空応答（思考のみで発話なし等）
+            reason_msg = "AIからの応答がありませんでした（思考のみ、または空の応答）。"
+
         response_text = (
-            f"設定されたアラームを実行しようとしましたが、APIの利用上限に達したため、AIの応答を生成できませんでした。\n\n"
+            f"設定されたアラーム時刻になりましたが、{reason_msg}\n\n"
             f"【アラーム内容】\n{context_to_use}"
         )
         # 失敗した場合でも、システムメッセージをログに記録する
