@@ -5,27 +5,13 @@ All notable changes to Nexus Ark will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
+### Fixed
+- アラーム応答生成時にターミナルに全システムプロンプトが出力されるのを廃止 (debug_modeを無効化)
 ### Added
 - 影の僕（Shadow Servant）からの提案を独立したセクション `{pending_messages_section}` に分離。
-- **チャットログの月次分割管理と移行機能の実装 (2026-02-03):** `log.txt` を `logs/YYYY-MM.txt` に分割管理する機能を実装。旧形式のログからの自動移行、シームレスな全期間読み込み、分割を考慮したメッセージ削除・再生成ロジックを統合。さらに、旧RAWログエディタを「ログ管理」タブへ刷新し、過去ログのチャット形式プレビュー機能、バックナンバーからの全文検索機能を追加。[レポート](docs/reports/2026-02-03_segmented_chat_log.md)
-
-### Fixed
-- **Alarm Error Handling**: アラーム発火時にAIが空の応答（思考のみ等）を返した場合に、API制限エラーと誤表示される問題を修正。 ([Report](docs/reports/2026-02-03_alarm_generation_fix.md))
-- **Log Management**: `logs` ディレクトリ内に月次ログ (`YYYY-MM.txt`) を分割保存するよう変更。過去ログ閲覧・検索のパフォーマンス向上。 ([Report](docs/reports/logs/2026-02-03_segmented_chat_log.md))
-
-### Fixed
-- **睡眠時RAG索引更新と記憶整理のAPIキーローテーション不具合の修正 (2026-02-03):** 睡眠モード中のRAG索引更新やエピソード記憶生成において、APIキーが正しくローテーションされず無限ループに陥る問題を修正。`alarm_manager.py` でルームごとにキーを再取得、`rag_manager.py` に動的ローテーション対応の `RotatingEmbeddings` ラッパーと意図分類のリトライロジックを導入、`episodic_memory_manager.py` に回転対応の `_invoke_llm` ヘルパーを実装し `UnboundLocalError` を解消。また、`dreaming_manager.py` において影の僕のJSONパースを堅牢化し、夢日記（洞察）を月次分割サブディレクトリ（`dreaming/`）へ移行・自動移行ロジックを実装。`entity_memory_manager.py` の統合処理にもローテーションを適用。
-### Added
+| 2026-02-04 | **睡眠時記憶エラーとRAGログ参照の修正**<br>・`episodic_memory_manager.py` の `NameError` を修正<br>・`rag_manager.py` の現行ログ参照先を `log.txt` から月次ログへ修正<br>・RAGのAPIキーローテーション条件を `gemini` モード対応に緩和 | [レポート](reports/2026-02-04_Fix_Sleep_Memory_and_RAG_Log.md) |
+| 2026-02-03 | **チャットログの月次分割管理と移行機能の実装**<br>・`log.txt` を `logs/YYYY-MM.txt` に分割管理する機能を実装<br>・旧形式ログからの移行、シームレスな全期間読み込み、分割対応の削除機能<br>・ログ管理タブへの刷新（チャット形式プレビュー、全文検索機能の追加） | [レポート](reports/2026-02-03_segmented_chat_log.md) |
 - **System Prompt Caching Optimization**: Reordered prompt sections to place static content (Rules, World Laws, Tools) before dynamic content (Memories, Situation) to maximize API cache hit rate.
-
-### Fixed
-- `utils.py`: Fixed `NameError` due to missing `new_messages` definition during message deletion.
-- ログからメッセージを削除する際の `NameError: name 'new_messages' is not defined` を修正。
-
-### Changed
-- システムプロンプトから「記憶しているエンティティ一覧」を削除し、トークン消費を抑制。
-
-### Added
 - **推定入力トークン数の計算精度の改善 (2026-02-02):** 推定値と実入力の乖離（51k vs 32k等）を大幅に削減し、安全かつ正確なコスト予測を実現。ツールオーバーヘッドの見積もりを実測値に基づく 250 トークン/ツールへ適正化し、安全係数を 1.15倍 + 500トークンに微調整。コンテキスト・プレースホルダー（RAG検索結果等）を現実的な長さに更新し、実際の送信ロジックとの整合性を強化。[レポート](docs/reports/2026-02-02_Token_Count_Accuracy_Improvement.md)
 - **ノート管理の刷新と自動アーカイブ機能の実装 (2026-02-02):** ノートファイルを `notes/` ディレクトリに集約し、肥大化（200KB超）したノートを自動的にアーカイブする機能を実装。UI にファイル選択ドロップダウンを追加し、過去のアーカイブの閲覧・フィルタリングを可能にした。RAG 索引もアーカイブファイルを対象に含めるよう拡張。[レポート](docs/reports/2026-02-02_implement_note_organization.md)
 - **APIコストの最適化（スリム化） (2026-02-02):** 自動要約の発動閾値を 12,000 文字に引き下げ、メモリ（エピソード記憶・日次要約）の文字予算を全体的に 20-30% 削減。要約プロンプトに動的な制限値を導入し、決定事項や感情の変化に特化した高密度な要約を実現。また、エンティティ検索やプロジェクトファイル読み込み等の実行ログを「アナウンスのみ」に最適化し、コンテキストの圧迫を解消。[レポート](docs/reports/2026-02-02_API_Cost_Optimization.md)

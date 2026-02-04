@@ -269,7 +269,7 @@ def trigger_alarm(alarm_config, current_api_key_name):
         "api_key_name": current_api_key_name,
         "global_model_from_ui": global_model_for_bg, # <<< ここを修正
         "api_history_limit": str(constants.DEFAULT_ALARM_API_HISTORY_TURNS),
-        "debug_mode": True,
+        "debug_mode": False,
         "history_log_path": log_f,
         "user_prompt_parts": [{"type": "text", "text": synthesized_user_message}],
         "soul_vessel_room": room_name,
