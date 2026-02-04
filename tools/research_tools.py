@@ -17,10 +17,10 @@ def read_research_notes(room_name: str) -> str:
     """
     _, _, _, _, _, research_notes_path = get_room_files_paths(room_name)
     if not research_notes_path or not os.path.exists(research_notes_path):
-        return "【研究ノートファイルが見つかりません】"
+        return ""
     with open(research_notes_path, 'r', encoding='utf-8') as f:
         content = f.read().strip()
-        return content if content else "【研究ノートは空です】"
+        return content
 
 @tool
 def plan_research_notes_edit(modification_request: str, room_name: str) -> str:

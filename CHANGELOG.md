@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - ルーム移動時のGradioエラーの修正 (不正なプロバイダ値 'zhipu' などのサニタイズとUI選択肢の補完)
 ### Added
 - 影の僕（Shadow Servant）からの提案を独立したセクション `{pending_messages_section}` に分離。
+- 「研究ノートが空です」「創作ノートが空です」の冗長なアナウンスを削除。空の場合は何も表示しない（空文字を返す）ように変更。
 | 2026-02-04 | **睡眠時記憶エラーとRAGログ参照の修正**<br>・`episodic_memory_manager.py` の `NameError` を修正<br>・`rag_manager.py` の現行ログ参照先を `log.txt` から月次ログへ修正<br>・RAGのAPIキーローテーション条件を `gemini` モード対応に緩和 | [レポート](reports/2026-02-04_Fix_Sleep_Memory_and_RAG_Log.md) |
 | 2026-02-03 | **チャットログの月次分割管理と移行機能の実装**<br>・`log.txt` を `logs/YYYY-MM.txt` に分割管理する機能を実装<br>・旧形式ログからの移行、シームレスな全期間読み込み、分割対応の削除機能<br>・ログ管理タブへの刷新（チャット形式プレビュー、全文検索機能の追加） | [レポート](reports/2026-02-03_segmented_chat_log.md) |
 - **System Prompt Caching Optimization**: Reordered prompt sections to place static content (Rules, World Laws, Tools) before dynamic content (Memories, Situation) to maximize API cache hit rate.

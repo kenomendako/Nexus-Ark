@@ -24,10 +24,10 @@ def read_creative_notes(room_name: str) -> str:
     """
     path = _get_creative_notes_path(room_name)
     if not os.path.exists(path):
-        return "【創作ノートはまだ空です。自由に創作を始めてください！】"
+        return ""
     with open(path, 'r', encoding='utf-8') as f:
         content = f.read().strip()
-        return content if content else "【創作ノートは空です】"
+        return content
 
 
 @tool
