@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 ### Fixed
 - アラーム応答生成時にターミナルに全システムプロンプトが出力されるのを廃止 (debug_modeを無効化)
+- ルーム移動時のGradioエラーの修正 (不正なプロバイダ値 'zhipu' などのサニタイズとUI選択肢の補完)
 ### Added
 - 影の僕（Shadow Servant）からの提案を独立したセクション `{pending_messages_section}` に分離。
 | 2026-02-04 | **睡眠時記憶エラーとRAGログ参照の修正**<br>・`episodic_memory_manager.py` の `NameError` を修正<br>・`rag_manager.py` の現行ログ参照先を `log.txt` から月次ログへ修正<br>・RAGのAPIキーローテーション条件を `gemini` モード対応に緩和 | [レポート](reports/2026-02-04_Fix_Sleep_Memory_and_RAG_Log.md) |
