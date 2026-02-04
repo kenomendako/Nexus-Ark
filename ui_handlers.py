@@ -1281,7 +1281,7 @@ def handle_save_room_settings(
                 # デバウンス: 同一ルームへの連続通知を抑制
                 last_time = _last_save_notification_time.get(room_name, 0)
                 if (now - last_time) > NOTIFICATION_DEBOUNCE_SECONDS:
-                    gr.Info(f"「{room_name}」の個別設定を保存しました。")
+                    print(f"--- [UI] 「{room_name}」の個別設定を保存しました。 ---")
                     _last_save_notification_time[room_name] = now
     if result == False:
         gr.Error("個別設定の保存中にエラーが発生しました。詳細はログを確認してください。")
@@ -3678,7 +3678,7 @@ def handle_load_diary_entries(room_name: str):
     year_choices = ["すべて"] + sorted(list(years), reverse=True)
     month_choices = ["すべて"] + sorted(list(months))
     
-    gr.Info(f"{len(entries)}件のエントリを読み込みました。")
+    print(f"--- [UI] {len(entries)}件のエントリを読み込みました。 ---")
     return (
         gr.update(choices=year_choices, value="すべて"),
         gr.update(choices=month_choices, value="すべて"),
@@ -4722,7 +4722,7 @@ def handle_load_creative_entries(room_name: str, filename: str = None):
     
     content = load_creative_notes_content(room_name, filename)
     if not content.strip():
-        gr.Info("対象の創作ノートは空です。")
+        print("--- [UI] 対象の創作ノートは空です。 ---")
         return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), content
     
     entries = _parse_notes_entries(content)
@@ -4749,7 +4749,7 @@ def handle_load_creative_entries(room_name: str, filename: str = None):
     year_choices = ["すべて"] + sorted(list(years), reverse=True)
     month_choices = ["すべて"] + sorted(list(months))
     
-    gr.Info(f"{len(entries)}件のエントリを読み込みました。")
+    print(f"--- [UI] {len(entries)}件のエントリを読み込みました。 ---")
     return (
         gr.update(choices=year_choices, value="すべて"),
         gr.update(choices=month_choices, value="すべて"),
@@ -4769,7 +4769,7 @@ def handle_show_latest_creative(room_name: str, filename: str = None):
     
     content = load_creative_notes_content(room_name, filename)
     if not content.strip():
-        gr.Info("対象の創作ノートは空です。")
+        print("--- [UI] 対象の創作ノートは空です。 ---")
         return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
     
     entries = _parse_notes_entries(content)
@@ -4974,7 +4974,7 @@ def handle_load_research_entries(room_name: str, filename: str = None):
     
     content = load_research_notes_content(room_name, filename)
     if not content.strip():
-        gr.Info("対象の研究ノートは空です。")
+        print("--- [UI] 対象の研究ノートは空です。 ---")
         return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), content
     
     entries = _parse_notes_entries(content)
@@ -5000,7 +5000,7 @@ def handle_load_research_entries(room_name: str, filename: str = None):
     year_choices = ["すべて"] + sorted(list(years), reverse=True)
     month_choices = ["すべて"] + sorted(list(months))
     
-    gr.Info(f"{len(entries)}件のエントリを読み込みました。")
+    print(f"--- [UI] {len(entries)}件のエントリを読み込みました。 ---")
     return (
         gr.update(choices=year_choices, value="すべて"),
         gr.update(choices=month_choices, value="すべて"),
@@ -5020,7 +5020,7 @@ def handle_show_latest_research(room_name: str, filename: str = None):
     
     content = load_research_notes_content(room_name, filename)
     if not content.strip():
-        gr.Info("対象の研究ノートは空です。")
+        print("--- [UI] 対象の研究ノートは空です。 ---")
         return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
     
     entries = _parse_notes_entries(content)
