@@ -190,7 +190,7 @@ class EpisodicMemoryManager:
 
         if not all_messages: return "ログメッセージが見つかりません。"
 
-        print(f"  - 読み込み対象ファイル数: {len(log_files)}")
+        print(f"  - 読み込みメッセージ数: {len(all_messages)}")
 
         # 2. ログの読み込みと日付ごとのグループ化
         logs_by_date = {}

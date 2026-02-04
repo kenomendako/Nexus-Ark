@@ -161,7 +161,7 @@ class RAGManager:
         if not ("429" in error_str or "ResourceExhausted" in error_str):
             return False
 
-        if self.embedding_mode != "api":
+        if self.embedding_mode == "local":
             return False
 
         # 現在のキー名を特定
@@ -1064,8 +1064,12 @@ class RAGManager:
         現行ログ（log.txt）のみをインデックス化する（進捗をyieldするジェネレーター版）
         yields: (batch_num, total_batches, status_message)
         """
-        current_log_path = self.room_dir / "log.txt"
-        if not current_log_path.exists():
+        # [Modified] Use room_manager to get the correct current log path (monthly segmented)
+        import room_manager
+        log_file_str, _, _, _, _, _ = room_manager.get_room_files_paths(self.room_name)
+        current_log_path = Path(log_file_str) if log_file_str else None
+        
+        if not current_log_path or not current_log_path.exists():
             yield (0, 0, "現行ログ: ファイルが存在しません")
             return
         
