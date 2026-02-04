@@ -18,6 +18,8 @@ import re
 import locale
 import subprocess
 from pathlib import Path
+from typing import Optional, Tuple, List, Dict, Union, Any
+import datetime
 import tempfile
 from typing import List, Optional, Dict, Any, Tuple, Iterator
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
@@ -26,6 +28,7 @@ import datetime
 from PIL import Image
 import threading
 import filetype
+import zipfile
 import base64
 import io
 import uuid
@@ -501,12 +504,61 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
     チャットタブ関連のUIを更新する。現在地が未設定の場合の初期化もここで行う。
     情景関連の処理は、全て司令塔である _get_updated_scenery_and_image に一任する。
     """
-    api_key = config_manager.GEMINI_API_KEYS.get(api_key_name)
+    # --- [Refactor] ログ読み込みをAPIキーチェック前に移動 ---
+    # ルーム名が空の場合の補完
+    if not room_name:
+        room_list = room_manager.get_room_list_for_ui()
+        room_name = room_list[0][1] if room_list else "Default"
+
+    # 設定読み込み
+    effective_settings = config_manager.get_effective_settings(room_name)
+    
+    # 履歴取得設定
+    limit_key = effective_settings.get("api_history_limit", "all")
+    add_timestamp_val = effective_settings.get("add_timestamp", False)
+    display_thoughts_val = effective_settings.get("display_thoughts", True)
+
+    # ログ読み込み (APIキーが無効でも閲覧は可能にするため)
+    chat_history, mapping_list = reload_chat_log(
+        room_name=room_name,
+        api_history_limit_value=limit_key,
+        add_timestamp=add_timestamp_val,
+        display_thoughts=display_thoughts_val
+    )
+
+    # --- [Fix] override_settings を先に読み込む ---
+    room_config_path = os.path.join(constants.ROOMS_DIR, room_name, "room_config.json")
+    room_config = {}
+    if os.path.exists(room_config_path):
+        try:
+            with open(room_config_path, "r", encoding="utf-8") as f:
+                room_config = json.load(f)
+        except: pass
+    
+    # override_settings内を優先し、なければルートレベルを確認（手動/自動更新の両方に対応）
+    override_settings = room_config.get("override_settings", {})
+
+    # APIキーの決定ロジック (v8: Common Settings Fallback)
+    # 1. ルーム個別設定 (override)
+    # 2. グローバル設定 (last_api_key_name)
+    # 3. 最初の利用可能なキー
+    effective_api_key_name = override_settings.get("api_key_name")
+    if not effective_api_key_name:
+        effective_api_key_name = config_manager.CONFIG_GLOBAL.get("last_api_key_name")
+    
+    # それでもなければ、登録されているキーの最初を使う
+    if not effective_api_key_name and config_manager.GEMINI_API_KEYS:
+        effective_api_key_name = list(config_manager.GEMINI_API_KEYS.keys())[0]
+
+    api_key = config_manager.GEMINI_API_KEYS.get(effective_api_key_name)
     has_valid_key = api_key and not api_key.startswith("YOUR_API_KEY")
 
     if not has_valid_key:
+        # APIキー無効時: ログは表示するが、入力は無効化
+        # 他のUI項目も適切なデフォルト値で埋める (既存のreturn tuple構造を維持)
         return (
-            room_name, [], [], gr.update(interactive=False, placeholder="まず、左の「設定」からAPIキーを設定してください。"),
+            room_name, chat_history, mapping_list, # Logs are now included!
+            gr.update(interactive=False, placeholder="まず、左の「設定」からAPIキーを設定してください。"),
             get_avatar_html(room_name, state="idle"), "", "", "", "", "", "",
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
@@ -517,10 +569,10 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
             list(config_manager.SUPPORTED_VOICES.values())[0], # voice_dropdown
             "", True, 0.01,  # voice_style_prompt, enable_typewriter, streaming_speed
             0.8, 0.95, "高リスクのみブロック", "高リスクのみブロック", "高リスクのみブロック", "高リスクのみブロック",
-            False, # display_thoughts
+            display_thoughts_val, # Use loaded setting
             False, # send_thoughts 
             True,  # enable_auto_retrieval 
-            True,  # add_timestamp
+            add_timestamp_val,  # Use loaded setting
             True,  # send_current_time
             True,  # send_notepad
             True,  # use_common_prompt
@@ -544,7 +596,7 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
             gr.update(value="default"),  # room_provider_radio
             gr.update(visible=False),  # room_google_settings_group
             gr.update(visible=False),  # room_openai_settings_group
-            gr.update(value=None),  # room_api_key_dropdown
+            gr.update(value=effective_api_key_name),  # room_api_key_dropdown (Corrected!)
             gr.update(value=None),  # room_openai_profile_dropdown
             gr.update(value=""),  # room_openai_base_url_input
             gr.update(value=""),  # room_openai_api_key_input
@@ -628,10 +680,7 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
             gr.update(choices=[constants.RESEARCH_NOTES_FILENAME], value=constants.RESEARCH_NOTES_FILENAME) # research_notes_file_dropdown
         )
 
-    # --- 【通常モード】 ---
-    if not room_name:
-        room_list = room_manager.get_room_list_for_ui()
-        room_name = room_list[0][1] if room_list else "Default"
+    # --- 【通常モード】 (APIキー有効) ---
 
     # ステップ1: UIに表示するための場所リストを先に生成
     locations_for_ui = _get_location_choices_for_ui(room_name)
@@ -655,28 +704,23 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
     scenery_text, scenery_image_path = _get_updated_scenery_and_image(room_name, api_key_name)
 
     # --- 以降、取得した値を使ってUI更新値を構築する ---
-    effective_settings = config_manager.get_effective_settings(room_name)
+    # effective_settings は既にロード済み
 
-# 設定ファイルにはキー("10")が入っているので、UI表示用("10往復")に変換
-    limit_key = effective_settings.get("api_history_limit", "all")
+    # 設定ファイルにはキー("10")が入っているので、UI表示用("10往復")に変換
     limit_display = constants.API_HISTORY_LIMIT_OPTIONS.get(limit_key, "全ログ")
 
     episode_key = effective_settings.get("episode_memory_lookback_days", constants.DEFAULT_EPISODIC_MEMORY_DAYS)
     episode_display = constants.EPISODIC_MEMORY_OPTIONS.get(episode_key, "過去 2週間")
 
     # --- [v25] 思考設定の連動ロジック ---
-    display_thoughts_val = effective_settings.get("display_thoughts", True)
+    # display_thoughts_val はロード済み
     send_thoughts_val = effective_settings.get("send_thoughts", True)
     send_thoughts_interactive = display_thoughts_val  # 「表示」がオンの時だけ「送信」を操作可能に
     if not display_thoughts_val:
         send_thoughts_val = False  # 「表示」がオフなら「送信」も強制オフ
 
-    chat_history, mapping_list = reload_chat_log(
-        room_name=room_name,
-        api_history_limit_value=limit_key,
-        add_timestamp=effective_settings.get("add_timestamp", False),
-        display_thoughts=effective_settings.get("display_thoughts", True)
-    )
+    # reload_chat_log は実行済み (chat_history, mapping_list)
+
     _, _, img_p, mem_p, notepad_p, _ = get_room_files_paths(room_name)
     memory_str = ""
     if mem_p and os.path.exists(mem_p):
@@ -730,16 +774,7 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
     pending = stats["pending_count"]
     
     # ルーム設定を直接読み込んで最終実行結果を取得
-    room_config_path = os.path.join(constants.ROOMS_DIR, room_name, "room_config.json")
-    room_config = {}
-    if os.path.exists(room_config_path):
-        try:
-            with open(room_config_path, "r", encoding="utf-8") as f:
-                room_config = json.load(f)
-        except: pass
-    
-    # override_settings内を優先し、なければルートレベルを確認（手動/自動更新の両方に対応）
-    override_settings = room_config.get("override_settings", {})
+    # room_config, override_settings は関数の冒頭で読み込み済み
     
     last_exec = override_settings.get("last_compression_result") or room_config.get("last_compression_result", "未実行")
     # 表示用の文字列を構築 (例: 2024-06-15まで圧縮済み (対象: 12件) | 最終結果: 圧縮完了...)
@@ -821,7 +856,7 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         gr.update(value=override_settings.get("provider") or "default"),  # room_provider_radio
         gr.update(visible=(override_settings.get("provider", "default") == "google")),  # room_google_settings_group
         gr.update(visible=(override_settings.get("provider", "default") == "openai")),  # room_openai_settings_group
-        gr.update(value=override_settings.get("api_key_name") or None),  # room_api_key_dropdown
+        gr.update(value=effective_api_key_name),  # room_api_key_dropdown
         gr.update(value=room_openai_settings.get("profile") or None),  # room_openai_profile_dropdown
         gr.update(value=room_openai_settings.get("base_url") or ""),  # room_openai_base_url_input
         gr.update(value=room_openai_settings.get("api_key") or ""),  # room_openai_api_key_input
@@ -908,9 +943,20 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         # --- [Avatar Expressions] ---
         gr.update(value=refresh_expressions_ui(room_name)), # expressions_html
         gr.update(choices=get_all_expression_choices(room_name), value=None), # expression_target_dropdown
-        gr.update(choices=room_manager.get_note_files(room_name, 'creative'), value=constants.CREATIVE_NOTES_FILENAME), # creative_notes_file_dropdown
-        gr.update(choices=room_manager.get_note_files(room_name, 'research'), value=constants.RESEARCH_NOTES_FILENAME) # research_notes_file_dropdown
+        _get_safe_dropdown_update(room_name, 'creative', constants.CREATIVE_NOTES_FILENAME), # creative_notes_file_dropdown
+        _get_safe_dropdown_update(room_name, 'research', constants.RESEARCH_NOTES_FILENAME) # research_notes_file_dropdown
     )
+
+def _get_safe_dropdown_update(room_name: str, note_type: str, default_filename: str) -> gr.update:
+    """ドロップダウンの選択肢に値が含まれているか確認し、安全な更新オブジェクトを返すヘルパー"""
+    choices = room_manager.get_note_files(room_name, note_type)
+    if default_filename in choices:
+        return gr.update(choices=choices, value=default_filename)
+    elif choices:
+        return gr.update(choices=choices, value=choices[0]) # デフォルトがない場合は先頭
+    else:
+        # 選択肢がない場合はNoneにする（警告回避）
+        return gr.update(choices=[], value=None)
 
 
 def handle_initial_load(room_name: str = None, expected_count: int = 178):
@@ -2755,21 +2801,24 @@ def handle_generic_file_upload(file_obj: Optional[Any]):
     if file_obj is None:
         return gr.update(visible=False), "", "", "", ""
     
+    # 複数ファイル(list)の場合は先頭のファイルを使ってメタデータを推定する
+    target_file = file_obj[0] if isinstance(file_obj, list) else file_obj
+    
     try:
         # メタデータ抽出（変更なし）
-        metadata = generic_importer.parse_metadata_from_file(file_obj.name)
+        metadata = generic_importer.parse_metadata_from_file(target_file.name)
         
         # --- [新ロジック] ヘッダー自動検出 ---
         user_header = "## USER:"
         agent_header = "## AGENT:"
         
         try:
-            with open(file_obj.name, "r", encoding="utf-8", errors='ignore') as f:
+            with open(target_file.name, "r", encoding="utf-8", errors='ignore') as f:
                 # ファイルの先頭部分だけ読んで効率的にチェック
                 content_head = f.read(4096) 
             
             # JSONファイルの場合 (例: ChatGPT Exporter)
-            if file_obj.name.endswith(".json"):
+            if target_file.name.endswith(".json"):
                 # "role": "user" や "author": {"role": "user"} のような一般的なパターンをチェック
                 # ここではより具体的なChatGPT Exporterの形式を仮定
                 if '"role": "Prompt"' in content_head and '"role": "Response"' in content_head:
@@ -2780,7 +2829,7 @@ def handle_generic_file_upload(file_obj: Optional[Any]):
                     agent_header = "from:gpt"
 
             # テキスト/マークダウンファイルの場合
-            elif file_obj.name.endswith((".md", ".txt")):
+            elif target_file.name.endswith((".md", ".txt")):
                 if "## Prompt:" in content_head and "## Response:" in content_head:
                     user_header = "## Prompt:"
                     agent_header = "## Response:"
@@ -2791,9 +2840,14 @@ def handle_generic_file_upload(file_obj: Optional[Any]):
         except Exception as e:
             print(f"Header auto-detection failed: {e}")
 
+        # タイトルはファイル名ベース、複数は "(+N files)" を付ける
+        default_title = metadata.get("title", os.path.basename(target_file.name))
+        if isinstance(file_obj, list) and len(file_obj) > 1:
+            default_title += f" (+{len(file_obj)-1} files)"
+
         return (
             gr.update(visible=True),
-            metadata.get("title", os.path.basename(file_obj.name)),
+            default_title,
             metadata.get("user", "ユーザー"),
             user_header,
             agent_header
@@ -2820,9 +2874,16 @@ def handle_generic_import_button_click(
         return tuple(gr.update() for _ in range(6))
 
     try:
+        # ファイルパスのリストを作成
+        file_paths = []
+        if isinstance(file_obj, list):
+            file_paths = [f.name for f in file_obj]
+        else:
+            file_paths = [file_obj.name]
+
         # --- [新ロジック] エラーコードに対応したUI通知 ---
         result = generic_importer.import_from_generic_text(
-            file_path=file_obj.name,
+            file_paths=file_paths,
             room_name=room_name,
             user_display_name=user_display_name,
             user_header=user_header,
@@ -2878,36 +2939,39 @@ def handle_claude_file_upload(file_obj: Optional[Any]) -> Tuple[gr.update, gr.up
         traceback.print_exc()
         return gr.update(choices=[], value=None), gr.update(visible=False), []
 
-def handle_claude_thread_selection(choices_list: list, evt: gr.SelectData) -> gr.update:
+def handle_claude_thread_selection(choices_list: list, selected_ids: list) -> gr.update:
     """
     Claudeの会話スレッドが選択されたとき、そのタイトルをルーム名テキストボックスにコピーする。
+    multiselect=Trueに対応し、最後に選択された（リストの最後の）スレッドのタイトルを使用する。
     """
-    if not evt or not choices_list or evt.value is None:
+    if not selected_ids:
         return gr.update()
     
-    selected_uuid = evt.value
+    # 最後に選択されたIDを取得 (Gradioのmultiselect listは値のリスト)
+    target_id = selected_ids[-1] if isinstance(selected_ids, list) else selected_ids
+
     for name, uuid in choices_list:
-        if uuid == selected_uuid:
+        if uuid == target_id:
             return gr.update(value=name)
     return gr.update()
 
 def handle_claude_import_button_click(
     file_obj: Optional[Any],
-    conversation_uuid: str,
+    conversation_uuids: Union[str, List[str]], # multiselect対応
     room_name: str,
     user_display_name: str
 ) -> Tuple[gr.update, gr.update, gr.update, gr.update, gr.update, gr.update]:
     """
     Claudeインポートボタンがクリックされたときの処理。
     """
-    if not all([file_obj, conversation_uuid, room_name]):
+    if not all([file_obj, conversation_uuids, room_name]):
         gr.Warning("ファイル、会話スレッド、新しいルーム名はすべて必須です。")
         return tuple(gr.update() for _ in range(6))
 
     try:
         safe_folder_name = claude_importer.import_from_claude_export(
             file_path=file_obj.name,
-            conversation_uuid=conversation_uuid,
+            conversation_uuids=conversation_uuids,
             room_name=room_name,
             user_display_name=user_display_name
         )
@@ -2944,7 +3008,10 @@ def handle_chatgpt_file_upload(file_obj: Optional[Any]) -> Tuple[gr.update, gr.u
 
     try:
         choices = []
-        with open(file_obj.name, 'rb') as f:
+        # JSONパスを解決 (ZIP対応)
+        resolved_path = chatgpt_importer.resolve_conversations_file_path(file_obj.name)
+        
+        with open(resolved_path, 'rb') as f:
             # ijsonを使ってルートレベルの配列をストリーミング
             for conversation in ijson.items(f, 'item'):
                 if conversation and 'mapping' in conversation and 'title' in conversation:
@@ -2969,25 +3036,34 @@ def handle_chatgpt_file_upload(file_obj: Optional[Any]) -> Tuple[gr.update, gr.u
         return gr.update(choices=[], value=None), gr.update(visible=False), []
 
 
-def handle_chatgpt_thread_selection(choices_list: list, evt: gr.SelectData) -> gr.update:
+def handle_chatgpt_thread_selection(choices_list: list, selected_ids: list) -> gr.update:
     """
     会話スレッドが選択されたとき、そのタイトルをルーム名テキストボックスにコピーする。
+    multiselect=Trueに対応し、最後に選択された（リストの最後の）スレッドのタイトルを使用する。
     """
-    if not evt or not choices_list:
-        return gr.update()
+    try:
+        if not selected_ids:
+            return gr.update()
+        
+        # 最後に選択されたIDを取得 (multiselectのリスト順序は選択順とは限らないが、Gradioの仕様による)
+        # ここではリストの最後の要素を「主」として扱う
+        target_id = selected_ids[-1]
 
-    selected_id = evt.value
-    # choices_listの中から、IDが一致するもののタイトルを探す
-    for title, convo_id in choices_list:
-        if convo_id == selected_id:
-            return gr.update(value=title)
+        # choices_listの中から、IDが一致するもののタイトルを探す
+        for title, convo_id in choices_list:
+            if convo_id == target_id:
+                return gr.update(value=title)
+                
+    except Exception as e:
+        print(f"[WARNING] handle_chatgpt_thread_selection failed: {e}")
+        return gr.update()
 
     return gr.update() # 見つからなかった場合は何もしない
 
 
 def handle_chatgpt_import_button_click(
     file_obj: Optional[Any],
-    conversation_id: str,
+    conversation_id: Union[str, List[str]],
     room_name: str,
     user_display_name: str
 ) -> Tuple[gr.update, gr.update, gr.update, gr.update, gr.update, gr.update]:
@@ -3367,10 +3443,22 @@ def reload_chat_log(
         return [], []
 
     log_f,_,_,_,_,_ = get_room_files_paths(room_name)
-    if not log_f or not os.path.exists(log_f):
+    # log_f が存在しなくても、logs/ ディレクトリがあれば過去ログを読めるようにする
+    # (月またぎでまだ今月のログがない場合や、インポート直後など)
+    if not log_f:
         return [], []
+        
+    # log_f (例: logs/2026-02.txt) が存在しなくても、
+    # その親フォルダ (logs/) が存在すれば utils.load_chat_log に任せる。
+    # utils.load_chat_log は logs/ があれば全ロードしてくれる。
+    if not os.path.exists(log_f):
+        logs_dir = os.path.dirname(log_f)
+        if not os.path.exists(logs_dir):
+             # ディレクトリすらなければ本当にログがない
+             return [], []
 
     full_raw_history = utils.load_chat_log(log_f)
+
 
     # --- ▼▼▼ 「本日分」対応 ▼▼▼ ---
     if api_history_limit_value == "today":
@@ -3406,6 +3494,7 @@ def reload_chat_log(
         display_turns = _get_display_history_count(api_history_limit_value)
         absolute_start_index = max(0, len(full_raw_history) - (display_turns * 2))
         visible_history = full_raw_history[absolute_start_index:]
+
     # --- ▲▲▲ 修正ここまで ▲▲▲ ---
 
     history, mapping_list = format_history_for_gradio(
@@ -3417,6 +3506,7 @@ def reload_chat_log(
         redaction_rules=redaction_rules,
         absolute_start_index=absolute_start_index
     )
+    print(f"[DEBUG:format_history] Formatted history count: {len(history)}")
 
     return history, mapping_list
 
@@ -9913,7 +10003,18 @@ def handle_load_chat_log_raw(
     
     # 月が指定されていない、または「最新」の場合は、本来のcurrent_monthのパスを取得
     if not selected_month or selected_month == "最新":
+        # まずは標準の「現在の月」のパスを取得
         log_path, _, _, _, _, _ = get_room_files_paths(room_name)
+        
+        # もしそのファイルが存在しないか空の場合、logs/ 内の最新ファイルを探す
+        if not log_path or not os.path.exists(log_path) or os.path.getsize(log_path) == 0:
+            base_temp = os.path.join(constants.ROOMS_DIR, room_name, constants.LOGS_DIR_NAME)
+            if os.path.exists(base_temp):
+                files = sorted(glob.glob(os.path.join(base_temp, "*.txt")), reverse=True)
+                if files:
+                    log_path = files[0] # 最新のものを使う
+                    print(f"[DEBUG] 最新ログが空のため、直近のログを使用します: {log_path}")
+
         single_file = False # 「最新」の場合は、通常のload_chat_logの挙動（全結合）を許容しても良いが、
                             # エディタに表示するのは「現在の最新ファイル」のみにするべきなので True にする。
         single_file = True

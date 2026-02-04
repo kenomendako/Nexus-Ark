@@ -156,6 +156,12 @@ def load_chat_log(file_path: str, single_file_only: bool = False) -> List[Dict[s
     elif os.path.exists(logs_dir) and os.path.isdir(logs_dir):
         # logs/ 内の全ファイルを日付順に取得
         target_files = sorted(glob.glob(os.path.join(logs_dir, "*.txt")))
+        
+        # [Fallback] logs/ フォルダがあるが空の場合（移行失敗など）、
+        # legacy_log が残っていればそれを読み込むようにする
+        if not target_files and os.path.exists(legacy_log):
+             target_files = [legacy_log]
+             
     elif os.path.exists(file_path):
         # 指定されたファイルのみ
         target_files = [file_path]

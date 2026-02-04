@@ -67,13 +67,17 @@ def _import_chatgpt_exporter_json(
     return log_entries
 
 def import_from_generic_text(
-    file_path: str, room_name: str, user_display_name: str, user_header: str, agent_header: str
+    file_paths: List[str], room_name: str, user_display_name: str, user_header: str, agent_header: str
 ) -> Optional[str]:
     """
-    任意のテキストファイルと話者ヘッダー指定から、新しいルームを作成する。
+    任意のテキストファイル群と話者ヘッダー指定から、新しいルームを作成する。
+    file_paths: インポートするファイルのパスのリスト
     """
-    print(f"--- [Generic Importer] Starting import for file: {os.path.basename(file_path)} ---")
-    if not all([file_path, room_name, user_display_name, user_header, agent_header]):
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+
+    print(f"--- [Generic Importer] Starting import for {len(file_paths)} files. ---")
+    if not all([file_paths, room_name, user_display_name, user_header, agent_header]):
         return "ERROR: MISSING_ARGS"
         
     try:
@@ -85,39 +89,47 @@ def import_from_generic_text(
 
         log_entries = []
         
-        # --- [新ロジック] ChatGPT ExporterのJSON形式を特別扱い ---
-        if file_path.endswith('.json') and user_header == "role:Prompt" and agent_header == "role:Response":
-            print("--- [Generic Importer] Detected ChatGPT Exporter JSON format. ---")
-            log_entries = _import_chatgpt_exporter_json(file_path, safe_folder_name)
-        else:
-            # --- 既存のテキストベースの処理 ---
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-
-            # --- [新ロジック] ChatGPT Exporterのフッターを除去 ---
-            exporter_footer = "Powered by ChatGPT Exporter (https://www.chatgptexporter.com)"
-            if exporter_footer in content:
-                content = content.split(exporter_footer)[0].strip()
-
-            user_h = re.escape(user_header)
-            agent_h = re.escape(agent_header)
-            pattern = re.compile(f"(^{user_h}|^{agent_h})", re.MULTILINE)
+        for file_path in file_paths:
+            print(f"[Generic Importer] Processing file: {os.path.basename(file_path)}")
             
-            parts = pattern.split(content)
-            if len(parts) <= 1:
-                print("[Generic Importer] ERROR: No speaker headers found in the file.")
-                # UIにフィードバックするための特別なエラーコードを返す
-                return "ERROR: NO_HEADERS"
+            # --- [新ロジック] ChatGPT ExporterのJSON形式を特別扱い ---
+            if file_path.endswith('.json') and user_header == "role:Prompt" and agent_header == "role:Response":
+                print("--- [Generic Importer] Detected ChatGPT Exporter JSON format. ---")
+                log_entries.extend(_import_chatgpt_exporter_json(file_path, safe_folder_name))
+            else:
+                # --- 既存のテキストベースの処理 ---
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
 
-            for i in range(1, len(parts), 2):
-                header = parts[i]
-                text = parts[i+1].strip()
-                if not text: continue
+                    # --- [新ロジック] ChatGPT Exporterのフッターを除去 ---
+                    exporter_footer = "Powered by ChatGPT Exporter (https://www.chatgptexporter.com)"
+                    if exporter_footer in content:
+                        content = content.split(exporter_footer)[0].strip()
 
-                if header == user_header:
-                    log_entries.append(f"## USER:user\n{text}")
-                elif header == agent_header:
-                    log_entries.append(f"## AGENT:{safe_folder_name}\n{text}")
+                    user_h = re.escape(user_header)
+                    agent_h = re.escape(agent_header)
+                    pattern = re.compile(f"(^{user_h}|^{agent_h})", re.MULTILINE)
+                    
+                    parts = pattern.split(content)
+                    if len(parts) <= 1:
+                        print(f"[Generic Importer] WARNING: No speaker headers found in {os.path.basename(file_path)}. Skipping.")
+                        continue
+
+                    for i in range(1, len(parts), 2):
+                        header = parts[i]
+                        text = parts[i+1].strip()
+                        if not text: continue
+
+                        if header == user_header:
+                            log_entries.append(f"## USER:user\n{text}")
+                        elif header == agent_header:
+                            log_entries.append(f"## AGENT:{safe_folder_name}\n{text}")
+                            
+                except Exception as e:
+                    print(f"[Generic Importer] Error processing file {file_path}: {e}")
+                    traceback.print_exc()
+
 
         if not log_entries:
             return "ERROR: NO_MESSAGES"
@@ -137,7 +149,10 @@ def import_from_generic_text(
             config = json.load(f)
             config["room_name"] = room_name
             config["user_display_name"] = user_display_name
-            config["description"] = f"汎用インポーターから取り込まれた会話ログです。\nOriginal File: {os.path.basename(file_path)}"
+            desc_files = os.path.basename(file_paths[0])
+            if len(file_paths) > 1:
+                desc_files += f" (+{len(file_paths)-1} files)"
+            config["description"] = f"汎用インポーターから取り込まれた会話ログです。\nOriginal File: {desc_files}"
             f.seek(0)
             json.dump(config, f, indent=2, ensure_ascii=False)
             f.truncate()

@@ -1582,18 +1582,18 @@ try:
                                     
                         with gr.TabItem("インポート") as import_tab:
                             with gr.Accordion("🔵 ChatGPT (公式)", open=False):
-                                gr.Markdown("### ChatGPTデータインポート\n`conversations.json`ファイルをアップロードして、過去の対話をNexus Arkにインポートします。")
-                                chatgpt_import_file = gr.File(label="`conversations.json` をアップロード", file_types=[".json"])
+                                gr.Markdown("### ChatGPTデータインポート\n`conversations.json` またはデータ全体のZIPファイルをアップロードして、過去の対話をNexus Arkにインポートします。")
+                                chatgpt_import_file = gr.File(label="`conversations.json` (または ZIP) をアップロード", file_types=[".json", ".zip"])
                                 with gr.Column(visible=False) as chatgpt_import_form:
-                                    chatgpt_thread_dropdown = gr.Dropdown(label="インポートする会話スレッドを選択", interactive=True)
+                                    chatgpt_thread_dropdown = gr.Dropdown(label="インポートする会話スレッドを選択 (複数選択可)", interactive=True, multiselect=True)
                                     chatgpt_room_name_textbox = gr.Textbox(label="新しいルーム名", interactive=True)
                                     chatgpt_user_name_textbox = gr.Textbox(label="あなたの表示名（ルーム内）", value="ユーザー", interactive=True)
                                     chatgpt_import_button = gr.Button("この会話をNexus Arkにインポートする", variant="primary")
                             with gr.Accordion("🟠 Claude (公式)", open=False):
-                                gr.Markdown("### Claudeデータインポート\n`conversations.json`ファイルをアップロードして、過去の対話をNexus Arkにインポートします。")
-                                claude_import_file = gr.File(label="`conversations.json` をアップロード", file_types=[".json"])
+                                gr.Markdown("### Claudeデータインポート\n`conversations.json` またはデータ全体のZIPファイルをアップロードして、過去の対話をNexus Arkにインポートします。")
+                                claude_import_file = gr.File(label="`conversations.json` (または ZIP) をアップロード", file_types=[".json", ".zip"])
                                 with gr.Column(visible=False) as claude_import_form:
-                                    claude_thread_dropdown = gr.Dropdown(label="インポートする会話スレッドを選択", interactive=True)
+                                    claude_thread_dropdown = gr.Dropdown(label="インポートする会話スレッドを選択 (複数選択可)", interactive=True, multiselect=True)
                                     claude_room_name_textbox = gr.Textbox(label="新しいルーム名", interactive=True)
                                     claude_user_name_textbox = gr.Textbox(label="あなたの表示名（ルーム内）", value="ユーザー", interactive=True)
                                     claude_import_button = gr.Button("この会話をNexus Arkにインポートする", variant="primary")
@@ -1603,7 +1603,7 @@ try:
                                     "### 汎用インポーター\n"
                                     "ChatGPT Exporter形式のファイルや、任意の話者ヘッダーを持つテキストログをインポートします。"
                                 )
-                                generic_import_file = gr.File(label="JSON, MD, TXT ファイルをアップロード", file_types=[".json", ".md", ".txt"])
+                                generic_import_file = gr.File(label="JSON, MD, TXT ファイルをアップロード (複数可)", file_types=[".json", ".md", ".txt"], file_count="multiple")
                                 with gr.Column(visible=False) as generic_import_form:
                                     generic_room_name_textbox = gr.Textbox(label="新しいルーム名", interactive=True)
                                     generic_user_name_textbox = gr.Textbox(label="あなたの表示名（ルーム内）", interactive=True)
@@ -4731,9 +4731,9 @@ try:
             outputs=[chatgpt_thread_dropdown, chatgpt_import_form, chatgpt_thread_choices_state]
         )
 
-        chatgpt_thread_dropdown.select(
+        chatgpt_thread_dropdown.change(
             fn=ui_handlers.handle_chatgpt_thread_selection,
-            inputs=[chatgpt_thread_choices_state],
+            inputs=[chatgpt_thread_choices_state, chatgpt_thread_dropdown],
             outputs=[chatgpt_room_name_textbox]
         )
 
@@ -4763,9 +4763,9 @@ try:
             outputs=[claude_thread_dropdown, claude_import_form, claude_thread_choices_state]
         )
 
-        claude_thread_dropdown.select(
+        claude_thread_dropdown.change(
             fn=ui_handlers.handle_claude_thread_selection,
-            inputs=[claude_thread_choices_state],
+            inputs=[claude_thread_choices_state, claude_thread_dropdown],
             outputs=[claude_room_name_textbox]
         )
 
