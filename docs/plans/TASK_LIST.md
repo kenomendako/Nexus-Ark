@@ -60,7 +60,14 @@
 - [x] **アラーム応答生成時のシステムプロンプト出力廃止** (High) [レポート](../reports/2026-02-04_suppress_alarm_debug_log.md)
   - 詳細: アラーム応答生成時に、デバッグモードが有効なためターミナルに全システムプロンプトが出力されるのを廃止する（通常応答と同じにする）。
   - 優先度: 🔴高
-- [x] [「研究ノートが空です」「創作ノートが空です」というアナウンスの抑制] (High) [レポート](../reports/2026-02-04_suppress_empty_note_announcements.md)
+- [x] 研究・創作ノートが空の場合のアナウンス抑制 (ツール出力)
+    - [x] `research_tools.py` の修正
+    - [x] `creative_tools.py` の修正
+    - [レポート](docs/reports/2026-02-04_suppress_empty_note_announcements.md)
+- [x] 不要なUIアナウンスの抑制 (UI表示)
+    - [x] `ui_handlers.py` の `gr.Info` を `print` に変更（設定保存、ログ読み込み）
+    - [x] 「対象のノートは空です」のUI通知を抑制
+    - [レポート](docs/reports/2026-02-04_suppress_ui_announcements.md)
   - 詳細: ツール実行結果が空の場合のアナウンスが冗長なため抑制する。
   - 優先度: 🔴高
 - [ ] **ツール使用ログの常時記録**

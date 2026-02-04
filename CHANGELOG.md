@@ -4,7 +4,13 @@ All notable changes to Nexus Ark will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+### Fixed
+- 不要なUIアナウンス（設定保存、ログ読み込み、空ノート警告）を抑制し、コンソールログに変更。
+- 研究・創作ノートが空の場合のツール戻り値を修正し、不要なAI発言を抑制。
+
+### Added
+- docs/reports/2026-02-04_suppress_ui_announcements.md (完了レポート)
+
 ### Fixed
 - アラーム応答生成時にターミナルに全システムプロンプトが出力されるのを廃止 (debug_modeを無効化)
 - ルーム移動時のGradioエラーの修正 (不正なプロバイダ値 'zhipu' などのサニタイズとUI選択肢の補完)
