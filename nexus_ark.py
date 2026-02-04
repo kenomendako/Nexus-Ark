@@ -591,6 +591,7 @@ try:
                                             
                                 provider_radio = gr.Radio(
                                     choices=[
+                                        ("標準設定を使用", "default"),
                                         ("Google (Gemini Native)", "google"),
                                         ("OpenAI互換 (OpenRouter / Groq / Ollama / Zhipu AI)", "openai")
                                     ],

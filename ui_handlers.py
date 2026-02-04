@@ -809,6 +809,17 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         pass
 
     room_openai_settings = override_settings.get("openai_settings") or {}
+    # [Phase 3] 個別プロバイダ設定
+    # null (None) の場合に "default" にフォールバックさせて UI の選択が消えるのを防ぐ
+    # レガシーな値をサニタイズ (zhipu, groq, ollama, local -> openai)
+    raw_provider = override_settings.get("provider") or "default"
+    if raw_provider in ["zhipu", "groq", "ollama", "local"]:
+        raw_provider = "openai"
+    elif raw_provider not in ["default", "google", "openai"]:
+        raw_provider = "default"
+        
+    return_provider = raw_provider
+
     return (
         room_name, chat_history, mapping_list,
         gr.update(interactive=True, placeholder="メッセージを入力してください (Shift+Enterで送信)。添付するにはファイルをドロップまたはクリップボタンを押してください..."),
@@ -843,7 +854,7 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         gr.update(open=effective_settings.get("enable_scenery_system", True)),
         gr.update(value=limit_display), # room_api_history_limit_dropdown
         gr.update(value=constants.THINKING_LEVEL_OPTIONS.get(effective_settings.get("thinking_level", "auto"), "既定 (AIに任せる / 通常モデル)")),
-        limit_key, # api_history_limit_state (これはUIコンポーネントではないが、State更新用)
+        limit_key, # api_history_limit_state (電力表示用)
         gr.update(value=episode_display),
         gr.update(value=episodic_info_text),
         gr.update(value=auto_enabled),
@@ -853,9 +864,9 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         gr.update(choices=list(config_manager.AVAILABLE_MODELS_GLOBAL), value=effective_settings.get("model_name", None)),  # room_model_dropdown (Dropdown)
         # [Phase 3] 個別プロバイダ設定
         # null (None) の場合に "default" にフォールバックさせて UI の選択が消えるのを防ぐ
-        gr.update(value=override_settings.get("provider") or "default"),  # room_provider_radio
-        gr.update(visible=(override_settings.get("provider", "default") == "google")),  # room_google_settings_group
-        gr.update(visible=(override_settings.get("provider", "default") == "openai")),  # room_openai_settings_group
+        gr.update(value=return_provider),  # room_provider_radio
+        gr.update(visible=(return_provider == "google")),  # room_google_settings_group
+        gr.update(visible=(return_provider == "openai")),  # room_openai_settings_group
         gr.update(value=effective_api_key_name),  # room_api_key_dropdown
         gr.update(value=room_openai_settings.get("profile") or None),  # room_openai_profile_dropdown
         gr.update(value=room_openai_settings.get("base_url") or ""),  # room_openai_base_url_input
