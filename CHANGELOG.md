@@ -5,6 +5,7 @@ All notable changes to Nexus Ark will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
+- Zhipu AI グループ会話時の Error 1210 を修正。`llm_factory.py` のプロバイダ名取得キー不整合 (`profile`→`name`) を修正し、パラメータ最適化が正しく適用されるようになった。 ([Report](docs/reports/2026-02-05_Zhipu_Provider_Name_Key_Fix.md))
 - 不要なUIアナウンス（設定保存、ログ読み込み、空ノート警告）を抑制し、コンソールログに変更。
 - 研究・創作ノートが空の場合のツール戻り値を修正し、不要なAI発言を抑制。
 - Supervisor AIのモデル定数 (`SUPERVISOR_MODEL`) を廃止し、実際に使用されているモデル名をログに表示するように修正 ([Report](docs/reports/2026-02-05_Supervisor_Model_Fix.md))
