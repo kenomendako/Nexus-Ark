@@ -51,7 +51,7 @@ from llm_factory import LLMFactory
 import utils
 import config_manager
 import constants
-from constants import SUPERVISOR_MODEL
+
 import pytz
 import signature_manager 
 import room_manager 
@@ -1949,7 +1949,20 @@ def supervisor_node(state: AgentState):
     # Supervisorモデルの準備
     api_key = state['api_key'] 
     
-    print(f"  - Supervisor AI ({SUPERVISOR_MODEL}) が次の進行を判断中...")
+    # Create model first to get the actual model name
+    supervisor_llm = LLMFactory.create_chat_model(
+        api_key=api_key,
+        temperature=0.0, # Deterministic
+        internal_role="supervisor"
+    )
+    
+    # Try to get model name from the instance
+    actual_model_name = getattr(supervisor_llm, "model_name", "unknown-model")
+    # For ChatOpenAI, it's 'model_name'. For ChatGoogleGenerativeAI, it's 'model'.
+    if actual_model_name == "unknown-model" and hasattr(supervisor_llm, "model"):
+         actual_model_name = supervisor_llm.model
+
+    print(f"  - Supervisor AI ({actual_model_name}) が次の進行を判断中...")
 
     # 選択肢の定義
     options = all_participants + ["FINISH"]
@@ -1967,14 +1980,9 @@ def supervisor_node(state: AgentState):
     )
 
     try:
-        # LLMFactoryでモデル作成
-        # 【マルチモデル対応】内部モデル設定（混合編成）に基づいてモデルを取得
+        # LLMFactoryでモデル作成済み
         # Function Callingを使用せず、純粋なテキスト生成として呼び出す
-        supervisor_llm = LLMFactory.create_chat_model(
-            api_key=api_key,
-            temperature=0.0, # 決定論的にする
-            internal_role="supervisor"
-        )
+
         
         # 会話履歴の最後の方だけ渡す
         recent_messages = state["messages"][-10:]

@@ -41,7 +41,7 @@ MIN_TODAY_LOG_FALLBACK_TURNS = 5  # エピソード記憶作成後の最低表�
 INTERNAL_PROCESSING_MODEL = "gemini-2.5-flash-lite"
 SUMMARIZATION_MODEL = "gemini-2.5-flash"          # 高品質（要約、文章生成など）
 EMBEDDING_MODEL = "gemini-embedding-001"
-SUPERVISOR_MODEL = "gemma-3-12b-it"
+
 
 # --- Intent-Aware Retrieval設定 (2026-01-15) ---
 # クエリ意図に応じた複合スコアリングの重み

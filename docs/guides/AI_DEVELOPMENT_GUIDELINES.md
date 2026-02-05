@@ -31,14 +31,28 @@ The original code in the `main` branch, which uses `import google.genai as genai
 
 ---
 
-### Cornerstone 2: The Model Usage Configuration (第二の礎：モデルの使用構成)
+### Cornerstone 2: No Hardcoding of Models (第二の礎：モデル名のハードコード禁止)
+
+**Source code MUST NEVER contain hardcoded model names** (e.g., `"gemini-1.5-pro"` or `"gemini-3-flash-preview"`) for operational logic.
+
+1.  **Use Configuration Managers**: Always retrieve models via `config_manager.get_effective_settings(room_name)` (for specific rooms) or `config_manager.get_current_global_model()` (for global defaults).
+2.  **Model Precedence**: The system must respect the following precedence:
+    - **Room-Specific Setting** (Most Specific)
+    - **Global Setting** (If Room uses "Default")
+    - **System Constant** (Hardcoded only in `config_manager.py` or `constants.py` as a last resort fallback)
+
+Violating this rule breaks the user's ability to control their AI experience and leads to the "heartbreak" of broken functionality when models are deprecated or restricted.
+
+---
+
+### Cornerstone 3: The Model Usage Configuration (第三の礎：モデルの使用構成)
 
 このアプリケーションで推奨されるモデルの組み合わせは、性能、品質、安定性のバランスを考慮して設計されたものです。ユーザーはUIを通じて最終応答（`agent_node`）に使用するモデルを自由に選択できますが、以下の構成が、アプリケーションの安定した動作の基礎となります。
 
 | Purpose / Node (目的／ノード) | Recommended Default Model (推奨デフォルトモデル) | Reason / Notes (理由／注記) |
 | :--- | :--- | :--- |
 | **Context Generation** (`context_generator_node` etc.) | `gemini-2.5-flash-lite` | 情景コンテキストや**記憶要約**など、高速で効率的な内部処理のためのモデル。 |
-| **Main Agent / Final Response** (`agent_node`) | **User-Selected (Default: `gemini-2.5-pro`)** | 高品質な推論とツール使用のため。ユーザーはUIの「共通設定」および「個別設定」から、このモデルを自由に変更できます。アプリケーションの全体的なデフォルトは`gemini-2.5-pro`に設定されています。 |
+| **Main Agent / Final Response** (`agent_node`) | **User-Selected (Default: `gemini-3-flash-preview`)** | 高品質な推論とツール使用のため。現在のデフォルトは `gemini-3-flash-preview` です。 |
 | **Image Generation** (`generate_image` tool) | `gemini-2.5-flash-image` | 画像生成タスクに使用されるモデル。 |
 
 #### **バックグラウンド処理におけるモデル選択**
