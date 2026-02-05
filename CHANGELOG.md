@@ -4,6 +4,16 @@ All notable changes to Nexus Ark will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+### Added
+- 司会AI（Supervisor）機能の不具合調査資料 (`docs/technical/supervisor_issues_debug_log.md`)。配布後の再開に向けた技術的な備忘録。
+
+### Fixed
+- 司会AI（Supervisor）機能の安定化（応答消失、多重ループ、モデル設定同期）を実装。
+- APIエラー発生時にチャット履歴が消失し、エラーが表示されないバグを修正。
+
+### Changed
+- 司会AI（Supervisor）機能の一時封印（配布優先対応）。設定画面から非表示化し、内部ロジックを強制無効化することで、リリース時の安定性を確保。 ([Report](docs/reports/2026-02-05_Supervisor_Stability_Fix_and_Sealing.md))
+
 ### Fixed
 - Zhipu AI グループ会話時の Error 1210 を修正。`llm_factory.py` のプロバイダ名取得キー不整合 (`profile`→`name`) を修正し、パラメータ最適化が正しく適用されるようになった。 ([Report](docs/reports/2026-02-05_Zhipu_Provider_Name_Key_Fix.md))
 - 不要なUIアナウンス（設定保存、ログ読み込み、空ノート警告）を抑制し、コンソールログに変更。

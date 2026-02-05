@@ -79,8 +79,9 @@
 - [ ] **内部処理モデルの設定のプロバイダ混成対応** <!-- id: 357 -->
 - [x] **Supervisorモデルのハードコード解消**
   - 詳細: 定数 `SUPERVISOR_MODEL` を廃止し、共通設定の軽量モデルを使用することをログでも明確化する。 ([レポート](../reports/2026-02-05_Supervisor_Model_Fix.md))
-- [/] **グループ会話Supervisor AIの安定化** <!-- id: 809 -->
-  - 詳細: 発言順序が乱れる問題（同一人物への複数回発言権付与、未発言者の放置、存在しないペルソナ名の指名）を修正し、Supervisorの出力形式を安定化させる。
+- [x] **グループ会話Supervisor AIの安定化と一時封印（配布優先対応）** <!-- id: 809 -->
+  - 詳細: 応答消失、多重ループ、設定同期不全を修正した上で、リリース安定性のため機能をUI・ロジック両面で封印。
+  - レポート: [レポート](../reports/2026-02-05_Supervisor_Stability_Fix_and_Sealing.md) | [調査ログ](../technical/supervisor_issues_debug_log.md)
   - 優先度: 🔴高
 
 ## 🟡 中長期: Beyond 1.0 (リリース後)
