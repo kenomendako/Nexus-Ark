@@ -183,7 +183,7 @@ class LLMFactory:
                 # ルーム個別設定を使用
                 base_url = room_openai_settings.get("base_url")
                 openai_api_key = room_openai_settings.get("api_key", "dummy")
-                provider_name = room_openai_settings.get("profile", "Room-specific")
+                provider_name = room_openai_settings.get("name", "Room-specific")
                 print(f"--- [LLM Factory] Using room-specific OpenAI settings ---")
             else:
                 # フォールバック: グローバルなアクティブプロファイルの設定を取得
