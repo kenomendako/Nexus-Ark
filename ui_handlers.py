@@ -809,7 +809,16 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         pass
 
     room_openai_settings = override_settings.get("openai_settings") or {}
+    # [Phase 3.1] プロファイルからモデル一覧を取得（ルーム読込時の復元用）
+    _room_profile_name = room_openai_settings.get("profile")
+    _room_model_choices = []
+    if _room_profile_name:
+        _room_profile_settings_list = config_manager.get_openai_settings_list()
+        _room_target_profile = next((s for s in _room_profile_settings_list if s["name"] == _room_profile_name), None)
+        if _room_target_profile:
+            _room_model_choices = _room_target_profile.get("available_models", [])
     # [Phase 3] 個別プロバイダ設定
+
     # null (None) の場合に "default" にフォールバックさせて UI の選択が消えるのを防ぐ
     # レガシーな値をサニタイズ (zhipu, groq, ollama, local -> openai)
     raw_provider = override_settings.get("provider") or "default"
@@ -871,7 +880,7 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         gr.update(value=room_openai_settings.get("profile") or None),  # room_openai_profile_dropdown
         gr.update(value=room_openai_settings.get("base_url") or ""),  # room_openai_base_url_input
         gr.update(value=room_openai_settings.get("api_key") or ""),  # room_openai_api_key_input
-        gr.update(choices=[], value=room_openai_settings.get("model") or None),  # room_openai_model_dropdown
+        gr.update(choices=_room_model_choices, value=room_openai_settings.get("model") or None),  # room_openai_model_dropdown
         gr.update(value=room_openai_settings.get("tool_use_enabled") if room_openai_settings.get("tool_use_enabled") is not None else True),  # room_openai_tool_use_checkbox
         gr.update(value=override_settings.get("enable_api_key_rotation") or None),  # room_rotation_dropdown
         # --- 睡眠時記憶整理 ---
