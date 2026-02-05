@@ -1551,9 +1551,10 @@ try:
                     )
                     # [v18] Supervisorモード（AI自動進行）
                     enable_supervisor_cb = gr.Checkbox(
-                        label="AI自動進行（司会モード）",
+                        label="AI自動進行（司会モード） [Beta]",
                         value=False,
-                        info="AIが会話の流れを読んで、次に誰が話すべきかを自動で指名します。（ONにすると会話が自律的に進みます）"
+                        info="AIが会話の流れを読んで、次に誰が話すべきかを自動で指名します。（ONにすると会話が自律的に進みます）",
+                        visible=False  # 一時封印
                     )
                     with gr.Row():
                         start_session_button = gr.Button("このメンバーで会話を開始 / 更新", variant="primary")

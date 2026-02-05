@@ -133,6 +133,7 @@ class AgentState(TypedDict):
     tool_use_enabled: bool  # 【ツール不使用モード】ツール使用の有効/無効
     next: str
     enable_supervisor: bool # Supervisor機能の有効/無効
+    speakers_this_turn: List[str]  # [v19] 今ターン発言済みのペルソナリスト
     custom_system_prompt: Optional[str] # システムプロンプトの上書き用
     actual_token_usage: Optional[dict] = None # 【2026-01-10 NEW】実送信トークン数記録用
 
@@ -1931,20 +1932,21 @@ def supervisor_node(state: AgentState):
     会話の管理者ノード。
     次に誰が発言するか、またはユーザーにターンを戻すか（FINISH）を決定する。
     """
-    print("--- Supervisor Node 実行 ---")
-    
-    # 1. 無効化されている場合はスキップ（現在のルーム名 = つまり指名されたエージェントをそのまま通す）
+    # [Seal] 配布優先のため、司会AI機能は現在強制的にスキップされます
     if not state.get("enable_supervisor", False):
-        next_agent = state["room_name"]
-        print(f"  - [Supervisor] 無効設定のためスキップ: {next_agent}")
+        next_agent = state.get("room_name")
+        print(f"  - [Supervisor] 無効（封印中）のためスキップ: {next_agent}")
         return {"next": next_agent}
 
-    # 2. 参加者が一人（または0）の場合は、管理不要なのでその一人に任せる
+    print("--- Supervisor Node 実行 ---")
+    
+    # --- [v19] 発言状況のトラッキング ---
+    # 今ターンで誰が発言したかを会話履歴から抽出
+    speakers_this_turn = state.get("speakers_this_turn", [])
     all_participants = state.get("all_participants", [])
-    if len(all_participants) <= 1:
-        next_agent = state["room_name"]
-        print(f"  - 参加者が単独のため、Supervisorをスキップ: {next_agent}")
-        return {"next": next_agent}
+    remaining_speakers = [p for p in all_participants if p not in speakers_this_turn]
+    
+    print(f"  - 発言済み: {speakers_this_turn}, 未発言: {remaining_speakers}")
 
     # Supervisorモデルの準備
     api_key = state['api_key'] 
@@ -1968,62 +1970,109 @@ def supervisor_node(state: AgentState):
     options = all_participants + ["FINISH"]
     options_str = ', '.join(f'"{o}"' for o in options)
     
+    # --- [v19.1] 極限まで厳格化した進行ロジック・プロンプト ---
     system_prompt = (
-        "あなたはグループチャットの進行役です。\n"
-        "以下の会話履歴を確認し、次に発言すべき参加者を選んでください。\n"
-        "特に指定がなければ、話の流れに最も適した人物を指名してください。\n"
-        "全員が話し終えた、またはユーザーからの入力が必要なタイミングであれば 'FINISH' を選んでください。\n\n"
-        "【重要】\n"
-        "出力は **必ず以下のJSON形式のみ** にしてください。他のテキストは一切含めないでください。\n"
-        '{"next_speaker": "選択した名前"}\n\n'
-        f"【選択可能な名前リスト】: [{options_str}]"
+        "【最重要指示: あなたの役割】\n"
+        "あなたはAIペルソナではなく、チャットシステムのプロトコル制御ロジックです。\n"
+        "挨拶、相槌、感想、感情表現、キャラクターとしてのなりきりは一切禁止されています。\n"
+        "出力は、次に発言するキャラクターを決定するJSON 1行のみに限定してください。\n\n"
+        "【発言権の割り当てアルゴリズム】\n"
+        "1. 指定された名前（キャラクター）の中から選ぶこと。\n"
+        "2. ユーザー（人間）は絶対に選ばないこと。ユーザーの介入が必要な場合は \"FINISH\" を選ぶこと。\n"
+        "3. 同じ人を連続で指名せず、可能な限り「未発言の候補者」から選ぶこと。\n"
+        "4. 全員が発言済み（未発言リストが空）の場合は、必ず \"FINISH\" を選ぶこと。\n\n"
+        "【現在の発言状況】\n"
+        f"- 今ターン発言済み: {speakers_this_turn}\n"
+        f"- 未発言の候補者: {remaining_speakers}\n\n"
+        f"【指名可能なリスト】: [{options_str}]\n\n"
+        '応答形式: {"next_speaker": "名前またはFINISH"}'
     )
 
     try:
         # LLMFactoryでモデル作成済み
-        # Function Callingを使用せず、純粋なテキスト生成として呼び出す
+        recent_messages = state["messages"][-4:]
+        
+        # 安全策：メッセージが一つもない場合はダミーを入れる
+        if not recent_messages:
+            recent_messages = [HumanMessage(content="（会話開始）")]
 
-        
-        # 会話履歴の最後の方だけ渡す
-        recent_messages = state["messages"][-10:]
-        
-        # SystemMessageが使えないモデル（Gemma 3など）のためにHumanMessageに置換
         response = supervisor_llm.invoke([HumanMessage(content=system_prompt)] + recent_messages)
-        content = response.content.strip()
-        print(f"  - Supervisor生応答: {content}")
+        raw_content = response.content.strip() if response and response.content else ""
         
-        # JSONパース（Markdownコードブロック除去を含む）
-        json_match = re.search(r"\{.*\}", content, re.DOTALL)
+        print(f"  - Supervisor生応答: {raw_content[:200]}...", flush=True)
+        
+        # --- [v19.2] 超サニタイズ ＆ パース ---
+        # 思考タグ除去
+        cleaned_content = re.sub(r'\[THOUGHT\].*?\[/THOUGHT\]', '', raw_content, flags=re.DOTALL)
+        # HTMLタグ除去
+        cleaned_content = re.sub(r'<.*?>', '', cleaned_content, flags=re.DOTALL)
+        
+        next_speaker = None
+        # JSONの波括弧を探す
+        json_match = re.search(r"\{.*?\}", cleaned_content, re.DOTALL)
         if json_match:
-            json_str = json_match.group(0)
-            decision = json.loads(json_str)
-            next_speaker = decision.get("next_speaker")
-        else:
-            # JSONが見つからない場合、文字列そのものでマッチ試行
-            cleaned = content.replace('"', '').replace("'", "").strip()
-            if cleaned in options:
-                next_speaker = cleaned
-            else:
-                raise ValueError("Valid JSON not found")
+            try:
+                decision = json.loads(json_match.group(0))
+                next_speaker = decision.get("next_speaker")
+            except Exception as json_e:
+                print(f"  - JSONパース失敗: {json_e}", flush=True)
 
-        # バリデーション
+        # 保険：名称直接マッチ (JSONがない、または内容が不適切な場合)
         if next_speaker not in options:
-            print(f"  - 警告: 無効な選択 '{next_speaker}'。デフォルト(現在のルーム)へ。")
-            next_speaker = state["room_name"]
+            for opt in options:
+                # 引用符付き、または単語として含まれているか
+                if f'"{opt}"' in raw_content or f"'{opt}'" in raw_content or opt in cleaned_content:
+                    next_speaker = opt
+                    break
 
-        print(f"  - Supervisorの決定: {next_speaker}")
+        # --- [v19.1] 無限ループ防止ロジック ---
+        # AIが全員発言済みの状況で再度誰かを指名してしまった場合の強制 FINISH
+        if not remaining_speakers and next_speaker != "FINISH":
+            print(f"  - [Safety] 全員発言済みのため、FINISHを強制します。", flush=True)
+            next_speaker = "FINISH"
+
+        # 最終バリデーション
+        if next_speaker not in options:
+            print(f"  - 警告: 不適切な選択 '{next_speaker}'。フォールバックします。", flush=True)
+            next_speaker = remaining_speakers[0] if remaining_speakers else "FINISH"
+
+        print(f"  - Supervisorの決定: {next_speaker}", flush=True)
         
     except Exception as e:
-        print(f"  - Supervisorエラー: {e}")
-        print("  - デフォルト（現在のルーム）にフォールバックします。")
-        next_speaker = state["room_name"]
+        print(f"  - Supervisor重大エラー: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        next_speaker = remaining_speakers[0] if remaining_speakers else "FINISH"
 
     # もしFINISHなら終了
     if next_speaker == "FINISH":
-        return {"next": "FINISH"}
+        return {"next": "FINISH", "room_name": state.get("room_name")}
     
-    # 次の話者が決まったら、room_nameを更新してコンテキスト生成などがそのキャラ用になるようにする
-    return {"next": next_speaker, "room_name": next_speaker}
+    # --- [v19 FIX] 次の話者のモデル設定を同期 ---
+    # キャラクターごとにモデル（Google, Zhipu, OpenAI等）やAPIキーが異なるため、
+    # room_nameを変更する際に設定一式を再読込して同期する必要がある。
+    new_effective_settings = config_manager.get_effective_settings(
+        next_speaker, 
+        global_model_from_ui=state.get("generation_config", {}).get("global_model_from_ui")
+    )
+    new_api_key_name = config_manager.get_active_gemini_api_key_name(next_speaker)
+    new_api_key = config_manager.GEMINI_API_KEYS.get(new_api_key_name)
+    
+    # 発言済みリストを更新
+    updated_speakers = speakers_this_turn + [next_speaker]
+    
+    print(f"  - [Sync] 次の話者の設定を同期: {next_speaker} (Model={new_effective_settings.get('model_name')}, Key={new_api_key_name})", flush=True)
+
+    # 次の話者が決まったら、すべての設定を更新して返す
+    return {
+        "next": next_speaker, 
+        "room_name": next_speaker, 
+        "speakers_this_turn": updated_speakers,
+        "model_name": new_effective_settings.get("model_name"),
+        "api_key": new_api_key,
+        "api_key_name": new_api_key_name,
+        "generation_config": new_effective_settings
+    }
 
 def route_after_agent(state: AgentState) -> Literal["__end__", "safe_tool_node", "supervisor"]:
     print("--- エージェント後ルーター (route_after_agent) 実行 ---")

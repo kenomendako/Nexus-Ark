@@ -835,7 +835,8 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
         "season_en": season_en, "time_of_day_en": time_of_day_en,
         "skip_tool_execution": skip_tool_execution_flag,
         "tool_use_enabled": config_manager.is_tool_use_enabled(room_to_respond),  # 【ツール不使用モード】ルーム個別設定を反映
-        "enable_supervisor": enable_supervisor_flag # Supervisor有効フラグ
+        "enable_supervisor": enable_supervisor_flag, # Supervisor有効フラグ
+        "speakers_this_turn": []  # [v19] 今ターン発言済みリスト（Supervisor用）
     }
 
     yield ("initial_count", len(messages))
@@ -924,7 +925,9 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
             
             if not is_429 and not is_503:
                 # 429以外のエラーは通常のエラーハンドリングへ
-                yield ("values", {"messages": [AIMessage(content=f"[エラー: AIモデル実行中にエラーが発生しました: {e}]")]})
+                err_content = f"[エラー: AIモデル実行中にエラーが発生しました: {e}]"
+                full_messages = initial_state.get("messages", []) + [AIMessage(content=err_content)]
+                yield ("values", {"messages": full_messages})
                 return
 
             if is_503 and local_503_retry_count < 3:

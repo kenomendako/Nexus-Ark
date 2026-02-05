@@ -1491,8 +1491,19 @@ def _stream_and_handle_response(
                gr.update()  # [v21] style_injector (16番目)
         )
 
+        # [v19] 司会AI機能の一時封印 (Force disable)
+        enable_supervisor = False
+        
         # AIごとの応答生成ループ
         all_rooms_in_scene = [soul_vessel_room] + (active_participants or [])
+        
+        # [v19 Fix] Supervisorが有効な場合、Supervisor自身が全参加者の管理を行うため、
+        # ここで各参加者を個別にループ回すと多重ループが発生する。
+        # 司会AIモード時は、主ルーム（soul_vessel_room）からの統合パスのみを実行する。
+        if enable_supervisor:
+            print("  - [Supervisor] 司会AIモード有効。統合パスを実行します。")
+            all_rooms_in_scene = [soul_vessel_room]
+
         for i, current_room in enumerate(all_rooms_in_scene):
             
             # --- [最重要] ターンごとに思考の前提をゼロから構築 ---
