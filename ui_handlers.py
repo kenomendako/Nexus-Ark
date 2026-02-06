@@ -1140,6 +1140,10 @@ def handle_initial_load(room_name: str = None, expected_count: int = 178):
     
     return _ensure_output_count(final_outputs, expected_count)
 
+# ルーム切り替え時の通知抑制用
+_last_room_switch_time = 0
+ROOM_SWITCH_GRACE_PERIOD_SECONDS = 5.0 # ルーム切り替え後の「余震」による保存通知を抑制する時間
+
 def handle_save_room_settings(
     room_name: str, voice_name: str, voice_style_prompt: str,
     temp: float, top_p: float, harassment: str, hate: str, sexual: str, dangerous: str,
@@ -1281,16 +1285,23 @@ def handle_save_room_settings(
     if not silent:
         if result == True or (result == "no_change" and force_notify):
             now = time.time()
-            # 初期化完了前、または初期化完了直後のgrace period中は通知を抑制
-            if not _initialization_completed:
-                pass  # 初期化中は通知しない
-            elif (now - _initialization_completed_time) < POST_INIT_GRACE_PERIOD_SECONDS:
-                pass  # 初期化完了直後のgrace period中は通知しない
+            
+            # 1. 初期化完了前、または初期化完了直後のgrace period中は通知を抑制
+            if not _initialization_completed or (now - _initialization_completed_time) < POST_INIT_GRACE_PERIOD_SECONDS:
+                 pass
+            
+            # 2. [New] ルーム切り替え直後の「余震」による通知を抑制
+            elif not force_notify and (now - _last_room_switch_time) < ROOM_SWITCH_GRACE_PERIOD_SECONDS:
+                pass 
+                
             else:
-                # デバウンス: 同一ルームへの連続通知を抑制
+                # 3. デバウンス: 同一ルームへの連続通知を抑制
                 last_time = _last_save_notification_time.get(room_name, 0)
-                if (now - last_time) > NOTIFICATION_DEBOUNCE_SECONDS:
+                if force_notify or (now - last_time) > NOTIFICATION_DEBOUNCE_SECONDS:
                     print(f"--- [UI] 「{room_name}」の個別設定を保存しました。 ---")
+                    # 手動保存(force_notify=True)の場合は必ず通知
+                    # 自動保存でもデバウンス＆Grace Period通過なら通知
+                    gr.Info(f"設定を保存しました: {room_name}")
                     _last_save_notification_time[room_name] = now
     if result == False:
         gr.Error("個別設定の保存中にエラーが発生しました。詳細はログを確認してください。")
@@ -6111,15 +6122,18 @@ def handle_world_builder_load(room_name: str):
         gr.update(choices=place_choices_for_selected_area, value=current_location)
     )
 
-def handle_room_change_for_all_tabs(room_name: str, api_key_name: str, current_room_state: str, expected_count: int = 155):
+def handle_room_change_for_all_tabs(room_name: str, api_key_name: str, expected_count: int = 155):
     """
     【v11: 最終契約遵守版】
     ルーム変更時に、全てのUI更新と内部状態の更新を、この単一の関数で完結させる。
      expected_count を UI側 (gr.State) から受け取ることで、不整合を自動的に解消する仕組みを導入。
     """
-    # 互換性のため、引数から expected_count を取得（デフォルト値はハードコード）
-    if room_name == current_room_state:
-        return _ensure_output_count((gr.update(),), expected_count)
+    # [Fix] 以前は current_room_state と比較してリターンしていたが、
+    # 状態不整合（UIは変わったがStateが変わっていない、あるいはその逆）を防ぐため、
+    # 常に強制的にリロードを実行する。
+    
+    global _last_room_switch_time
+    _last_room_switch_time = time.time()
 
     print(f"--- UI司令塔 実行: {room_name} へ変更 ---")
 

@@ -3186,7 +3186,7 @@ try:
        
         chat_inputs = [
             chat_input_multimodal,
-            current_room_name,
+            room_dropdown, # [Fix] StateではなくUIコンポーネントの値を直接使用して混線を防止
             current_api_key_name_state,
             api_history_limit_state,
             debug_mode_checkbox,
@@ -3257,7 +3257,7 @@ try:
         # 2. その後(.then)、UI全体を更新する重い処理を実行
         ).then(
             fn=ui_handlers.handle_room_change_for_all_tabs,
-            inputs=[room_dropdown, api_key_dropdown, current_room_name, full_refresh_output_count],
+            inputs=[room_dropdown, api_key_dropdown, full_refresh_output_count],
             outputs=unified_full_room_refresh_outputs
         # 3. [v6] アバターモードラジオを更新
         ).then(
