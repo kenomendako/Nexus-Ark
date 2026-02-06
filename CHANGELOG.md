@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### [Unreleased]
 ### Added
+- **Gemini**: 共有URLからの会話ログインポート機能を実装 (Playwrightベース)。API制約を回避するため、ヘッドレスブラウザでチャットログを構造化して取り込む機能を実装。 ([Report](docs/reports/2026-02-06_Gemini_Import_Playwright.md))
 - **Distribution System**: Implemented `pyproject.toml` and standard `uv` based workflow.
 - **Pinokio Support**: Added `pinokio.js`, `install.js`, `start.js`, `update.js` for 1-click install.
 - **Onboarding System**: Added `onboarding_manager.py` and a new "Wizard Overlay" in `nexus_ark.py` for first-time setup (API Key handling).

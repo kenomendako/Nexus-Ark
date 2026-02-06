@@ -2912,12 +2912,25 @@ try:
                     # --- Tab 2: 帰宅（インポート） ---
                     with gr.TabItem("🏠 帰宅 (インポート)", elem_id="outing_import_tab"):
                         gr.Markdown("## 会話ログの統合\nAntigravity等からエクスポートした会話ログを、現在のルームの履歴に統合（追記）します。")
-                        outing_import_file = gr.File(label="ログファイルをアップロード（MD/TXT）", file_types=[".md", ".txt"])
-                        with gr.Row():
-                            outing_import_source = gr.Textbox(label="お出かけ先の名称", value="Antigravity", placeholder="例: Antigravity, 外出先")
-                            outing_import_user_header = gr.Textbox(label="ユーザーの発言ヘッダー", value="[user]", placeholder="例: [user]")
-                            outing_import_agent_header = gr.Textbox(label="AIの発言ヘッダー", value="[ルシアン]", placeholder="例: [ルシアン]")
-                        outing_import_button = gr.Button("ログを統合して帰宅する", variant="primary")
+                        
+                        # ファイル取り込み
+                        with gr.Group():
+                            gr.Markdown("### 📂 ファイルから取り込み")
+                            outing_import_file = gr.File(label="ログファイルをアップロード（MD/TXT）", file_types=[".md", ".txt"])
+                            with gr.Row():
+                                outing_import_source = gr.Textbox(label="お出かけ先の名称", value="Antigravity", placeholder="例: Antigravity, 外出先")
+                                outing_import_user_header = gr.Textbox(label="ユーザーの発言ヘッダー", value="[user]", placeholder="例: [user]")
+                                outing_import_agent_header = gr.Textbox(label="AIの発言ヘッダー", value="[ルシアン]", placeholder="例: [ルシアン]")
+                            outing_import_button = gr.Button("ログを統合して帰宅する (ファイル)", variant="primary")
+                        
+                        # URL取り込み (Gemini)
+                        with gr.Group():
+                            gr.Markdown("### ♊ Gemini共有URLから取り込み")
+                            gr.Markdown("共有リンクから会話内容を直接読み込みます。")
+                            gemini_import_url = gr.Textbox(label="共有URL", placeholder="https://gemini.google.com/share/...", lines=1)
+                            gemini_import_button = gr.Button("ログを統合して帰宅する (URL)", variant="primary")
+                            gemini_import_status = gr.Markdown("")
+
                         outing_import_status = gr.Markdown("ステータス: 待機中")
 
             with gr.TabItem("デバッグコンソール"):
@@ -4900,6 +4913,21 @@ try:
             alarm_room_dropdown,
             timer_room_dropdown
             ]
+        )
+
+        # --- Gemini Importer Event Handlers ---
+        gemini_import_button.click(
+            fn=ui_handlers.handle_gemini_import_button_click,
+            inputs=[
+                gemini_import_url,
+                current_room_name,
+                api_history_limit_state,
+                room_add_timestamp_checkbox,
+                room_display_thoughts_checkbox,
+                screenshot_mode_checkbox,
+                redaction_rules_state
+            ],
+            outputs=[chatbot_display, current_log_map_state, gemini_import_status, gemini_import_url]
         )
 
         # --- Theme Management Event Handlers ---

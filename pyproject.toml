@@ -4,7 +4,7 @@ version = "1.0.0"
 description = "Nexus Ark: AI Persona Interaction System"
 authors = [{ name = "Kenomendako", email = "kenomendako@example.com" }]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     # --- Core Frameworks ---
     "gradio==5.47.0",
@@ -15,25 +15,21 @@ dependencies = [
     "langgraph",
     "google-genai>=1.59.0",
     "pillow",
-    
     # --- RAG (Knowledge Base) Feature ---
     "faiss-cpu",
     "langchain-faiss",
     # langchain-community is often needed for various document loaders
     "langchain-community",
-    
     # --- UI & Data Handling ---
     "pandas==2.3.2",
     "beautifulsoup4==4.13.5",
     "lxml==6.0.2",
     "pypdf==5.1.0",
-    
     # --- Subprocess & Notifications ---
     "psutil==7.1.0",
     "plyer==2.1.0",
     "schedule==1.2.2",
     "requests==2.32.5",
-    
     # --- File & System Utilities ---
     "filetype==1.2.0",
     "filelock>=3.20.0",
@@ -43,7 +39,6 @@ dependencies = [
     "ddgs==9.9.1",
     "concurrent-log-handler==0.9.28",
     "send2trash>=1.8.0",
-    
     # --- LangChain/LangGraph Dependencies (Verified) ---
     "aiohttp==3.12.15",
     "anyio==4.11.0",
@@ -56,25 +51,22 @@ dependencies = [
     "PyYAML==6.0.2",
     "SQLAlchemy==2.0.43",
     "tenacity==9.1.2",
-    
     # --- Audio dependency ---
     "pydub==0.25.1",
-    
     # --- Markdown rendering ---
     "markdown-it-py~=3.0.0",
     "mdit-py-plugins~=0.4.0",
-    
     # --- Multi-Provider Support ---
     "langchain-openai",
     "langchain-tavily",
-
     # --- Topic Clustering Feature ---
     "hdbscan>=0.8.33",
     "sentence-transformers>=2.2.0",
     "python-chess",
-    
     # --- Local LLM Support ---
     "llama-cpp-python",
+    "playwright>=1.58.0",
+    "pytest-playwright>=0.7.2",
 ]
 
 [project.optional-dependencies]

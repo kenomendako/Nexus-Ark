@@ -49,8 +49,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.docstore.document import Document
 
 import gemini_api, config_manager, alarm_manager, room_manager, utils, constants, chatgpt_importer, claude_importer, generic_importer
+from tools import gemini_importer, timer_tools, memory_tools
 from utils import _overwrite_log_file
-from tools import timer_tools, memory_tools
 from agent.scenery_manager import generate_scenery_context
 from room_manager import get_room_files_paths, get_world_settings_path
 from memory_manager import load_memory_data_safe, save_memory_data
@@ -11132,6 +11132,69 @@ def handle_import_return_log(
         print(f"Return Home Import Error: {e}")
         traceback.print_exc()
         return gr.update(), gr.update(), f"ステータス: ❌ エラー: {str(e)}", gr.update()
+
+
+
+def handle_gemini_import_button_click(
+    url: str,
+    room_name: str,
+    api_history_limit,
+    add_timestamp,
+    display_thoughts,
+    screenshot_mode,
+    redaction_rules
+):
+    if not url or not url.strip():
+        return gr.update(), gr.update(), "ステータス: ⚠️ URLを入力してください", gr.update()
+    
+    if not room_name:
+        return gr.update(), gr.update(), "ステータス: ⚠️ ルームが選択されていません", gr.update()
+        
+    print(f"Gemini URL Import: {url} for room {room_name}")
+    
+    try:
+        success, msg, messages = gemini_importer.import_gemini_log_from_url(url.strip(), room_name)
+        
+        if not success:
+            return gr.update(), gr.update(), f"ステータス: ❌ {msg}", gr.update()
+            
+        # --- Log Appending Logic ---
+        final_entries = []
+        final_entries.append("## SYSTEM:外出\n\n--- Gemini (お出かけ) での会話開始 ---")
+        
+        for m in messages:
+            role = m["role"]
+            content = m["content"]
+            header = "## USER:user" if role == "user" else f"## AGENT:{room_name}"
+            # 内容の文字列化と空白除去
+            content_str = str(content).strip()
+            final_entries.append(f"{header}\n\n{content_str}")
+            
+        final_entries.append("## SYSTEM:外出\n\n--- Gemini (お出かけ) での会話終了 ---")
+        
+        # ログ保存
+        log_path, _, _, _, _, _ = room_manager.get_room_files_paths(room_name)
+        room_manager.create_backup(room_name, 'log')
+        
+        with open(log_path, "a", encoding="utf-8") as f:
+            if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
+                f.write("\n\n")
+            import_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"<!-- Gemini URL Import: {import_timestamp} from {url} -->\n\n")
+            f.write("\n\n".join(final_entries))
+            f.write("\n\n")
+            
+        gr.Info(f"{len(messages)}件のメッセージをインポートしました。おかえりなさい！")
+        
+        # 画面更新
+        chatbot, mapping = reload_chat_log(room_name, api_history_limit, add_timestamp, display_thoughts, screenshot_mode, redaction_rules)
+        
+        return chatbot, mapping, f"ステータス: ✅ {len(messages)}件インポート完了", ""
+
+    except Exception as e:
+        print(f"Gemini Import Handler Error: {e}")
+        traceback.print_exc()
+        return gr.update(), gr.update(), f"ステータス: ❌ エラー: {e}", gr.update()
 
 
 # ===== 🧠 内的状態（Internal State）用ハンドラ =====
