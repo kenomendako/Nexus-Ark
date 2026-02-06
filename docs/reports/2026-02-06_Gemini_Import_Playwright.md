@@ -30,6 +30,7 @@ Geminiの共有URL (`https://gemini.google.com/share/...`) から会話ログを
 - [x] ユーザーとAIの発言が正しく分離されていることを確認
 - [x] 日本語テキストが文字化けせず取得できることを確認
 - [x] PlaywrightがLinux環境で正常に動作することを確認
+- [x] モバイルアプリからの共有URL (`https://g.co/...`) も正常にリダイレクト・取り込みできることを確認
 
 ## 備考
 - Playwrightの動作にはシステムライブラリ (`libnspr4` 等) が必要です。初回のみ `sudo playwright install-deps` の実行が必要です。

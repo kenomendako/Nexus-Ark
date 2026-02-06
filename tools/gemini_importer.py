@@ -23,8 +23,8 @@ def import_gemini_log_from_url(url: str, room_name: str) -> Tuple[bool, str, Lis
     Returns:
         Tuple: (Success, Message, LogList)
     """
-    if not url.startswith("https://gemini.google.com/share/"):
-        return False, "無効なURLです。'https://gemini.google.com/share/' で始まるURLを指定してください。", []
+    if not (url.startswith("https://gemini.google.com/share/") or url.startswith("https://g.co/gemini/share/")):
+        return False, "無効なURLです。'https://gemini.google.com/share/' または 'https://g.co/gemini/share/' で始まるURLを指定してください。", []
 
     logger.info(f"Starting Gemini log import via Playwright: {url}")
 
@@ -52,19 +52,25 @@ def import_gemini_log_from_url(url: str, room_name: str) -> Tuple[bool, str, Lis
                 logger.warning("Network idle wait timed out, proceeding anyway.")
 
             # 遅延読み込み対策: ページ下部までスクロール
+            logger.info("Scrolling to bottom...")
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(2) # スクロール後のレンダリング待機 
             
             # HTML取得
+            logger.info("Fetching page content...")
             html_content = page.content()
+            logger.info(f"Page content fetched. Size: {len(html_content)} bytes")
             
             # テキストベース抽出 (ブラウザが開いている間に実行)
             # body_text = page.locator("body").inner_text()
             
             # 処理が終わったら閉じる
+            logger.info("Closing browser...")
             browser.close()
+            logger.info("Browser closed.")
             
             # --- BeautifulSoupによる構造化解析 ---
+            logger.info("Starting BS4 parsing...")
             soup = BeautifulSoup(html_content, 'lxml')
             messages = []
             
