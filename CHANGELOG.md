@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 - **System**: Improved folder structure handling for distribution builds.
+- **お出かけ機能のエピソード記憶読み込み修正**: 月次フォルダに移行したエピソード記憶を正しく読み込めるように `ui_handlers.py` を更新。 ([Report](docs/reports/2026-02-06_Outing_Memory_Fix.md))
 
 ## [v20] - 2026-02-05 (Pre-release)
 ### Added

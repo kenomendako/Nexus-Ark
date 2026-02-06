@@ -10345,58 +10345,62 @@ def _get_recent_log_entries(log_path: str, count: int, include_timestamp=True, i
 def _get_episodic_memory_entries(room_name: str, days: int) -> str:
     """
     エピソード記憶から過去N日分のエントリを取得する。
-    episodic_memory.jsonは配列形式: [{"date": "2025-12-28", "summary": "...", ...}, ...]
+    EpisodicMemoryManagerを使用して、月次フォルダに分散された記憶も取得する。
     """
     if days <= 0:
         return ""
     
-    episodic_path = os.path.join(constants.ROOMS_DIR, room_name, "memory", "episodic_memory.json")
-    if not os.path.exists(episodic_path):
-        return ""
-    
     try:
-        with open(episodic_path, "r", encoding="utf-8") as f:
-            episodic_data = json.load(f)
+        from episodic_memory_manager import EpisodicMemoryManager
+        manager = EpisodicMemoryManager(room_name)
         
-        if not episodic_data:
+        # 全期のエピソード記憶を読み込む (レガシー + 月次)
+        # _load_memory はプライベートメソッドだが、全件取得のために使用する
+        all_episodes = manager._load_memory()
+        
+        if not all_episodes:
             return ""
         
-        # 配列形式のデータを処理
         from datetime import datetime, timedelta
         cutoff_date = datetime.now() - timedelta(days=days)
         cutoff_str = cutoff_date.strftime("%Y-%m-%d")
         
         filtered_entries = []
-        for entry in episodic_data:
-            # 各エントリは {"date": "...", "summary": "...", ...} の辞書
+        for entry in all_episodes:
             if isinstance(entry, dict):
                 date_key = entry.get("date", "")
                 summary = entry.get("summary", "")
                 
-                # 日付範囲でフィルタリング（日付の最初の部分で比較）
-                # 日付形式: "2025-12-28" または "2025-04-14~2025-04-20" 等
-                date_start = date_key.split("~")[0] if date_key else ""
+                # 日付範囲でフィルタリング
+                date_start = date_key.strip()
+                if '~' in date_start:
+                    date_start = date_start.split("~")[0].strip()
+                elif '～' in date_start:
+                    date_start = date_start.split("～")[0].strip()
+                
                 if date_start >= cutoff_str:
-                    filtered_entries.append((date_key, summary))
+                    filtered_entries.append((date_start, date_key, summary))
         
-        # 日付順にソート
-        filtered_entries.sort(key=lambda x: x[0].split("~")[0] if x[0] else "")
+        # 日付順（昇順）にソート
+        filtered_entries.sort(key=lambda x: x[0])
         
         if not filtered_entries:
             return ""
-        
+
+        # 整形: 既存のフォーマットに合わせる
         result_lines = []
-        for date_key, summary in filtered_entries:
+        for _, date_key, summary in filtered_entries:
             result_lines.append(f"### {date_key}")
             result_lines.append(summary if isinstance(summary, str) else str(summary))
             result_lines.append("")
-        
-        return '\n'.join(result_lines)
+            
+        return "\n".join(result_lines)
+
     except Exception as e:
-        print(f"Error reading episodic memory: {e}")
-        return ""
-
-
+        print(f"Error in _get_episodic_memory_entries: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"エピソード記憶の読み込みエラー: {e}"
 def handle_export_outing_data(room_name: str, log_count: int, episode_days: int):
     """
     ペルソナデータをエクスポートする。
