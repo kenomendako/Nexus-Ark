@@ -21,6 +21,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Supervisor AIのモデル定数 (`SUPERVISOR_MODEL`) を廃止し、実際に使用されているモデル名をログに表示するように修正 ([Report](docs/reports/2026-02-05_Supervisor_Model_Fix.md))
 - OpenAI互換モデル設定が再起動時にプロファイルのデフォルトモデルに戻る問題を修正。ルーム読み込み時にプロファイルからモデル一覧を取得するよう改善。 ([Report](docs/reports/2026-02-05_OpenAI_Model_Persistence_Fix.md))
 
+### [Unreleased]
+### Added
+- **Distribution System**: Implemented `pyproject.toml` and standard `uv` based workflow.
+- **Pinokio Support**: Added `pinokio.js`, `install.js`, `start.js`, `update.js` for 1-click install.
+- **Onboarding System**: Added `onboarding_manager.py` and a new "Wizard Overlay" in `nexus_ark.py` for first-time setup (API Key handling).
+- **Knowledge Sync**: Added `tools/update_knowledge.py` to automatically sync specification docs to persona knowledge.
+- **Launch Scripts**: Added `start_nexus_ark.bat` and `start_nexus_ark.sh`.
+
+### Fixed
+- **System**: Improved folder structure handling for distribution builds.
+
+## [v20] - 2026-02-05 (Pre-release)
 ### Added
 - docs/reports/2026-02-04_suppress_ui_announcements.md (完了レポート)
 

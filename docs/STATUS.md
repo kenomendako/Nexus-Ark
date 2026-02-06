@@ -1,4 +1,4 @@
-|- **最終更新:** 2026-02-05
+|- **最終更新:** 2026-02-06
 **バージョン:** 0.17.4 (Pre-Release)
 
 ## 🎯 現在のフォーカス
@@ -15,7 +15,8 @@
 - **RAG APIキーローテーション**: 429エラー時のキー切り替えロジックを修正。セージ（影の僕からの提案）用の独立したプロンプトプレースホルダー `{pending_messages_section}` を追加。
 - **UX改善**: 研究ノート・創作ノートが空の場合の冗長なアナウンスを廃止。
 
-### Fixed
+### Fixed / Implemented
+| 2026-02-06 | **配布・運用システムの刷新**<br>・uv + pyproject.toml への完全移行<br>・Pinokioワンクリック導入対応<br>・初期設定ウィザード（オンボーディング）の実装<br>・仕様書から知識への自動同期ツール実装 | [レポート](reports/2026-02-06_Distribution_System_Update.md) |
 | 2026-02-05 | **Supervisorモデルのハードコード解消**<br>・定数 `SUPERVISOR_MODEL` を廃止し、ログ出力時に実際のモデル名を表示するように修正<br>・`verify_supervisor_model.py` による検証を実施 | [レポート](reports/2026-02-05_Supervisor_Model_Fix.md) |
 | 2026-02-04 | **ルーム移動時のGradioエラー修正**<br>・不正なプロバイダ値 ('zhipu' 等) を 'openai' に自動変換するように修正<br>・Radioコンポーネントに 'default' 選択肢を充足 | [レポート](reports/2026-02-04_room_movement_error_fix.md) |
 | 2026-02-04 | **睡眠時記憶エラーとRAGログ参照の修正**<br>・`episodic_memory_manager.py` の `NameError` を修正<br>・`rag_manager.py` の現行ログ参照先を `log.txt` から月次ログへ修正<br>・RAGのAPIキーローテーション条件を `gemini` モード対応に緩和 | [レポート](reports/2026-02-04_Fix_Sleep_Memory_and_RAG_Log.md) |
@@ -111,10 +112,11 @@
 ## 📈 1.0 リリースに向けた進捗
 
 **ステータス:** 安定化・スリム化フェーズ（Release 1.0 MVP）
-**最終更新:** 2026-02-05
+**最終更新:** 2026-02-06
 **現在のフェーズ:** Phase 14: System Stability & Optimization (Refining User Experience)
 
 ## 最近完了したタスク
+- [x] 配布・運用システムの刷新 (uv移行/Pinokio対応/オンボーディング/知識同期) (2026-02-06)
 - [x] Zhipu AI グループ会話 Error 1210 修正 (2026-02-05)
 - [x] OpenAI互換モデル設定の永続化修正 (2026-02-05)
 - [x] Supervisorモデルのハードコード解消 (2026-02-05)

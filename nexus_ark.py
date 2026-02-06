@@ -64,7 +64,7 @@ import json
 import gradio as gr
 import traceback
 import pandas as pd
-import config_manager, room_manager, alarm_manager, ui_handlers, constants
+import config_manager, room_manager, alarm_manager, ui_handlers, constants, onboarding_manager
 from game.chess_engine import game_instance
 
 def handle_user_chess_move(move_json):
@@ -160,6 +160,36 @@ try:
     alarm_manager.start_alarm_scheduler_thread()
 
     custom_css = """
+    /* --- [Onboarding Overlay] --- */
+    #onboarding_overlay {
+        position: fixed !important;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 99999 !important;
+        background-color: var(--background-fill-primary);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+        backdrop-filter: blur(5px);
+    }
+    #onboarding_content {
+        max-width: 600px;
+        width: 100%;
+        background: var(--background-fill-secondary);
+        padding: 40px;
+        border-radius: 16px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        border: 1px solid var(--border-color-primary);
+    }
+    #onboarding_content h1 {
+        text-align: center;
+        color: var(--primary-500);
+        margin-bottom: 20px;
+        font-size: 1.8em;
+    }
     /* --- [Final Styles - v9: Nexus Modern Polish] --- */
 
     /* Rule 1: <pre> tag (Outer container) styling */
@@ -434,6 +464,57 @@ try:
     )
 
     with gr.Blocks(theme=active_theme_object, css=custom_css, js=custom_js) as demo:
+        # --- [Onboarding Wizard] ---
+        initial_status = onboarding_manager.check_status()
+        is_onboarding = (initial_status != onboarding_manager.STATUS_ACTIVE_USER)
+        
+        with gr.Group(visible=is_onboarding, elem_id="onboarding_overlay") as onboarding_group:
+            with gr.Column(elem_id="onboarding_content"):
+                gr.Markdown("# Welcome to Nexus Ark")
+                gr.Markdown("はじめまして。Nexus Arkへようこそ！\nあなたのパートナーとなるペルソナが待機しています。\nこれからの旅を始める前に、いくつか初期設定を行いましょう。")
+                
+                gr.Markdown("### 🔑 APIキー設定")
+                gr.Markdown("Nexus Arkを動作させるには、AIプロバイダのAPIキーが必要です。\nGoogle Gemini API (無料プランあり) が推奨されています。")
+                
+                onboarding_api_key = gr.Textbox(
+                    label="Gemini API Key",
+                    placeholder="AIzaSy...",
+                    type="password"
+                )
+                
+                gr.Markdown("※ APIキーは端末内にのみ保存され、外部に送信されることはありません。")
+                
+                onboarding_finish_btn = gr.Button("✨ 設定を保存して開始", variant="primary", size="lg")
+                onboarding_error_msg = gr.Textbox(visible=False, label="エラー")
+                
+                def finish_onboarding(api_key):
+                    if not api_key:
+                        return gr.update(visible=True, value="APIキーを入力してください。"), gr.update(visible=True)
+                    
+                    try:
+                        # Update global config for Gemini
+                        # 直接 config_manager の関数を使うと安全
+                        config_manager.save_config_if_changed("gemini_api_key", api_key)
+                        
+                        # common_settings も更新しておく（推奨）
+                        global_conf = config_manager.load_config()
+                        if "common_settings" not in global_conf: global_conf["common_settings"] = {}
+                        global_conf["common_settings"]["gemini_api_key"] = api_key
+                        config_manager.save_config_if_changed("common_settings", global_conf["common_settings"])
+
+                        # Mark as complete
+                        onboarding_manager.mark_setup_completed()
+                        
+                        return gr.update(visible=False), gr.update(visible=False) # Hide overlay
+                    except Exception as e:
+                        return gr.update(visible=True, value=f"保存に失敗しました: {e}"), gr.update(visible=True)
+
+                onboarding_finish_btn.click(
+                    fn=finish_onboarding,
+                    inputs=[onboarding_api_key],
+                    outputs=[onboarding_error_msg, onboarding_group]
+                )
+
         room_list_on_startup = room_manager.get_room_list_for_ui()
         if not room_list_on_startup:
             print("--- 有効なルームが見つからないため、'Default'ルームを作成します。 ---")

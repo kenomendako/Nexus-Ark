@@ -1,257 +1,102 @@
-# Nexus Ark 配布・更新システム実装計画
+# 📦 Nexus Ark 配布・更新システム実装計画 (Modern Distribution Strategy)
 
-## 背景と目的
+## 🎯 ゴール
+調査レポートに基づき、**uv**（高速パッケージ管理）と **Pinokio**（AIブラウザ）を活用した、現代的でユーザー負担の少ない配布システムを構築します。
+また、案内役「オリヴェ」の記憶（ユーザーとの思い出）を守りつつ、彼女の知識（仕様書）だけを最新に保つ仕組みを導入します。
 
-Nexus Arkを非技術者向けに広く一般公開するための、ワンクリックインストール・安全なアップデート機構を設計・実装する。
+## ⚠️ ユーザーレビュー必須事項
+> [!IMPORTANT]
+> **データ保護と更新の共存**
+> - **Pinokio/Git更新**を利用するため、コードベースは常に最新に同期されます。
+> - **ユーザーデータ保護**: `characters/` フォルダなどは `.gitignore` で管理済みですが、更新時にこれらが上書きされないことを二重に担保します。
+> - **配布リポジトリの分離**: 開発用リポジトリとは別に、配布用リポジトリ `kenomendako/Nexus-Ark` を使用します。これに伴い、「リリースビルド」のプロセスを定義します。
 
-### 確認済み情報
+## 🔧 提案する変更内容
 
-| 項目 | 内容 |
-|------|------|
-| GitHubリポジトリ | `kenomendako/Nexus-Ark` |
-| 会話ログ場所 | `characters/{ルーム名}/log.txt` |
-| 案内役 | オリヴェ（仕様書ナレッジで使い方を説明） |
+### 0. リリースパイプライン (配布用ビルド)
+**[NEW] [tools/build_release.py](file:///home/baken/nexus_ark/tools/build_release.py)**
+開発環境から不要なファイルを除外して、配布用パッケージを作成するスクリプトです。
 
----
+- **機能**:
+    - Project Rootのファイルを走査し、ホワイトリスト/ブラックリストに基づいてコピー。
+    - **除外対象**: `docs/` (仕様書以外), `tests/`, `outing/`, `.agent/`, `.git/`, `__pycache__/` 等。
+    - **キャラクター制限**: `characters/` 内は **「オリヴェ」以外全て除外** します。
+    - **同梱対象**: `nexus_ark.py`, `agent/`, `characters/オリヴェ/`, `utils/`, `static/`, `themes/`, `pinokio.js` 等。
+    - `version.json` の自動生成/更新。
+- **運用**: 開発完了後、このスクリプトを実行 → 生成されたファイルを `kenomendako/Nexus-Ark` にプッシュ。
 
-## 🔧 Portable Python についてのアドバイス
+### 0.5. 配布用仕様書の整備
+**[NEW] [docs/NEXUS_ARK_SPECIFICATION.md](file:///home/baken/nexus_ark/docs/NEXUS_ARK_SPECIFICATION.md)**
+オリヴェの知識更新ソースとなる公式仕様書を作成します。
+現在の `README.md` や `docs/` 内の情報を集約し、オリヴェがユーザに説明しやすい形式で記述します。
 
-調査の結果、配布方式には3つの選択肢があります。**私のおすすめは「方式A: Portable Python同梱」**です。
+### 1. 環境管理の刷新 (`uv` 導入)
+従来の `pip` + `venv` ではなく、Rust製の高速ツール `uv` を採用します。
 
-### 方式比較
+#### [NEW] [pyproject.toml](file:///home/baken/nexus_ark/pyproject.toml)
+- プロジェクトの依存関係を現代的な形式で定義。
+- これにより、Windows/Mac/Linux 問わず、コマンド一発で同一の環境を再現可能になります。
 
-| 方式 | 配布サイズ | セットアップ | 更新の容易さ | リスク |
-|------|-----------|-------------|-------------|--------|
-| **A: Portable Python同梱** | 約150-200MB | ダブルクリック | ◎ 簡単 | 低 |
-| B: PyInstaller exe化 | 約300-500MB | ダブルクリック | △ 毎回全体再ビルド | 中（ウイルス誤検知） |
-| C: ユーザーにPythonインストールさせる | 約20MB | 複雑 | ◎ 簡単 | 高（エラー多発） |
+#### [DELETE] [requirements.txt]
+- `pyproject.toml` に移行するため、将来的に削除（互換性のために当面は残すか、uvから自動生成する運用にします）。
 
-### 推奨: 方式A（Portable Python同梱）
+### 2. 配布プラットフォーム対応 (Pinokio)
+ユーザーはPinokioブラウザで「Download」を押すだけで導入できるようになります。
 
-**理由:**
-1. **セットアップ簡単**: ユーザーはZIP解凍→バッチ実行だけ
-2. **更新が柔軟**: Pythonファイルだけ差し替えれば更新完了
-3. **トラブル対応しやすい**: ソースコードがそのまま見えるので問題調査が容易
-4. **ウイルス誤検知なし**: exe化しないので安全
+#### [NEW] [pinokio.js] (ルートディレクトリ)
+- Pinokio用の構成ファイル。
+- `uv` の自動インストール、依存関係の解決、アプリ起動を定義します。
+- **Menu構成**:
+  - 🚀 **Start**: アプリ起動
+  - 🔄 **Update**: `git pull` + `uv sync` + 知識同期
+  - 📂 **Open Folder**: フォルダを開く
 
-**デメリット（許容範囲）:**
-- 配布サイズが150-200MB程度になる（現代の回線速度なら問題なし）
+### 3. アプリケーションロジック (知識同期)
 
----
+#### [NEW] [update_manager.py](file:///home/baken/nexus_ark/update_manager.py)
+- アプリ起動時に呼び出されるユーティリティ。
+- **機能1: スマート初期化 (Fresh Install)**
+  - `characters/オリヴェ` が存在しない場合 (新規):
+    - `assets/sample_persona/Olivie` を `characters/オリヴェ` にコピーします。
+    - これにより、新規ユーザーは「初めまして」の状態から開始できます。
+- **機能2: 知識同期 (Update)**
+  - `characters/オリヴェ` が既に存在する場合 (既存):
+    - `docs/NEXUS_ARK_SPECIFICATION.md` (最新) を `characters/オリヴェ/knowledge/` に上書きコピーします。
+    - **重要**: ログ (`log.txt`) や画像、その他のファイルは**一切変更しません**。
+    - **重要**: `characters/` 内の他のフォルダ（ユーザーが作成したペルソナ）には**一切触れません**。
+  - （ログには「知識をアップデートしました」と記録を残す）
 
-## オリヴェ・ナレッジ更新戦略
+#### [MODIFY] [nexus_ark.py](file:///home/baken/nexus_ark/nexus_ark.py)
+- 起動シーケンスの冒頭に `update_manager.sync_knowledge()` を追加。
+- これにより、更新直後の初回起動で自動的にオリヴェが賢くなります。
 
-> [!NOTE]
-> **提案: ナレッジファイルのバージョン管理**
-> 
-> オリヴェが参照する仕様書ナレッジを、更新時に自動で最新版に差し替える仕組みを追加します。
+### 4. オンボーディングシステム刷新
+ユーザーの状態に合わせて適切な初期設定フローを提供します。
 
-**方針:**
-1. ナレッジファイル（仕様書等）は**上書き対象**に含める
-2. ユーザー作成のナレッジがある場合は**名前で区別**して保護
-3. `version.json`にナレッジバージョンも記載し、必要時のみ更新
+#### [NEW] [onboarding_manager.py](file:///home/baken/nexus_ark/onboarding_manager.py)
+- **`check_status()`**: ユーザー状態を判定します。
+  - **New User**: `config.json` がない、または `setup_completed` フラグが false。
+  - **Migrated User**: `config.json` はあるが、`version` が古い。
+  - **Active User**: 設定済み。
 
----
+#### [MODIFY] [nexus_ark.py](file:///home/baken/nexus_ark/nexus_ark.py) (UI)
+- 起動時に `onboarding_manager` をチェック。
+- **オンボーディングモードの場合**:
+  - メイン画面の上に **「初期設定ウィザード」** オーバーレイを表示します。
+  - **Step 1: ようこそ** (オリヴェからの挨拶)
+  - **Step 2: APIキー設定** (Gemini / OpenAI などを入力・検証)
+  - **Step 3: 完了** (設定保存 & スタート)
 
-## 提案アーキテクチャ
-
-```mermaid
-flowchart TB
-    subgraph Distribution["📦 配布パッケージ"]
-        ZIP["NexusArk_v1.x.x.zip"]
-        ZIP --> Python["python/ (Embeddable)"]
-        ZIP --> Code["*.py (アプリコード)"]
-        ZIP --> Installer["初回セットアップ.bat"]
-        ZIP --> Launcher["ネクサスアーク.bat"]
-    end
-    
-    subgraph FirstRun["🚀 初回セットアップ"]
-        Installer --> InstallDeps["pip install -r requirements.txt"]
-        InstallDeps --> CreateDirs["必要フォルダ作成"]
-        CreateDirs --> CreateShortcut["デスクトップショートカット作成"]
-    end
-    
-    subgraph UpdateFlow["🔄 アップデートフロー"]
-        App["Nexus Ark 起動"]
-        App --> CheckVersion["GitHub API でバージョン確認"]
-        CheckVersion --> NewAvailable{"新バージョン?"}
-        NewAvailable -->|Yes| ShowDialog["更新ダイアログ表示"]
-        ShowDialog --> UserConfirm{"ユーザー確認"}
-        UserConfirm -->|Yes| BackupData["🛡️ ユーザーデータ自動バックアップ"]
-        BackupData --> Download["新バージョンZIPダウンロード"]
-        Download --> Extract["安全な場所に展開"]
-        Extract --> CopyCode["コードファイルのみ上書き"]
-        CopyCode --> Restart["アプリ再起動"]
-        NewAvailable -->|No| Continue["通常起動"]
-    end
-```
-
----
-
-## Proposed Changes
-
-### Core Infrastructure
-
-#### [NEW] [version.json](../../version.json)
-
-バージョン管理用ファイル。GitHubリリースとの照合に使用。
-
-```json
-{
-  "version": "1.0.0",
-  "release_date": "2025-12-16",
-  "min_python_version": "3.10",
-  "github_repo": "kenomendako/Nexus-Ark",
-  "knowledge_version": "1.0.0"
-}
-```
-
----
-
-#### [NEW] [初回セットアップ.bat](../../初回セットアップ.bat)
-
-ユーザーがダブルクリックするだけでセットアップ完了するスクリプト。
-
-**機能:**
-- 同梱のPortable Pythonで依存関係インストール
-- 必要フォルダの作成
-- デスクトップショートカットの作成（オプション）
-- 完了メッセージ表示
-
----
-
-#### [NEW] [update_manager.py](../../update_manager.py)
-
-アップデート確認・実行を管理するモジュール。
-
-**主要関数:**
-- `check_for_updates()`: GitHub APIで最新リリースを確認
-- `download_update()`: 新バージョンZIPをダウンロード
-- `backup_user_data()`: ユーザーデータを安全にバックアップ
-- `apply_update()`: コードファイルのみ上書き
-- `get_protected_paths()`: 保護対象パス一覧を返す
-
----
-
-#### [MODIFY] [nexus_ark.py](../../nexus_ark.py)
-
-起動時のアップデート確認UI追加。
-
-**変更内容:**
-- 起動時に`update_manager.check_for_updates()`を呼び出し
-- 更新がある場合、Gradioの情報ダイアログで通知
-- 「今すぐ更新」ボタンでワンクリック更新開始
-
----
-
-#### [MODIFY] [ネクサスアーク.bat](../../ネクサスアーク.bat)
-
-Portable Python対応に修正。
-
-```diff
--if exist "venv\Scripts\python.exe" (
-+if exist "python\python.exe" (
-+    echo [INFO] Portable Python found.
-+    "python\python.exe" nexus_ark.py
-+) else if exist "venv\Scripts\python.exe" (
-     echo [INFO] Virtual Environment found.
-     "venv\Scripts\python.exe" nexus_ark.py
- ) else (
-```
-
----
-
-### GitHub Integration
-
-#### [NEW] [.github/workflows/release.yml](../../.github/workflows/release.yml)
-
-（**将来オプション**）タグプッシュ時に自動でリリースZIPを作成するワークフロー。
-
-初期段階では手動リリースで運用し、安定したら自動化。
-
----
-
-## データ保護戦略
-
-### 保護対象ファイル一覧
-
-| パス | 説明 | 保護レベル |
-|------|------|-----------|
-| `config.json` | 全設定情報 | 🔴 絶対上書き禁止 |
-| `characters/` | キャラクター・会話ログ全て | 🔴 絶対上書き禁止 |
-| `characters/*/log.txt` | 会話履歴 | 🔴 絶対上書き禁止 |
-| `alarms.json` | アラーム設定 | 🔴 絶対上書き禁止 |
-| `backups/` | バックアップデータ | 🔴 絶対上書き禁止 |
-| `themes/` | カスタムテーマ | 🟡 ユーザー作成分のみ保護 |
-| `assets/` | ユーザー追加画像等 | 🟡 ユーザー追加分のみ保護 |
-
-### バックアップ戦略
-
-1. **アップデート前自動バックアップ**
-   - `backups/pre_update_YYYYMMDD_HHMMSS/` に全保護対象をコピー
-   - 直近5回分を保持、古いものは自動削除
-
-2. **ロールバック機能**
-   - 更新失敗時は自動でバックアップから復元
-   - 手動ロールバックもUIから可能
-
----
-
-## Verification Plan
+## ✅ 検証計画
 
 ### 自動テスト
-
-このプロジェクトには現在テストフレームワークが設定されていないため、新規テストの追加は本フェーズでは行いません。
+- `update_manager.py` の単体テストを作成し、ファイルコピー動作と例外処理（ファイルが開かれている場合など）を確認します。
 
 ### 手動検証
-
-#### 検証1: 初回セットアップ確認
-
-1. 新しいフォルダに配布ZIPを展開
-2. `初回セットアップ.bat` をダブルクリック
-3. **確認ポイント:**
-   - エラーなく完了メッセージが表示される
-   - `python/Lib/site-packages/` に依存関係がインストールされている
-   - `ネクサスアーク.bat` でアプリが起動する
-
-#### 検証2: アップデート確認機能
-
-1. `version.json` のバージョンを古い値（例: `0.9.0`）に変更
-2. アプリを起動
-3. **確認ポイント:**
-   - 「新しいバージョンが利用可能です」というダイアログが表示される
-   - 「後で」を選択すると通常起動する
-   - ダイアログは次回起動時にも再表示される
-
-#### 検証3: ユーザーデータ保護
-
-1. テスト用の `config.json` と `characters/test_char/` を作成
-2. モックアップデートを実行（テストモード）
-3. **確認ポイント:**
-   - `config.json` の内容が**変更されていない**
-   - `characters/test_char/` が**削除されていない**
-   - `backups/pre_update_*/` にバックアップが作成されている
-
-#### 検証4: 起動スクリプト
-
-1. `python/` フォルダが存在する状態で `ネクサスアーク.bat` を実行
-2. `python/` フォルダを削除し、`venv/` がある状態で実行
-3. 両方がない状態で実行
-4. **確認ポイント:**
-   - 各ケースで適切なPythonが使用される
-   - エラーメッセージが適切に表示される
-
----
-
-## 実装フェーズ
-
-計画承認後、以下の順序で実装を進めます：
-
-1. **Phase 1**: `version.json` 作成とバージョン管理基盤
-2. **Phase 2**: `update_manager.py` 実装（バックアップ・確認機能）
-3. **Phase 3**: `初回セットアップ.bat` 作成
-4. **Phase 4**: `nexus_ark.py` にUI統合
-5. **Phase 5**: `ネクサスアーク.bat` 修正
-6. **Phase 6**: 手動検証とドキュメント作成
-
-
+1. **Pinokioインストール**:
+   - クリーン環境でPinokio経由のインストールが成功するか。
+2. **知識同期テスト**:
+   - オリヴェの知識ファイルを意図的に古い内容に書き換える。
+   - アプリを再起動。
+   - 知識ファイルが最新の仕様書に戻っていることを確認。
+   - 同時に、会話ログ（`log.txt`）が**消えていない**ことを確認。
