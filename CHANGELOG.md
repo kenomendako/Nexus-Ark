@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - 司会AI（Supervisor）機能の一時封印（配布優先対応）。設定画面から非表示化し、内部ロジックを強制無効化することで、リリース時の安定性を確保。 ([Report](docs/reports/2026-02-05_Supervisor_Stability_Fix_and_Sealing.md))
 
 ### Fixed
+- **設定保存通知の消失と過剰反応を適正化**: 手動保存時には確実に通知を出し、ルーム切り替え時や起動時の自動処理による通知（ノイズ）をGrace Period導入により抑制。 ([Report](docs/reports/2026-02-06_Fix_Room_State_and_Notifications.md))
+- **ルーム状態混線の修正 (Frontend Binding)**: チャット送信先を内部StateではなくUIコンポーネントの値に直接バインドすることで、モバイル環境等で発生していたルーム混線（表示と中身の不一致）を解消。 ([Report](docs/reports/2026-02-06_Fix_Room_State_and_Notifications.md))
 - Zhipu AI グループ会話時の Error 1210 を修正。`llm_factory.py` のプロバイダ名取得キー不整合 (`profile`→`name`) を修正し、パラメータ最適化が正しく適用されるようになった。 ([Report](docs/reports/2026-02-05_Zhipu_Provider_Name_Key_Fix.md))
 - 不要なUIアナウンス（設定保存、ログ読み込み、空ノート警告）を抑制し、コンソールログに変更。
 - 研究・創作ノートが空の場合のツール戻り値を修正し、不要なAI発言を抑制。
