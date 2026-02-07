@@ -10,14 +10,24 @@ SOURCE_DIR = "."
 
 # Files/Directories to EXCLUDE globally
 GLOBAL_IGNORE_PATTERNS = [
-    ".git", ".gitignore", ".github", ".agent", ".vscode", ".idea",
+    ".git", ".gitignore", ".github", ".agent", ".gemini", ".vscode", ".idea",
     "__pycache__", "*.pyc", "*.pyo", "*.log",
-    "venv", "env", "dist", "build", "tmp", "temp",
-    "tests", "outing", "tools",
+    "venv", "env", ".venv", "dist", "build", "tmp", "temp",
+    "tests", "outing", "tools", "scripts",
     "bra_scraper.py", "test_*.py",
     "README.md", # We will copy README_DIST.md as README.md if it exists
     "INBOX.md",
     "LICENSE", # Copy manually if needed
+    # --- User-specific data (NEVER include in distribution) ---
+    "config.json",
+    "alarms.json",
+    "redaction_rules.json",
+    ".gemini_key_states.json",
+    ".memos",
+    "backups",
+    # --- Development artifacts ---
+    "MagicMock",
+    "rooms",  # Empty legacy folder
 ]
 
 # Specific handling for directories
