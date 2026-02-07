@@ -17,7 +17,7 @@ GLOBAL_IGNORE_PATTERNS = [
     ".git", ".gitignore", ".github", ".agent", ".gemini", ".vscode", ".idea",
     "__pycache__", "*.pyc", "*.pyo", "*.log",
     "venv", "env", ".venv", "dist", "build", "tmp", "temp",
-    "tests", "outing", "tools", "scripts",
+    "tests", "outing", "scripts",  # Note: "tools" removed - needed for runtime!
     "bra_scraper.py", "test_*.py",
     "README.md", "README_DIST.md",  # Will use launcher README
     "INBOX.md",
@@ -91,11 +91,21 @@ DIR_SPECIFIC_IGNORE = {
     ],
     "docs": ["*"], # Exclude everything in docs by default, we will cherry-pick
     "assets": ["launchers"],  # Launcher files are copied to root, not app/assets/
+    "tools": [  # Development-only tools to exclude (runtime tools are kept)
+        "build_release.py",
+        "fix_windows_paths.py",
+        "migrate_*.py",
+        "update_knowledge.py",
+        "validate_wiring.py",
+        "verify_*.py",
+    ],
 }
 
 # Files to explicitly INCLUDE in app/ (Cherry-pick)
 INCLUDE_FILES = [
     ("docs/NEXUS_ARK_SPECIFICATION.md", "docs/NEXUS_ARK_SPECIFICATION.md"),
+    ("README_DIST.md", "README.md"),  # Required by pyproject.toml
+    ("assets/config_template.json", "config.json"),  # Empty config for first-run
 ]
 
 def load_version():

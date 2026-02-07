@@ -32,7 +32,8 @@ def check_status():
             has_legacy_key = False
             
             # Check top-level single key
-            if config.get("gemini_api_key") and "YOUR_API_KEY" not in config.get("gemini_api_key"):
+            _gemini_api_key = config.get("gemini_api_key")
+            if _gemini_api_key and "YOUR_API_KEY" not in _gemini_api_key:
                 has_legacy_key = True
             
             # Check dict keys
@@ -48,7 +49,8 @@ def check_status():
             # Check common_settings
             if not has_legacy_key:
                 common = config.get("common_settings", {})
-                if common.get("gemini_api_key") and "YOUR_API_KEY" not in common.get("gemini_api_key"):
+                _common_key = common.get("gemini_api_key") if common else None
+                if _common_key and "YOUR_API_KEY" not in _common_key:
                     has_legacy_key = True
             
             if has_legacy_key:
@@ -61,7 +63,7 @@ def check_status():
         print(f"[Onboarding] Error checking status: {e}")
         return STATUS_NEW_USER # Safe fallback
 
-    return STATUS_ACTIVE_USER
+    return STATUS_NEW_USER
 
 def mark_setup_completed():
     """

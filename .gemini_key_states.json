@@ -1,18 +1,18 @@
 {
   "menkenongi": {
-    "exhausted": false,
-    "exhausted_at": 1770326101.8376586
+    "exhausted": true,
+    "exhausted_at": 1770426860.169026
   },
   "bakeno": {
-    "exhausted": false,
-    "exhausted_at": 1770349279.2063086
+    "exhausted": true,
+    "exhausted_at": 1770426216.1998649
   },
   "stmh821": {
-    "exhausted": true,
-    "exhausted_at": 1770326109.1676095
+    "exhausted": false,
+    "exhausted_at": 1770408789.0572727
   },
   "kenokaicoo": {
     "exhausted": false,
-    "exhausted_at": 1770326056.2719283
+    "exhausted_at": 1770408732.4391448
   }
 }

@@ -134,7 +134,7 @@ try:
                 shutil.copytree(sample_persona_path, target_path)
                 print(f"--- サンプルペルソナ「オリヴェ」を {target_path} にコピーしました ---")
                 # 初回起動時、configのデフォルトルームをオリヴェに設定
-                config_manager.save_config("last_room", "Olivie")
+                config_manager.save_config_if_changed("last_room", "Olivie")
                 config_manager.load_config() # 設定を再読み込み
             except Exception as e:
                 print(f"!!! [致命的エラー] サンプルペルソナのコピーに失敗しました: {e}")
@@ -468,13 +468,23 @@ try:
         initial_status = onboarding_manager.check_status()
         is_onboarding = (initial_status != onboarding_manager.STATUS_ACTIVE_USER)
         
-        with gr.Group(visible=is_onboarding, elem_id="onboarding_overlay") as onboarding_group:
+        # オンボーディングモーダル: 初期状態は非表示、demo.loadで必要に応じて表示
+        # これにより、リロード時に一瞬オンボーディングが見えることを防止
+        with gr.Group(visible=False, elem_id="onboarding_overlay") as onboarding_group:
             with gr.Column(elem_id="onboarding_content"):
                 gr.Markdown("# Welcome to Nexus Ark")
-                gr.Markdown("はじめまして。Nexus Arkへようこそ！\nあなたのパートナーとなるペルソナが待機しています。\nこれからの旅を始める前に、いくつか初期設定を行いましょう。")
+                gr.Markdown("Nexus Arkへようこそ！<br>Nexus Arkはあなただけのペルソナ（AI人格）と暮らし、育むための場です。<br>まずはAPIキーを設定しましょう。")
                 
+                gr.Markdown("<br>")  # 空行
                 gr.Markdown("### 🔑 APIキー設定")
-                gr.Markdown("Nexus Arkを動作させるには、AIプロバイダのAPIキーが必要です。\nGoogle Gemini API (無料プランあり) が推奨されています。")
+                gr.Markdown("Nexus Arkを動作させるには、[Google Gemini API](https://aistudio.google.com/apikey)のAPIキーが必要です。（無料プランあり）")
+                
+                onboarding_key_name = gr.Textbox(
+                    label="キーの名前（任意）",
+                    placeholder="例: my_free_key",
+                    value="default",
+                    info="複数のAPIキーを管理する際の識別名です。"
+                )
                 
                 onboarding_api_key = gr.Textbox(
                     label="Gemini API Key",
@@ -487,23 +497,25 @@ try:
                 onboarding_finish_btn = gr.Button("✨ 設定を保存して開始", variant="primary", size="lg")
                 onboarding_error_msg = gr.Textbox(visible=False, label="エラー")
                 
-                def finish_onboarding(api_key):
+                def finish_onboarding(key_name, api_key):
                     if not api_key:
                         return gr.update(visible=True, value="APIキーを入力してください。"), gr.update(visible=True)
                     
+                    # キー名が空の場合はdefaultを使用
+                    safe_key_name = key_name.strip() if key_name and key_name.strip() else "default"
+                    
                     try:
-                        # Update global config for Gemini
-                        # 直接 config_manager の関数を使うと安全
-                        config_manager.save_config_if_changed("gemini_api_key", api_key)
+                        # gemini_api_keys 辞書形式で保存（システムが参照する正しい形式）
+                        config_manager.add_or_update_gemini_key(safe_key_name, api_key)
                         
-                        # common_settings も更新しておく（推奨）
-                        global_conf = config_manager.load_config()
-                        if "common_settings" not in global_conf: global_conf["common_settings"] = {}
-                        global_conf["common_settings"]["gemini_api_key"] = api_key
-                        config_manager.save_config_if_changed("common_settings", global_conf["common_settings"])
+                        # last_api_key_name も設定
+                        config_manager.save_config_if_changed("last_api_key_name", safe_key_name)
 
                         # Mark as complete
                         onboarding_manager.mark_setup_completed()
+                        
+                        # グローバル設定を再読み込み
+                        config_manager.load_config()
                         
                         return gr.update(visible=False), gr.update(visible=False) # Hide overlay
                     except Exception as e:
@@ -511,8 +523,11 @@ try:
 
                 onboarding_finish_btn.click(
                     fn=finish_onboarding,
-                    inputs=[onboarding_api_key],
+                    inputs=[onboarding_key_name, onboarding_api_key],
                     outputs=[onboarding_error_msg, onboarding_group]
+                ).then(
+                    fn=None,
+                    js="() => { setTimeout(() => { window.location.reload(); }, 500); }"
                 )
 
         room_list_on_startup = room_manager.get_room_list_for_ui()
@@ -571,8 +586,7 @@ try:
                     label="ルームを選択", 
                     choices=room_list_on_startup, 
                     value=effective_initial_room, 
-                    interactive=True
-                )
+                    interactive=True, allow_custom_value=True)
 
                 with gr.Accordion("⚙️ 設定", open=False):
                     with gr.Tabs() as settings_tabs:
@@ -687,15 +701,14 @@ try:
                                         "💡 ここで設定したAPIキーは、内部処理でも使用されます。（2.5 Flash / Flash Lite）\n\n"
                                         "💡 ルームごとのモデル・APIキー設定は、「個別」タブから行えます。"
                                     )
-                                    model_dropdown = gr.Dropdown(choices=config_manager.AVAILABLE_MODELS_GLOBAL, label="デフォルトAIモデル", interactive=True)
+                                    model_dropdown = gr.Dropdown(choices=config_manager.AVAILABLE_MODELS_GLOBAL, label="デフォルトAIモデル", interactive=True, allow_custom_value=True)
                                     with gr.Row():
                                         delete_model_button = gr.Button("選択中のモデルを削除", variant="secondary", size="sm")
                                         reset_models_button = gr.Button("デフォルトに戻す", variant="secondary", size="sm")
                                     api_key_dropdown = gr.Dropdown(
                                         label="使用するGemini APIキー", 
                                         choices=config_manager.get_api_key_choices_for_ui(),
-                                        interactive=True
-                                    )
+                                        interactive=True, allow_custom_value=True)
                                     api_test_button = gr.Button("API接続をテスト", variant="secondary")
                                     # [Phase 1.5] ローテーション設定
                                     settings_rotation_checkbox = gr.Checkbox(
@@ -902,8 +915,7 @@ try:
                                         choices=available_gemini_models,
                                         value=current_img_model if current_img_model in available_gemini_models else available_gemini_models[0],
                                         label="Gemini画像生成モデル",
-                                        interactive=True
-                                    )
+                                        interactive=True, allow_custom_value=True)
 
                                 # OpenAI互換設定
                                 with gr.Column(visible=(current_img_provider == "openai")) as openai_image_section:
@@ -914,8 +926,7 @@ try:
                                         value=openai_settings.get("profile_name", openai_provider_names[0] if openai_provider_names else "OpenAI Official"),
                                         label="使用するプロファイル（APIキー/Webhook管理で設定）",
                                         interactive=True,
-                                        info="プロファイルのAPIキーとBase URLを使用します"
-                                    )
+                                        info="プロファイルのAPIキーとBase URLを使用します", allow_custom_value=True)
                                     openai_image_model_dropdown = gr.Dropdown(
                                         choices=available_openai_models,
                                         value=openai_settings.get("model", "gpt-image-1"),
@@ -1021,22 +1032,19 @@ try:
                                         choices=config_manager.get_api_key_choices_for_ui(),
                                         label="このルームで使用するAPIキー",
                                         info="共通設定で登録したAPIキーから選択します。",
-                                        interactive=True
-                                    )
+                                        interactive=True, allow_custom_value=True)
                                     # [Phase 1.5] 個別ローテーション設定
                                     room_rotation_dropdown = gr.Dropdown(
                                         choices=[("共通設定に従う", None), ("有効", True), ("無効", False)],
                                         value=None,
                                         label="このルームでローテーションを有効にする",
-                                        interactive=True
-                                    )
+                                        interactive=True, allow_custom_value=True)
                                     
                                     room_thinking_level_dropdown = gr.Dropdown(
                                         choices=list(constants.THINKING_LEVEL_OPTIONS.values()),
                                         label="Thinking レベル (Gemini 3系)",
                                         info="思考モデルの予算を指定します。高いほど深い推論が可能ですが、待ち時間が長くなります。",
-                                        interactive=True
-                                    )
+                                        interactive=True, allow_custom_value=True)
                                     
 
         
@@ -1047,8 +1055,7 @@ try:
                                         choices=[s["name"] for s in config_manager.get_openai_settings_list()],
                                         label="プロファイル選択",
                                         info="共通設定で登録したプロファイルを使用します。APIキーは共通設定で管理されます。",
-                                        interactive=True
-                                    )
+                                        interactive=True, allow_custom_value=True)
                                                 
                                     # Base URL/API Keyは非表示（共通設定で一元管理）
                                     with gr.Row(visible=False):
@@ -1140,7 +1147,7 @@ try:
                                 # style_injector moved to Palette tab to ensure active rendering
                             with gr.Accordion("🎤 音声設定", open=False):
                                 gr.Markdown("チャットの発言を選択して、ここで設定した声で再生できます。")
-                                room_voice_dropdown = gr.Dropdown(label="声を選択（個別）", choices=list(config_manager.SUPPORTED_VOICES.values()), interactive=True)
+                                room_voice_dropdown = gr.Dropdown(label="声を選択（個別）", choices=list(config_manager.SUPPORTED_VOICES.values()), interactive=True, allow_custom_value=True)
                                 room_voice_style_prompt_textbox = gr.Textbox(label="音声スタイルプロンプト", placeholder="例：囁くように、楽しそうに、落ち着いたトーンで", interactive=True)
                                 with gr.Row():
                                     room_preview_text_textbox = gr.Textbox(value="こんにちは、Nexus Arkです。これは音声のテストです。", show_label=False, scale=3)
@@ -1152,19 +1159,18 @@ try:
                                 room_top_p_slider = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label="Top-P", info="値が低いほど、ありふれた単語が選ばれやすくなります。(推奨: 0.95)")
                                 safety_choices = ["ブロックしない", "低リスク以上をブロック", "中リスク以上をブロック", "高リスクのみブロック"]
                                 with gr.Row():
-                                    room_safety_harassment_dropdown = gr.Dropdown(choices=safety_choices, label="嫌がらせコンテンツ", interactive=True)
-                                    room_safety_hate_speech_dropdown = gr.Dropdown(choices=safety_choices, label="ヘイトスピーチ", interactive=True)
+                                    room_safety_harassment_dropdown = gr.Dropdown(choices=safety_choices, label="嫌がらせコンテンツ", interactive=True, allow_custom_value=True)
+                                    room_safety_hate_speech_dropdown = gr.Dropdown(choices=safety_choices, label="ヘイトスピーチ", interactive=True, allow_custom_value=True)
                                 with gr.Row():
-                                    room_safety_sexually_explicit_dropdown = gr.Dropdown(choices=safety_choices, label="性的コンテンツ", interactive=True)
-                                    room_safety_dangerous_content_dropdown = gr.Dropdown(choices=safety_choices, label="危険なコンテンツ", interactive=True)
+                                    room_safety_sexually_explicit_dropdown = gr.Dropdown(choices=safety_choices, label="性的コンテンツ", interactive=True, allow_custom_value=True)
+                                    room_safety_dangerous_content_dropdown = gr.Dropdown(choices=safety_choices, label="危険なコンテンツ", interactive=True, allow_custom_value=True)
                                         
                             with gr.Accordion("📡 送信コンテキスト設定", open=False):
                                 room_api_history_limit_dropdown = gr.Dropdown(
                                     choices=list(constants.API_HISTORY_LIMIT_OPTIONS.values()), 
                                     label="APIへの履歴送信（短期記憶の長さ）", 
                                     info="AIに送信する直近の会話ログの長さを設定します。",
-                                    interactive=True
-                                )
+                                    interactive=True, allow_custom_value=True)
                                 
                                 # --- 自動会話要約設定 ---
                                 room_auto_summary_checkbox = gr.Checkbox(
@@ -1187,8 +1193,7 @@ try:
                                     choices=list(constants.EPISODIC_MEMORY_OPTIONS.values()),
                                     label="エピソード記憶の参照期間（中期記憶）",
                                     info="生ログより前の期間について、要約された記憶をどれくらい遡って参照するか設定します。",
-                                    interactive=True
-                                )
+                                    interactive=True, allow_custom_value=True)
 
                                 room_enable_retrieval_checkbox = gr.Checkbox(
                                     label="記憶の想起（長期記憶）を有効化",
@@ -1224,8 +1229,7 @@ try:
                                     label="送信タイミング",
                                     info="「変更時のみ」=場所移動・画像更新時、「毎ターン」=毎回送信",
                                     interactive=True,
-                                    visible=True
-                                )
+                                    visible=True, allow_custom_value=True)
                                 auto_memory_enabled_checkbox = gr.Checkbox(label="対話の自動記憶を有効化", interactive=True, visible=False)
                                 room_enable_self_awareness_checkbox = gr.Checkbox(
                                     label="自己意識機能（動機・感情検出・夢の指針・目標）",
@@ -1258,8 +1262,8 @@ try:
 
                                 with gr.Row():
                                     time_options = [f"{i:02d}:00" for i in range(24)]
-                                    room_quiet_hours_start = gr.Dropdown(choices=time_options, value="00:00", label="開始時刻", interactive=True)
-                                    room_quiet_hours_end = gr.Dropdown(choices=time_options, value="07:00", label="終了時刻", interactive=True) 
+                                    room_quiet_hours_start = gr.Dropdown(choices=time_options, value="00:00", label="開始時刻", interactive=True, allow_custom_value=True)
+                                    room_quiet_hours_end = gr.Dropdown(choices=time_options, value="07:00", label="終了時刻", interactive=True, allow_custom_value=True) 
 
                             # --- ウォッチリスト管理 ---
                             with gr.Accordion("📋 ウォッチリスト管理", open=False) as watchlist_accordion:
@@ -1289,8 +1293,7 @@ try:
                                                 ],
                                                 value="manual",
                                                 label="監視頻度",
-                                                scale=1
-                                            )
+                                                scale=1, allow_custom_value=True)
                                         
                                         with gr.Row(visible=False) as watchlist_daily_time_row:
                                             watchlist_daily_time = gr.Dropdown(
@@ -1298,8 +1301,7 @@ try:
                                                 value="09:00",
                                                 label="📅 毎日のチェック時刻",
                                                 info="「毎日指定時刻」を選択した場合の実行時刻",
-                                                scale=1
-                                            )
+                                                scale=1, allow_custom_value=True)
                                         
                                         with gr.Row():
                                             watchlist_add_button = gr.Button("➕ 追加/更新", variant="primary", scale=1)
@@ -1323,8 +1325,7 @@ try:
                                             watchlist_move_group_dropdown = gr.Dropdown(
                                                 choices=[("グループなし", "")],
                                                 label="グループに移動",
-                                                scale=2
-                                            )
+                                                scale=2, allow_custom_value=True)
                                             watchlist_move_button = gr.Button("📁 移動", variant="secondary", scale=1)
                                             watchlist_delete_button = gr.Button("🗑️ 削除", variant="stop", scale=1)
                                     
@@ -1355,15 +1356,13 @@ try:
                                                 ],
                                                 value="manual",
                                                 label="巡回頻度",
-                                                scale=1
-                                            )
+                                                scale=1, allow_custom_value=True)
                                             group_daily_time = gr.Dropdown(
                                                 choices=[f"{i:02d}:00" for i in range(24)],
                                                 value="09:00",
                                                 label="時刻（毎日指定時刻用）",
                                                 scale=1,
-                                                visible=True
-                                            )
+                                                visible=True, allow_custom_value=True)
                                             group_create_button = gr.Button("➕ グループ作成", variant="primary", scale=1)
                                         
                                         group_status = gr.Textbox(label="ステータス", interactive=False, max_lines=2)
@@ -1390,14 +1389,12 @@ try:
                                                     ("毎日指定時刻", "daily"),
                                                 ],
                                                 label="新しい巡回頻度",
-                                                scale=1
-                                            )
+                                                scale=1, allow_custom_value=True)
                                             group_new_daily_time = gr.Dropdown(
                                                 choices=[f"{i:02d}:00" for i in range(24)],
                                                 value="09:00",
                                                 label="時刻",
-                                                scale=1
-                                            )
+                                                scale=1, allow_custom_value=True)
                                             group_update_interval_button = gr.Button("⏰ 時刻一括変更", variant="secondary", scale=1)
                                             group_delete_button = gr.Button("🗑️ グループ削除", variant="stop", scale=1)
                                         
@@ -1430,8 +1427,7 @@ try:
                                             ai_add_to_group_dropdown = gr.Dropdown(
                                                 choices=[("グループなし", "")],
                                                 label="追加先グループ",
-                                                scale=2
-                                            )
+                                                scale=2, allow_custom_value=True)
                                             ai_add_button = gr.Button("✅ 選択したサイトを追加", variant="primary", scale=1)
 
                             with gr.Accordion("📁 プロジェクト探索設定", open=False):
@@ -1501,10 +1497,10 @@ try:
                                             theme_bg_opacity_slider = gr.Slider(label="不透明度 (Opacity)", minimum=0.0, maximum=1.0, step=0.1, value=0.3, interactive=True)
                                             theme_bg_blur_slider = gr.Slider(label="ぼかし (Blur)", minimum=0, maximum=20, step=1, value=2, interactive=True)
                                         with gr.Row():
-                                            theme_bg_size_dropdown = gr.Dropdown(label="サイズ", choices=["cover", "contain", "auto", "custom"], value="cover", interactive=True)
-                                            theme_bg_position_dropdown = gr.Dropdown(label="位置", choices=["center", "top", "bottom", "left", "right", "top left", "top right", "bottom left", "bottom right"], value="center", interactive=True)
+                                            theme_bg_size_dropdown = gr.Dropdown(label="サイズ", choices=["cover", "contain", "auto", "custom"], value="cover", interactive=True, allow_custom_value=True)
+                                            theme_bg_position_dropdown = gr.Dropdown(label="位置", choices=["center", "top", "bottom", "left", "right", "top left", "top right", "bottom left", "bottom right"], value="center", interactive=True, allow_custom_value=True)
                                         with gr.Row():
-                                             theme_bg_repeat_dropdown = gr.Dropdown(label="繰り返し", choices=["no-repeat", "repeat"], value="no-repeat", interactive=True)
+                                             theme_bg_repeat_dropdown = gr.Dropdown(label="繰り返し", choices=["no-repeat", "repeat"], value="no-repeat", interactive=True, allow_custom_value=True)
                                              theme_bg_custom_width = gr.Textbox(label="カスタム幅 (custom時のみ)", placeholder="300px", value="300px", interactive=True)
                                         with gr.Row():
                                              theme_bg_radius_slider = gr.Slider(label="角丸 (%)", minimum=0, maximum=50, step=1, value=0, interactive=True)
@@ -1518,10 +1514,10 @@ try:
                                             theme_bg_sync_opacity_slider = gr.Slider(label="不透明度 (Opacity)", minimum=0.0, maximum=1.0, step=0.1, value=0.3, interactive=True)
                                             theme_bg_sync_blur_slider = gr.Slider(label="ぼかし (Blur)", minimum=0, maximum=20, step=1, value=2, interactive=True)
                                         with gr.Row():
-                                            theme_bg_sync_size_dropdown = gr.Dropdown(label="サイズ", choices=["cover", "contain", "auto", "custom"], value="cover", interactive=True)
-                                            theme_bg_sync_position_dropdown = gr.Dropdown(label="位置", choices=["center", "top", "bottom", "left", "right", "top left", "top right", "bottom left", "bottom right"], value="center", interactive=True)
+                                            theme_bg_sync_size_dropdown = gr.Dropdown(label="サイズ", choices=["cover", "contain", "auto", "custom"], value="cover", interactive=True, allow_custom_value=True)
+                                            theme_bg_sync_position_dropdown = gr.Dropdown(label="位置", choices=["center", "top", "bottom", "left", "right", "top left", "top right", "bottom left", "bottom right"], value="center", interactive=True, allow_custom_value=True)
                                         with gr.Row():
-                                             theme_bg_sync_repeat_dropdown = gr.Dropdown(label="繰り返し", choices=["no-repeat", "repeat"], value="no-repeat", interactive=True)
+                                             theme_bg_sync_repeat_dropdown = gr.Dropdown(label="繰り返し", choices=["no-repeat", "repeat"], value="no-repeat", interactive=True, allow_custom_value=True)
                                              theme_bg_sync_custom_width = gr.Textbox(label="カスタム幅 (custom時のみ)", placeholder="300px", value="300px", interactive=True)
                                         with gr.Row():
                                              theme_bg_sync_radius_slider = gr.Slider(label="角丸 (%)", minimum=0, maximum=50, step=1, value=0, interactive=True)
@@ -1540,7 +1536,7 @@ try:
                                 gr.Markdown("アプリ全体のテーマを変更します。適用には再起動が必要です。")
                                 theme_settings_state = gr.State({})
                                 with gr.Row():
-                                    theme_selector = gr.Dropdown(label="テーマを選択", interactive=True, scale=3)
+                                    theme_selector = gr.Dropdown(label="テーマを選択", interactive=True, scale=3, allow_custom_value=True)
                                     apply_theme_button = gr.Button("適用（要再起動）", variant="primary", scale=1)
                                         
                                 # --- [サムネイル表示エリア] ---
@@ -1561,9 +1557,9 @@ try:
                                         "indigo", "violet", "purple", "fuchsia", "pink", "rose"
                                     ]
                                     with gr.Row():
-                                        primary_hue_picker = gr.Dropdown(choices=AVAILABLE_HUES, label="プライマリカラー系統", value="blue")
-                                        secondary_hue_picker = gr.Dropdown(choices=AVAILABLE_HUES, label="セカンダリカラー系統", value="sky")
-                                        neutral_hue_picker = gr.Dropdown(choices=AVAILABLE_HUES, label="ニュートラルカラー系統", value="slate")
+                                        primary_hue_picker = gr.Dropdown(choices=AVAILABLE_HUES, label="プライマリカラー系統", value="blue", allow_custom_value=True)
+                                        secondary_hue_picker = gr.Dropdown(choices=AVAILABLE_HUES, label="セカンダリカラー系統", value="sky", allow_custom_value=True)
+                                        neutral_hue_picker = gr.Dropdown(choices=AVAILABLE_HUES, label="ニュートラルカラー系統", value="slate", allow_custom_value=True)
                                             
                                     AVAILABLE_FONTS = sorted([
                                         "Alice", "Archivo", "Bitter", "Cabin", "Cormorant Garamond", "Crimson Pro",
@@ -1574,7 +1570,7 @@ try:
                                         "Roboto", "Roboto Mono", "Rubik", "Source Sans Pro", "Source Serif Pro",
                                         "Space Mono", "Spectral", "Sriracha", "Titillium Web", "Ubuntu", "Work Sans"
                                     ])
-                                    font_dropdown = gr.Dropdown(choices=AVAILABLE_FONTS, label="メインフォント", value="Noto Sans JP", interactive=True)
+                                    font_dropdown = gr.Dropdown(choices=AVAILABLE_FONTS, label="メインフォント", value="Noto Sans JP", interactive=True, allow_custom_value=True)
                                             
                                     gr.Markdown("---")
                                     custom_theme_name_input = gr.Textbox(label="新しいテーマ名として保存", placeholder="例: My Cool Theme")
@@ -1601,9 +1597,9 @@ try:
                             with gr.Row():
                                 enable_button = gr.Button("✔️ 選択を有効化"); disable_button = gr.Button("❌ 選択を無効化"); delete_alarm_button = gr.Button("🗑️ 選択したアラームを削除", variant="stop")
                             gr.Markdown("---"); gr.Markdown("#### 新規 / 更新")
-                            alarm_hour_dropdown = gr.Dropdown(choices=[str(i).zfill(2) for i in range(24)], label="時", value="08")
-                            alarm_minute_dropdown = gr.Dropdown(choices=[str(i).zfill(2) for i in range(60)], label="分", value="00")
-                            alarm_room_dropdown = gr.Dropdown(choices=room_list_on_startup, value=effective_initial_room, label="ルーム")
+                            alarm_hour_dropdown = gr.Dropdown(choices=[str(i).zfill(2) for i in range(24)], label="時", value="08", allow_custom_value=True)
+                            alarm_minute_dropdown = gr.Dropdown(choices=[str(i).zfill(2) for i in range(60)], label="分", value="00", allow_custom_value=True)
+                            alarm_room_dropdown = gr.Dropdown(choices=room_list_on_startup, value=effective_initial_room, label="ルーム", allow_custom_value=True)
                             alarm_context_input = gr.Textbox(label="内容", placeholder="AIに伝える内容や目的を簡潔に記述します。\n例：朝の目覚まし、今日も一日頑張ろう！", lines=3)
                             alarm_emergency_checkbox = gr.Checkbox(label="緊急通知として送信 (マナーモードを貫通)", value=False, interactive=True)
                             alarm_days_checkboxgroup = gr.CheckboxGroup(choices=["月", "火", "水", "木", "金", "土", "日"], label="曜日", value=[])
@@ -1616,7 +1612,7 @@ try:
                                 timer_duration_number = gr.Number(label="タイマー時間 (分)", value=10, minimum=1, step=1); normal_timer_theme_input = gr.Textbox(label="通常タイマーのテーマ", placeholder="例: タイマー終了！")
                             with gr.Column(visible=False) as pomo_timer_ui:
                                 pomo_work_number = gr.Number(label="作業時間 (分)", value=25, minimum=1, step=1); pomo_break_number = gr.Number(label="休憩時間 (分)", value=5, minimum=1, step=1); pomo_cycles_number = gr.Number(label="サイクル数", value=4, minimum=1, step=1); timer_work_theme_input = gr.Textbox(label="作業終了時テーマ", placeholder="作業終了！"); timer_break_theme_input = gr.Textbox(label="休憩終了時テーマ", placeholder="休憩終了！")
-                            timer_room_dropdown = gr.Dropdown(choices=room_list_on_startup, value=effective_initial_room, label="通知ルーム", interactive=True); timer_status_output = gr.Textbox(label="タイマー設定状況", interactive=False, placeholder="ここに設定内容が表示されます。"); timer_submit_button = gr.Button("タイマー開始", variant="primary")
+                            timer_room_dropdown = gr.Dropdown(choices=room_list_on_startup, value=effective_initial_room, label="通知ルーム", interactive=True, allow_custom_value=True); timer_status_output = gr.Textbox(label="タイマー設定状況", interactive=False, placeholder="ここに設定内容が表示されます。"); timer_submit_button = gr.Button("タイマー開始", variant="primary")
 
                 with gr.Accordion("🧑‍🤝‍🧑 グループ会話", open=False):
                     session_status_display = gr.Markdown("現在、1対1の会話モードです。")
@@ -1652,7 +1648,7 @@ try:
                             create_room_button = gr.Button("ルームを作成", variant="primary")
                                     
                         with gr.TabItem("管理") as manage_room_tab:
-                            manage_room_selector = gr.Dropdown(label="管理するルームを選択", choices=room_list_on_startup, interactive=True)
+                            manage_room_selector = gr.Dropdown(label="管理するルームを選択", choices=room_list_on_startup, interactive=True, allow_custom_value=True)
                             with gr.Column(visible=False) as manage_room_details:
                                 open_room_folder_button = gr.Button("📂 ルームフォルダを開く", variant="secondary")
                                 manage_room_name = gr.Textbox(label="ルーム名")
@@ -1668,7 +1664,7 @@ try:
                                 gr.Markdown("### ChatGPTデータインポート\n`conversations.json` またはデータ全体のZIPファイルをアップロードして、過去の対話をNexus Arkにインポートします。")
                                 chatgpt_import_file = gr.File(label="`conversations.json` (または ZIP) をアップロード", file_types=[".json", ".zip"])
                                 with gr.Column(visible=False) as chatgpt_import_form:
-                                    chatgpt_thread_dropdown = gr.Dropdown(label="インポートする会話スレッドを選択 (複数選択可)", interactive=True, multiselect=True)
+                                    chatgpt_thread_dropdown = gr.Dropdown(label="インポートする会話スレッドを選択 (複数選択可)", interactive=True, multiselect=True, allow_custom_value=True)
                                     chatgpt_room_name_textbox = gr.Textbox(label="新しいルーム名", interactive=True)
                                     chatgpt_user_name_textbox = gr.Textbox(label="あなたの表示名（ルーム内）", value="ユーザー", interactive=True)
                                     chatgpt_import_button = gr.Button("この会話をNexus Arkにインポートする", variant="primary")
@@ -1676,7 +1672,7 @@ try:
                                 gr.Markdown("### Claudeデータインポート\n`conversations.json` またはデータ全体のZIPファイルをアップロードして、過去の対話をNexus Arkにインポートします。")
                                 claude_import_file = gr.File(label="`conversations.json` (または ZIP) をアップロード", file_types=[".json", ".zip"])
                                 with gr.Column(visible=False) as claude_import_form:
-                                    claude_thread_dropdown = gr.Dropdown(label="インポートする会話スレッドを選択 (複数選択可)", interactive=True, multiselect=True)
+                                    claude_thread_dropdown = gr.Dropdown(label="インポートする会話スレッドを選択 (複数選択可)", interactive=True, multiselect=True, allow_custom_value=True)
                                     claude_room_name_textbox = gr.Textbox(label="新しいルーム名", interactive=True)
                                     claude_user_name_textbox = gr.Textbox(label="あなたの表示名（ルーム内）", value="ユーザー", interactive=True)
                                     claude_import_button = gr.Button("この会話をNexus Arkにインポートする", variant="primary")
@@ -1854,8 +1850,7 @@ try:
                         label="現在地 / 移動先を選択", 
                         choices=_loc_choices,
                         value=_loc_val,
-                        interactive=True
-                    )
+                        interactive=True, allow_custom_value=True)
 
                     # --- 画像生成メニュー ---
                     with gr.Accordion("🌄情景設定・生成", open=False):
@@ -1870,20 +1865,17 @@ try:
                                 fixed_season_dropdown = gr.Dropdown(
                                     label="季節を選択",
                                     choices=["春", "夏", "秋", "冬"],
-                                    interactive=True
-                                )
+                                    interactive=True, allow_custom_value=True)
                                 fixed_time_of_day_dropdown = gr.Dropdown(
                                     label="時間帯を選択",
                                     choices=["朝", "昼", "夕方", "夜"],
-                                    interactive=True
-                                )
+                                    interactive=True, allow_custom_value=True)
                             # ボタンを fixed_time_controls の外に移動し、常に表示されるようにする
                             save_time_settings_button = gr.Button("このルームの時間設定を保存", variant="secondary")
                                     
                         scenery_style_radio = gr.Dropdown(
                             choices=["写真風 (デフォルト)", "イラスト風", "アニメ風", "水彩画風"],
-                            label="画風を選択", value="写真風 (デフォルト)", interactive=True
-                        )
+                            label="画風を選択", value="写真風 (デフォルト)", interactive=True, allow_custom_value=True)
                         generate_scenery_image_button = gr.Button("情景画像を生成 / 更新", variant="secondary")
                         refresh_scenery_button = gr.Button("情景テキストを更新", variant="secondary")
 
@@ -1903,11 +1895,10 @@ try:
                             custom_scenery_location_dropdown = gr.Dropdown(
                                 label="場所を選択", 
                                 choices=_loc_choices, # 上で計算したものを使用
-                                interactive=True
-                            )
+                                interactive=True, allow_custom_value=True)
                             with gr.Row():
-                                custom_scenery_season_dropdown = gr.Dropdown(label="季節", choices=["春", "夏", "秋", "冬"], value="秋", interactive=True)
-                                custom_scenery_time_dropdown = gr.Dropdown(label="時間帯", choices=["早朝", "朝", "昼前", "昼下がり", "夕方", "夜", "深夜"], value="夜", interactive=True)
+                                custom_scenery_season_dropdown = gr.Dropdown(label="季節", choices=["春", "夏", "秋", "冬"], value="秋", interactive=True, allow_custom_value=True)
+                                custom_scenery_time_dropdown = gr.Dropdown(label="時間帯", choices=["早朝", "朝", "昼前", "昼下がり", "夕方", "夜", "深夜"], value="夜", interactive=True, allow_custom_value=True)
                             custom_scenery_image_upload = gr.Image(label="画像をアップロード", type="filepath", interactive=True)
                             register_custom_scenery_button = gr.Button("この画像を情景として登録", variant="secondary")
 
@@ -2246,8 +2237,7 @@ try:
                                 value="最新",
                                 label="表示する月を選択",
                                 interactive=True,
-                                scale=2
-                            )
+                                scale=2, allow_custom_value=True)
                             refresh_chat_log_months_button = gr.Button("🔄 リスト更新", scale=1)
 
                         with gr.Row():
@@ -2315,8 +2305,8 @@ try:
                                 core_memory_update_button = gr.Button("コアメモリを更新", variant="secondary")
                             
                             with gr.Row():
-                                diary_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1)
-                                diary_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1)
+                                diary_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
+                                diary_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
                             
                             with gr.Row():
                                 with gr.Column(scale=1):
@@ -2324,8 +2314,7 @@ try:
                                         label="エントリを選択",
                                         choices=[],
                                         interactive=True,
-                                        info="最新のエントリが上に表示されます"
-                                    )
+                                        info="最新のエントリが上に表示されます", allow_custom_value=True)
                                 with gr.Column(scale=2):
                                     memory_txt_editor = gr.Textbox(
                                         label="エントリの内容",
@@ -2360,7 +2349,7 @@ try:
                                     "指定した日付**まで**の日記を要約し、別ファイルに保存して、このメインファイルから削除します。\n"
                                     "**⚠️注意:** この操作は`memory_main.txt`を直接変更します（処理前にバックアップは作成されます）。"
                                 )
-                                archive_date_dropdown = gr.Dropdown(label="この日付までをアーカイブ", interactive=True)
+                                archive_date_dropdown = gr.Dropdown(label="この日付までをアーカイブ", interactive=True, allow_custom_value=True)
                                
                                 archive_confirm_state = gr.Textbox(visible=False) # 確認ダイアログ用
                                 archive_memory_button = gr.Button("アーカイブを実行", variant="stop")
@@ -2373,8 +2362,8 @@ try:
                                 show_latest_episodic_button = gr.Button("📄 最新を表示", variant="secondary")
                             
                             with gr.Row():
-                                episodic_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1)
-                                episodic_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1)
+                                episodic_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
+                                episodic_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
                             
                             with gr.Row():
                                 with gr.Column(scale=1):
@@ -2382,8 +2371,7 @@ try:
                                         label="閲覧するエピソードの日付を選択",
                                         choices=[],
                                         interactive=True,
-                                        info="最新のエピソードが上に表示されます。"
-                                    )
+                                        info="最新のエピソードが上に表示されます。", allow_custom_value=True)
                                 with gr.Column(scale=2):
                                     episodic_detail_text = gr.Textbox(
                                         label="エピソードの内容",
@@ -2401,8 +2389,8 @@ try:
                                 show_latest_dream_button = gr.Button("📄 最新を表示", variant="secondary")
                             
                             with gr.Row():
-                                dream_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1)
-                                dream_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1)
+                                dream_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
+                                dream_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
                             
                             with gr.Row():
                                 with gr.Column(scale=1):
@@ -2410,8 +2398,7 @@ try:
                                         label="閲覧する日記の日付を選択",
                                         choices=[],
                                         interactive=True,
-                                        info="最新の日記が上に表示されます。"
-                                    )
+                                        info="最新の日記が上に表示されます。", allow_custom_value=True)
                                 with gr.Column(scale=2):
                                     dream_detail_text = gr.Textbox(
                                         label="夢の詳細・深層心理",
@@ -2431,8 +2418,7 @@ try:
                                         label="エンティティを選択",
                                         choices=[],
                                         interactive=True,
-                                        info="自動・手動で作成されたエンティティが一覧表示されます。"
-                                    )
+                                        info="自動・手動で作成されたエンティティが一覧表示されます。", allow_custom_value=True)
                                     with gr.Row():
                                         save_entity_button = gr.Button("変更を保存", variant="secondary")
                                         delete_entity_button = gr.Button("削除", variant="stop")
@@ -2657,14 +2643,14 @@ try:
                         with gr.Accordion("🎨 創作ノート", open=False):
                             gr.Markdown("ペルソナの創作活動専用スペースです。詩、物語、アイデアスケッチなど。")
                             with gr.Row():
-                                creative_notes_file_dropdown = gr.Dropdown(label="対象ファイル", choices=[constants.CREATIVE_NOTES_FILENAME], value=constants.CREATIVE_NOTES_FILENAME, scale=3)
+                                creative_notes_file_dropdown = gr.Dropdown(label="対象ファイル", choices=[constants.CREATIVE_NOTES_FILENAME], value=constants.CREATIVE_NOTES_FILENAME, scale=3, allow_custom_value=True)
                                 refresh_creative_file_list_button = gr.Button("📁 リスト更新", scale=1)
                                 refresh_creative_notes_button = gr.Button("📚 読込", variant="primary", scale=1)
                                 show_latest_creative_button = gr.Button("📄 最新", variant="secondary", scale=1)
                             
                             with gr.Row():
-                                creative_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1)
-                                creative_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1)
+                                creative_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
+                                creative_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
                             
                             with gr.Row():
                                 with gr.Column(scale=1):
@@ -2672,8 +2658,7 @@ try:
                                         label="エントリを選択",
                                         choices=[],
                                         interactive=True,
-                                        info="最新のエントリが上に表示されます"
-                                    )
+                                        info="最新のエントリが上に表示されます", allow_custom_value=True)
                                 with gr.Column(scale=2):
                                     creative_notes_editor = gr.Textbox(
                                         label="エントリの内容",
@@ -2706,14 +2691,14 @@ try:
                         with gr.Accordion("🔬 研究・分析ノート", open=False):
                             gr.Markdown("Web巡回ツールによる分析結果や洞察が蓄積されるスペースです。AIが自律的に更新します。")
                             with gr.Row():
-                                research_notes_file_dropdown = gr.Dropdown(label="対象ファイル", choices=[constants.RESEARCH_NOTES_FILENAME], value=constants.RESEARCH_NOTES_FILENAME, scale=3)
+                                research_notes_file_dropdown = gr.Dropdown(label="対象ファイル", choices=[constants.RESEARCH_NOTES_FILENAME], value=constants.RESEARCH_NOTES_FILENAME, scale=3, allow_custom_value=True)
                                 refresh_research_file_list_button = gr.Button("📁 リスト更新", scale=1)
                                 refresh_research_notes_button = gr.Button("📚 読込", variant="primary", scale=1)
                                 show_latest_research_button = gr.Button("📄 最新", variant="secondary", scale=1)
                             
                             with gr.Row():
-                                research_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1)
-                                research_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1)
+                                research_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
+                                research_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
                             
                             with gr.Row():
                                 with gr.Column(scale=1):
@@ -2721,8 +2706,7 @@ try:
                                         label="エントリを選択",
                                         choices=[],
                                         interactive=True,
-                                        info="最新のエントリが上に表示されます"
-                                    )
+                                        info="最新のエントリが上に表示されます", allow_custom_value=True)
                                 with gr.Column(scale=2):
                                     research_notes_editor = gr.Textbox(
                                         label="エントリの内容",
@@ -2786,8 +2770,8 @@ try:
                         with gr.Row(equal_height=False):
                             with gr.Column(scale=1, min_width=250):
                                 gr.Markdown("### 1. 編集対象を選択")
-                                area_selector = gr.Dropdown(label="エリア (`##`)", interactive=True)
-                                place_selector = gr.Dropdown(label="場所 (`###`)", interactive=True)
+                                area_selector = gr.Dropdown(label="エリア (`##`)", interactive=True, allow_custom_value=True)
+                                place_selector = gr.Dropdown(label="場所 (`###`)", interactive=True, allow_custom_value=True)
                                 gr.Markdown("---")
                                 add_area_button = gr.Button("エリアを新規作成")
                                 add_place_button = gr.Button("場所を新規作成")
@@ -3113,8 +3097,8 @@ try:
             fixed_season_dropdown,
             fixed_time_of_day_dropdown,
             fixed_time_controls,
-            onboarding_guide, 
-            # --- [v9] 共通設定の永続化対応 ---
+            onboarding_guide,
+            onboarding_group,  # オンボーディングモーダルを動的に制御
             model_dropdown,
             debug_mode_checkbox,
             notification_service_radio,

@@ -5,9 +5,11 @@ All notable changes to Nexus Ark will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
+- **オンボーディングウィザード改善**: APIキー名の入力フィールドを追加し、案内文を改善。Google Gemini API へのリンクを追加。 ([Report](docs/reports/2026-02-07_onboarding-flow-fix.md))
 - 司会AI（Supervisor）機能の不具合調査資料 (`docs/technical/supervisor_issues_debug_log.md`)。配布後の再開に向けた技術的な備忘録。
 
 ### Fixed
+- **オンボーディングフロー修正**: APIキー保存形式を辞書形式（`gemini_api_keys`）に修正。リロード時のモーダル再表示問題を解消。 ([Report](docs/reports/2026-02-07_onboarding-flow-fix.md))
 - 司会AI（Supervisor）機能の安定化（応答消失、多重ループ、モデル設定同期）を実装。
 - APIエラー発生時にチャット履歴が消失し、エラーが表示されないバグを修正。
 

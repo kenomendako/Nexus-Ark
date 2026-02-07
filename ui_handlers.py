@@ -73,6 +73,10 @@ _LAST_ACTUAL_TOKENS = {} # room_name -> {"prompt": int, "completion": int, "tota
 
 def _format_token_display(room_name: str, estimated_count: int) -> str:
     """トークン数表示をフォーマットする。"""
+    # APIキー未設定時などにestimated_countが文字列（エラーメッセージ）の場合
+    if isinstance(estimated_count, str):
+        return estimated_count
+    
     last_actual = _LAST_ACTUAL_TOKENS.get(room_name, {})
     actual_prompt = last_actual.get("prompt_tokens", 0)  # 入力トークンのみ
     actual_total = last_actual.get("total_tokens", 0)    # 入力＋出力の合計
@@ -554,18 +558,18 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
     has_valid_key = api_key and not api_key.startswith("YOUR_API_KEY")
 
     if not has_valid_key:
-        # APIキー無効時: ログは表示するが、入力は無効化
+        # APIキー無効時（オンボーディングモード）: チャット履歴は非表示、UIは無効化
         # 他のUI項目も適切なデフォルト値で埋める (既存のreturn tuple構造を維持)
         return (
-            room_name, chat_history, mapping_list, # Logs are now included!
+            room_name, [], [],  # チャット履歴を空にしてオンボーディングガイドのみ表示
             gr.update(interactive=False, placeholder="まず、左の「設定」からAPIキーを設定してください。"),
             get_avatar_html(room_name, state="idle"), "", "", "", "", "", "",
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
-            gr.update(choices=[], value=None), # archive_date_dropdown
-            "（APIキーが設定されていません）",
+            gr.update(),  # location_dropdown - 空choicesでvalueを設定するとエラーになるため更新をスキップ
+            "（APIキーが設定されていません）", # current_scenery_display
             list(config_manager.SUPPORTED_VOICES.values())[0], # voice_dropdown
             "", True, 0.01,  # voice_style_prompt, enable_typewriter, streaming_speed
             0.8, 0.95, "高リスクのみブロック", "高リスクのみブロック", "高リスクのみブロック", "高リスクのみブロック",
@@ -580,6 +584,7 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
             False, # send_scenery
             "変更時のみ", # scenery_send_mode
             False, # auto_memory_enabled
+            True,  # room_enable_self_awareness_checkbox
             f"ℹ️ *現在選択中のルーム「{room_name}」にのみ適用される設定です。*", None,
             True, gr.update(open=True),
             gr.update(value=constants.API_HISTORY_LIMIT_OPTIONS.get(constants.DEFAULT_API_HISTORY_LIMIT_OPTION, "20往復")),  # room_api_history_limit_dropdown
@@ -660,19 +665,25 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
             gr.update(), # save_room_theme_button
             gr.update(value="<style></style>"),  # style_injector
             # --- [Phase 11/12] 夢日記リセット対応 ---
-            gr.update(choices=[], value=None), # dream_date_dropdown
+            gr.update(),  # dream_date_dropdown - 空choicesでvalueを設定するとエラーになるため更新をスキップ
             gr.update(value="日付を選択すると、ここに詳細が表示されます。"), # dream_detail_text
             gr.update(choices=["すべて"], value="すべて"), # dream_year_filter
             gr.update(choices=["すべて"], value="すべて"), # dream_month_filter
             # --- [Phase 14] エピソード記憶閲覧リセット ---
-            gr.update(choices=[], value=None), # episodic_date_dropdown
+            gr.update(),  # episodic_date_dropdown - 空choicesでvalueを設定するとエラーになるため更新をスキップ
             gr.update(value="日付を選択してください"), # episodic_detail_text
             gr.update(choices=["すべて"], value="すべて"), # episodic_year_filter
             gr.update(choices=["すべて"], value="すべて"), # episodic_month_filter
             gr.update(value="待機中"), # episodic_update_status
-            gr.update(choices=[], value=None), # entity_dropdown
+            gr.update(),  # entity_dropdown - 空choicesでvalueを設定するとエラーになるため更新をスキップ
             gr.update(value=""), # entity_content_editor
             gr.update(value="gemini"), # embedding_provider_radio (旧: embedding_mode_radio)
+            gr.update(value="未実行"), # dream_status_display
+            gr.update(value=False), # room_auto_summary_checkbox
+            gr.update(value=constants.AUTO_SUMMARY_DEFAULT_THRESHOLD, visible=False), # room_auto_summary_threshold_slider
+            gr.update(value=""), # room_project_root_input
+            gr.update(value=""), # room_project_exclude_dirs_input
+            gr.update(value=""), # room_project_exclude_files_input
             # --- [Avatar Expressions] ---
             gr.update(value=refresh_expressions_ui(room_name)), # expressions_html
             gr.update(choices=get_all_expression_choices(room_name), value=None), # expression_target_dropdown
@@ -941,12 +952,12 @@ def _update_chat_tab_for_room_change(room_name: str, api_key_name: str):
         gr.update(), # save_room_theme_button
         gr.update(value=_generate_style_from_settings(room_name, effective_settings)),
         # --- [Phase 11/12] 夢日記リセット対応 ---
-        gr.update(choices=[], value=None), # dream_date_dropdown
+        gr.update(), # dream_date_dropdown
         gr.update(value="日付を選択すると、ここに詳細が表示されます。"), # dream_detail_text
         gr.update(choices=["すべて"], value="すべて"), # dream_year_filter
         gr.update(choices=["すべて"], value="すべて"), # dream_month_filter
         # --- [Phase 14] エピソード記憶リセット対応 ---
-        gr.update(choices=[], value=None), # episodic_date_dropdown
+        gr.update(), # episodic_date_dropdown
         gr.update(value="日付を選択してください"), # episodic_detail_text
         gr.update(choices=["すべて"], value="すべて"), # episodic_year_filter
         gr.update(choices=["すべて"], value="すべて"), # episodic_month_filter
@@ -976,7 +987,7 @@ def _get_safe_dropdown_update(room_name: str, note_type: str, default_filename: 
         return gr.update(choices=choices, value=choices[0]) # デフォルトがない場合は先頭
     else:
         # 選択肢がない場合はNoneにする（警告回避）
-        return gr.update(choices=[], value=None)
+        return gr.update()
 
 
 def handle_initial_load(room_name: str = None, expected_count: int = 178):
@@ -1027,7 +1038,13 @@ def handle_initial_load(room_name: str = None, expected_count: int = 178):
 
     # --- 3. オンボーディングとトークン計算 ---
     has_valid_key = config_manager.has_valid_api_key()
-    token_count_text, onboarding_guide_update, chat_input_update = ("トークン数: (APIキー未設定)", gr.update(visible=True), gr.update(interactive=False))
+    # 新しいモーダルオンボーディングを使用するため、古いガイドは常に非表示
+    token_count_text, onboarding_guide_update, chat_input_update = ("トークン数: (APIキー未設定)", gr.update(visible=False), gr.update(interactive=False))
+    
+    # オンボーディングモーダルの表示制御: setup_completedがTrueまたはAPIキーが有効なら非表示
+    import onboarding_manager
+    is_setup_complete = config.get("setup_completed", False)
+    onboarding_group_update = gr.update(visible=(not is_setup_complete and not has_valid_key))
     
     # 変数をデフォルト値で初期化（has_valid_keyに関係なく使用するため）
     locations_for_custom_scenery = _get_location_choices_for_ui(safe_initial_room)
@@ -1120,6 +1137,7 @@ def handle_initial_load(room_name: str = None, expected_count: int = 178):
         world_data_for_state,
         *time_settings_updates,
         onboarding_guide_update,
+        onboarding_group_update,  # オンボーディングモーダルの表示制御
         *common_settings_updates,
         custom_scenery_dd_update,
         custom_scenery_time_dd_update,
@@ -2706,9 +2724,9 @@ def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name:
             empty_chat_updates = (
                 None, [], [], gr.update(interactive=False, placeholder="ルームを作成してください。"), 
                 None, "", "", "", "",  # room_name, chatbot, mapping, input, profile, memory, notepad, system_prompt, core_memory
-                gr.update(choices=[], value=None), gr.update(choices=[], value=None), 
-                gr.update(choices=[], value=None), gr.update(choices=[], value=None),  # room_dropdown, alarm_dd, timer_dd, manage_dd
-                gr.update(choices=[], value=None),  # location_dropdown
+                gr.update(), gr.update(), 
+                gr.update(), gr.update(),  # room_dropdown, alarm_dd, timer_dd, manage_dd
+                gr.update(),  # location_dropdown
                 "（ルームがありません）",  # current_scenery_display
                 list(config_manager.SUPPORTED_VOICES.values())[0], "", True, 0.01,  # voice_dd, voice_style, typewriter, speed
                 0.8, 0.95, *[gr.update()]*4,  # temp, top_p, 4 safety settings
@@ -2766,14 +2784,14 @@ def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name:
             session_outputs = ([], "", []) # 3 items
             tail_outputs = (
                 gr.update(value=[]), # redaction_rules_df
-                gr.update(choices=[], value=None), # archive_date_dropdown
+                gr.update(), # archive_date_dropdown
                 gr.update(value="リアル連動"), # time_mode_radio
                 gr.update(value="秋"), # fixed_season
                 gr.update(value="夜"), # fixed_time_of_day
                 gr.update(visible=False), # fixed_time_controls
                 [], # attachments_df
                 "現在アクティブな添付ファイルはありません。", # active_attachments_display
-                gr.update(choices=[], value=None), # custom_scenery_location
+                gr.update(), # custom_scenery_location
                 "トークン数: (ルーム未選択)", # token_count
                 "", # room_delete_confirmed_state
                 "最終更新: -", # memory_reindex_status
@@ -2963,14 +2981,14 @@ def handle_claude_file_upload(file_obj: Optional[Any]) -> Tuple[gr.update, gr.up
     Claudeのconversations.jsonファイルがアップロードされたときの処理。
     """
     if file_obj is None:
-        return gr.update(choices=[], value=None), gr.update(visible=False), []
+        return gr.update(), gr.update(visible=False), []
 
     try:
         choices = claude_importer.get_claude_thread_list(file_obj.name)
 
         if not choices:
             gr.Warning("これは有効なClaudeエクスポートファイルではないか、会話が含まれていません。")
-            return gr.update(choices=[], value=None), gr.update(visible=False), []
+            return gr.update(), gr.update(visible=False), []
 
         # UIを更新し、選択肢リストをStateに渡す
         return gr.update(choices=choices, value=None), gr.update(visible=True), choices
@@ -2979,7 +2997,7 @@ def handle_claude_file_upload(file_obj: Optional[Any]) -> Tuple[gr.update, gr.up
         gr.Warning("Claudeエクスポートファイルの処理中にエラーが発生しました。")
         print(f"Error processing Claude export file: {e}")
         traceback.print_exc()
-        return gr.update(choices=[], value=None), gr.update(visible=False), []
+        return gr.update(), gr.update(visible=False), []
 
 def handle_claude_thread_selection(choices_list: list, selected_ids: list) -> gr.update:
     """
@@ -3046,7 +3064,7 @@ def handle_chatgpt_file_upload(file_obj: Optional[Any]) -> Tuple[gr.update, gr.u
     """
     # file_obj is a single FileData object when file_count="single"
     if file_obj is None:
-        return gr.update(choices=[], value=None), gr.update(visible=False), []
+        return gr.update(), gr.update(visible=False), []
 
     try:
         choices = []
@@ -3065,7 +3083,7 @@ def handle_chatgpt_file_upload(file_obj: Optional[Any]) -> Tuple[gr.update, gr.u
 
         if not choices:
             gr.Warning("これは有効なChatGPTエクスポートファイルではないようです。ファイルを確認してください。")
-            return gr.update(choices=[], value=None), gr.update(visible=False), []
+            return gr.update(), gr.update(visible=False), []
 
         sorted_choices = sorted(choices)
         # ドロップダウンを更新し、フォームを表示し、選択肢リストをStateに渡す
@@ -3075,7 +3093,7 @@ def handle_chatgpt_file_upload(file_obj: Optional[Any]) -> Tuple[gr.update, gr.u
         gr.Warning("これは有効なChatGPTエクスポートファイルではないようです。ファイルを確認してください。")
         print(f"Error processing ChatGPT export file: {e}")
         traceback.print_exc()
-        return gr.update(choices=[], value=None), gr.update(visible=False), []
+        return gr.update(), gr.update(visible=False), []
 
 
 def handle_chatgpt_thread_selection(choices_list: list, selected_ids: list) -> gr.update:
@@ -3582,7 +3600,7 @@ def handle_save_memory_click(room_name, text_content):
 def handle_reload_memory(room_name: str) -> Tuple[str, gr.update]:
     if not room_name:
         gr.Warning("ルームが選択されていません。")
-        return "", gr.update(choices=[], value=None)
+        return "", gr.update()
 
     gr.Info(f"「{room_name}」の記憶を再読み込みしました。")
 
@@ -3604,7 +3622,7 @@ def handle_reload_memory_raw(room_name: str) -> Tuple[str, gr.update]:
     """日記のRAWエディタ用に全文を読み込む"""
     if not room_name:
         gr.Warning("ルームが選択されていません。")
-        return "", gr.update(choices=[], value=None)
+        return "", gr.update()
 
     gr.Info(f"「{room_name}」の日記を再読み込みしました。")
 
@@ -3672,21 +3690,21 @@ def handle_load_diary_entries(room_name: str):
     _, _, _, memory_txt_path, _, _ = get_room_files_paths(room_name)
     if not memory_txt_path or not os.path.exists(memory_txt_path):
         gr.Info("日記はまだありません。")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), ""
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), ""
     
     with open(memory_txt_path, "r", encoding="utf-8") as f:
         content = f.read()
     
     if not content.strip():
         gr.Info("日記は空です。")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), content
     
     entries = _parse_diary_entries(content)
     
     if not entries:
         # エントリが見つからない場合は全文を1エントリとして扱う
         gr.Info("日付形式のエントリが見つかりません。RAW編集を使用してください。")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), content
     
     # 年・月リストを抽出
     years = set()
@@ -3730,20 +3748,20 @@ def handle_show_latest_diary(room_name: str):
     _, _, _, memory_txt_path, _, _ = get_room_files_paths(room_name)
     if not memory_txt_path or not os.path.exists(memory_txt_path):
         gr.Info("日記はまだありません。")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", ""
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), "", ""
     
     with open(memory_txt_path, "r", encoding="utf-8") as f:
         content = f.read()
     
     if not content.strip():
         gr.Info("日記は空です。")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), "", content
     
     entries = _parse_diary_entries(content)
     
     if not entries:
         gr.Info("日付形式のエントリが見つかりません。RAW編集を使用してください。")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), "", content
     
     # 年・月リストを抽出
     years = set()
@@ -4356,14 +4374,14 @@ def handle_show_latest_episodic(room_name: str):
 def handle_refresh_entity_list(room_name: str):
     """エンティティの一覧を取得してドロップダウンを更新する"""
     if not room_name:
-        return gr.update(choices=[], value=None), ""
+        return gr.update(), ""
     
     from entity_memory_manager import EntityMemoryManager
     em = EntityMemoryManager(room_name)
     entities = em.list_entries()
 
     if not entities:
-        return gr.update(choices=[], value=None), "エンティティがまだ登録されていません。"
+        return gr.update(), "エンティティがまだ登録されていません。"
     
     # 名称順に並び替える
     entities.sort()
@@ -4417,7 +4435,7 @@ def handle_search_chat_log_keyword(room_name: str, keyword: str) -> gr.update:
         # ここではリストはそのまま（あるいは "該当なし" を出す？）だが、
         # フィルタ結果として空を返すと操作不能になるので、Warningを出してリセットしない、あるいは空にする。
         # 直感的には「絞り込み結果0件」を表示すべき。
-        return gr.update(choices=[], value=None)
+        return gr.update()
     
     # ヒットした月 + (ヒットした中に最新月が含まれるかは不明だが、「最新」という概念はファイルではないので検索対象外)
     # だが、「最新」ログ（=現在進行中の月）も当然検索対象に含めたい。
@@ -4480,14 +4498,14 @@ def handle_delete_entity_memory(room_name: str, entity_name: str):
 def handle_refresh_episodic_entries(room_name: str):
     """エピソード記憶（episodic_memory.json）を読み込み、Dropdown の選択肢とフィルタの選択肢を返す"""
     if not room_name:
-        return gr.update(choices=[], value=None), gr.update(value="日付を選択してください"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて")
+        return gr.update(), gr.update(value="日付を選択してください"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて")
         
     try:
         manager = EpisodicMemoryManager(room_name)
         data = manager._load_memory()
         
         if not data:
-            return gr.update(choices=[], value=None), gr.update(value="エピソード記憶がまだ作成されていません。"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて")
+            return gr.update(), gr.update(value="エピソード記憶がまだ作成されていません。"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて")
             
         # 日付リスト（最新順）- 重複を排除
         entries_set = set()
@@ -4519,12 +4537,12 @@ def handle_refresh_episodic_entries(room_name: str):
         )
     except Exception as e:
         print(f"Error refreshing episodic entries: {e}")
-        return gr.update(choices=[], value=None), gr.update(value=f"読み込みエラー: {e}"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて")
+        return gr.update(), gr.update(value=f"読み込みエラー: {e}"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて")
 
 def handle_episodic_filter_change(room_name: str, year: str, month: str):
     """年・月のフィルタ変更に合わせて、エピソードドロップダウンの選択肢を絞り込む"""
     if not room_name:
-        return gr.update(choices=[], value=None)
+        return gr.update()
         
     try:
         manager = EpisodicMemoryManager(room_name)
@@ -4548,7 +4566,7 @@ def handle_episodic_filter_change(room_name: str, year: str, month: str):
         return gr.update(choices=filtered_entries, value=None)
     except Exception as e:
         print(f"Error filtering episodic entries: {e}")
-        return gr.update(choices=[], value=None)
+        return gr.update()
 
 def handle_episodic_selection_from_dropdown(room_name: str, selected_date: str):
     """エピソードのドロップダウンから選択した際、詳細を表示する"""
@@ -4754,7 +4772,7 @@ def handle_load_creative_entries(room_name: str, filename: str = None):
     content = load_creative_notes_content(room_name, filename)
     if not content.strip():
         print("--- [UI] 対象の創作ノートは空です。 ---")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), content
     
     entries = _parse_notes_entries(content)
     
@@ -4801,13 +4819,13 @@ def handle_show_latest_creative(room_name: str, filename: str = None):
     content = load_creative_notes_content(room_name, filename)
     if not content.strip():
         print("--- [UI] 対象の創作ノートは空です。 ---")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), "", content
     
     entries = _parse_notes_entries(content)
     
     if not entries:
         gr.Info("エントリが見つかりません。RAW編集を使用してください。")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), "", content
     
     # 年・月リストを抽出
     years = set()
@@ -5006,7 +5024,7 @@ def handle_load_research_entries(room_name: str, filename: str = None):
     content = load_research_notes_content(room_name, filename)
     if not content.strip():
         print("--- [UI] 対象の研究ノートは空です。 ---")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), content
     
     entries = _parse_notes_entries(content)
     
@@ -5052,13 +5070,13 @@ def handle_show_latest_research(room_name: str, filename: str = None):
     content = load_research_notes_content(room_name, filename)
     if not content.strip():
         print("--- [UI] 対象の研究ノートは空です。 ---")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), "", content
     
     entries = _parse_notes_entries(content)
     
     if not entries:
         gr.Info("エントリが見つかりません。RAW編集を使用してください。")
-        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(choices=[], value=None), "", content
+        return gr.update(choices=["すべて"], value="すべて"), gr.update(choices=["すべて"], value="すべて"), gr.update(), "", content
     
     # 年・月リストを抽出
     years = set()
@@ -5180,7 +5198,7 @@ def handle_save_research_entry(room_name: str, selected_idx: str, new_content: s
 def handle_note_file_list_refresh(room_name: str, note_type: str):
     """指定されたノート種別のファイルリストを更新してDropdownを返す"""
     if not room_name:
-        return gr.update(choices=[], value=None)
+        return gr.update()
     
     files = room_manager.get_note_files(room_name, note_type)
     if not files:
@@ -6093,7 +6111,7 @@ from world_builder import get_world_data, save_world_data
 def handle_world_builder_load(room_name: str):
     from world_builder import get_world_data
     if not room_name:
-        return {}, gr.update(choices=[], value=None), "", gr.update(choices=[], value=None)
+        return {}, gr.update(), "", gr.update()
 
     world_data = get_world_data(room_name)
     area_choices = sorted(world_data.keys())
@@ -6237,7 +6255,7 @@ def handle_end_session(main_room: str, active_participants: list) -> tuple:
 
 def handle_wb_area_select(world_data: Dict, area_name: str):
     if not area_name or area_name not in world_data:
-        return gr.update(choices=[], value=None)
+        return gr.update()
     places = sorted(world_data[area_name].keys())
     return gr.update(choices=places)
 
@@ -6338,7 +6356,7 @@ def handle_wb_confirm_add(room_name: str, world_data: Dict, selected_area: str, 
         # ▼▼▼【ここが修正箇所】▼▼▼
         new_location_choices = _get_location_choices_for_ui(room_name)
         location_dropdown_update = gr.update(choices=new_location_choices)
-        return world_data, gr.update(choices=area_choices, value=item_name), gr.update(choices=[], value=None), gr.update(visible=False), "", raw_content, location_dropdown_update
+        return world_data, gr.update(choices=area_choices, value=item_name), gr.update(), gr.update(visible=False), "", raw_content, location_dropdown_update
 
     elif item_type == "place":
         if not selected_area:
@@ -6395,7 +6413,7 @@ def handle_save_world_settings_raw(room_name: str, raw_content: str):
         return (
             new_world_data,                                        # world_data_state
             gr.update(choices=new_area_choices, value=None),       # area_selector
-            gr.update(choices=[], value=None),                     # place_selector
+            gr.update(),                     # place_selector
             gr.update(value=raw_content),                          # world_settings_raw_editor
             gr.update(choices=new_location_choices)                # location_dropdown
         )
@@ -6429,7 +6447,7 @@ def handle_reload_world_settings_raw(room_name: str):
     return (
         new_world_data,                                        # world_data_state
         gr.update(choices=new_area_choices, value=None),       # area_selector
-        gr.update(choices=[], value=None),                     # place_selector
+        gr.update(),                     # place_selector
         gr.update(value=raw_content),                          # world_settings_raw_editor
         gr.update(choices=new_location_choices)                # location_dropdown
     )
@@ -8400,7 +8418,7 @@ def handle_save_custom_theme(new_name, primary_hue, secondary_hue, neutral_hue, 
         "neutral_hue": neutral_hue, "font": [font]
     }
     theme_settings["custom_themes"] = custom_themes
-    config_manager.save_config("theme_settings", theme_settings)
+    config_manager.save_config_if_changed("theme_settings", theme_settings)
     
     # グローバル変数を更新して即時反映
     config_manager.load_config()
