@@ -36,6 +36,33 @@
 - [x] `python tools/build_release.py` を実行
 - [ ] クリーン環境での起動テスト（Pinokio含む）
 
+### 6. フォルダ構造の改善（ユーザビリティ向上）⚠️ 重要
+**目的**: ユーザーがアクセスするデータを `app/` の外に配置
+
+**目標構造**:
+```
+Nexus Ark/
+├── Start.bat / Start.sh
+├── README.md
+├── characters/      ← ユーザーデータ（app外に移動）
+├── config.json      ← 設定ファイル（app外に移動）
+└── app/             ← アプリ本体（ユーザーは触らない）
+```
+
+**変更が必要な箇所**:
+- [ ] `room_manager.py` - キャラクターパス参照の基準変更
+- [ ] `config_manager.py` - config.json パス変更
+- [ ] `nexus_ark.py` - 起動時のパス解決（親ディレクトリ参照）
+- [ ] `start.sh` / `Start.sh` - 作業ディレクトリ設定
+- [ ] 画像アップロード系 - 保存先パス調整
+- [ ] `tools/build_release.py` - ビルド時の構造変更
+- [ ] README_DIST.md - フォルダ構成説明の更新
+
+**移行の注意点**:
+- 既存データ（app/characters/*）の自動移動または互換性維持
+- room_data.json内の画像パス参照の修正
+- 相対パス計算の変更（../characters/ など）
+
 ---
 
 ## 🔄 既存ユーザーのマイグレーション戦略
