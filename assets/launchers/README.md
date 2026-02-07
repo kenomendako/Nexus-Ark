@@ -1,4 +1,4 @@
-# 🌟 Nexus Ark
+#  Nexus Ark
 
 AIコンパニオンとの対話を楽しむためのアプリケーションです。
 
@@ -26,4 +26,4 @@ AIコンパニオンとの対話を楽しむためのアプリケーションで
 - 詳しい使い方は `app/docs/NEXUS_ARK_SPECIFICATION.md` を参照
 
 ---
-Made with ❤️ by kenomendako
+Made with  by kenomendako
