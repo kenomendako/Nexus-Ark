@@ -16,7 +16,7 @@
 - [x] `start.sh` を uv 使用に更新（自動インストール機能付き）
 
 ### 3. 仕様書の更新
-- [ ] `docs/NEXUS_ARK_SPECIFICATION.md` を現在の実装に合わせて更新
+- [x] `docs/NEXUS_ARK_SPECIFICATION.md` を現在の実装に合わせて更新
   - ルームごとのCSSテーマ設定
   - Arousalベース記憶システム
   - 内省機能（目標・未解決の問い・夢日記）
