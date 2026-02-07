@@ -1750,7 +1750,7 @@ try:
                                 open_attachments_folder_button = gr.Button("📂 添付ファイルフォルダを開く", variant="secondary")
                                 delete_attachment_button = gr.Button("選択したファイルを削除", variant="stop")
 
-                gr.Markdown(f"Nexus Ark {constants.APP_VERSION} (Beta)", elem_id="app_version_display")
+                gr.Markdown(f"Nexus Ark {constants.APP_VERSION}", elem_id="app_version_display")
 
 
 
