@@ -42,7 +42,12 @@ if exist "app" (
 
 echo [INFO] Starting setup tool...
 echo.
-uv run python -I -X utf8 tools/setup_local_llm.py
+REM Use 'uv' to find the path to the Python executable. 
+REM This bypasses the project venv's site-packages initialization which is crashing on encoding.
+for /f "usebackq tokens=*" %%i in (`uv python find 2^>nul`) do set "PY_EXE=%%i"
+if "%PY_EXE%"=="" set "PY_EXE=python"
+
+"%PY_EXE%" -X utf8 tools\setup_local_llm.py
 
 echo.
 echo ---------------------------------------------------
