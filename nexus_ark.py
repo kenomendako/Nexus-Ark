@@ -589,26 +589,61 @@ try:
                         return gr.update(visible=True, value=f"保存に失敗しました: {e}"), gr.update(visible=True)
                 
                 def execute_migration(migrate_path):
+                    import shutil
+                    from pathlib import Path
+                    
                     if not migrate_path or not migrate_path.strip():
                         return gr.update(visible=True, value="パスを入力してください。"), gr.update(visible=True)
                     
                     migrate_path = migrate_path.strip()
+                    src_path = Path(migrate_path)
+                    dest_path = Path(__file__).parent
                     
                     # パス存在チェック
-                    if not os.path.exists(migrate_path):
+                    if not src_path.exists():
                         return gr.update(visible=True, value=f"指定されたパスが見つかりません: {migrate_path}"), gr.update(visible=True)
                     
                     # config.json の存在チェック
-                    config_path = os.path.join(migrate_path, "config.json")
-                    if not os.path.exists(config_path):
+                    if not (src_path / "config.json").exists():
                         return gr.update(visible=True, value=f"config.json が見つかりません。正しいNexus Arkフォルダを指定してください。"), gr.update(visible=True)
                     
                     try:
-                        # マイグレーションツールをインポートして実行
-                        from tools.migrate_from_old import MigrationTool
+                        # --- 1. ルート設定ファイルの移行 ---
+                        for filename in ["config.json", "alarms.json", "redaction_rules.json", ".gemini_key_states.json"]:
+                            src_file = src_path / filename
+                            dest_file = dest_path / filename
+                            
+                            if src_file.exists():
+                                if dest_file.exists():
+                                    backup_file = dest_file.with_suffix(dest_file.suffix + ".bak")
+                                    shutil.copy2(dest_file, backup_file)
+                                    print(f"[Migration] Created backup: {filename}")
+                                
+                                shutil.copy2(src_file, dest_file)
+                                print(f"[Migration] Copied: {filename}")
                         
-                        migration = MigrationTool(migrate_path)
-                        migration.migrate_all()
+                        # --- 2. charactersフォルダの移行 ---
+                        src_chars = src_path / "characters"
+                        dest_chars = dest_path / "characters"
+                        
+                        if src_chars.exists():
+                            for char_dir in src_chars.iterdir():
+                                if not char_dir.is_dir() or char_dir.name.startswith("."):
+                                    continue
+                                
+                                target_dir = dest_chars / char_dir.name
+                                print(f"[Migration] Migrating character: {char_dir.name}")
+                                
+                                if target_dir.exists():
+                                    # 既存フォルダをバックアップ
+                                    backup_dir = dest_chars / f"{char_dir.name}_new_bak"
+                                    if not backup_dir.exists():
+                                        shutil.move(str(target_dir), str(backup_dir))
+                                    else:
+                                        shutil.rmtree(target_dir)
+                                
+                                shutil.copytree(str(char_dir), str(target_dir))
+                                print(f"[Migration] Copied character: {char_dir.name}")
                         
                         # Mark as complete
                         onboarding_manager.mark_setup_completed()
@@ -616,7 +651,7 @@ try:
                         # グローバル設定を再読み込み
                         config_manager.load_config()
                         
-                        # 成功メッセージを表示（オーバーレイは非表示にしてメイン画面を表示）
+                        # 成功メッセージを表示
                         gr.Info("✅ データ移行が完了しました！ブラウザを更新してください。")
                         return gr.update(visible=False), gr.update(visible=False)
                     except Exception as e:
