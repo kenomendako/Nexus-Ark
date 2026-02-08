@@ -616,11 +616,14 @@ try:
                         # グローバル設定を再読み込み
                         config_manager.load_config()
                         
+                        # 成功メッセージを表示（オーバーレイは非表示にしてメイン画面を表示）
+                        gr.Info("✅ データ移行が完了しました！ブラウザを更新してください。")
                         return gr.update(visible=False), gr.update(visible=False)
                     except Exception as e:
                         import traceback
-                        traceback.print_exc()
-                        return gr.update(visible=True, value=f"移行に失敗しました: {e}"), gr.update(visible=True)
+                        error_details = traceback.format_exc()
+                        print(f"[Migration Error] {error_details}")
+                        return gr.update(visible=True, value=f"移行に失敗しました: {e}\n\n詳細:\n{error_details[:500]}"), gr.update(visible=True)
 
                 onboarding_finish_btn.click(
                     fn=finish_onboarding,
@@ -635,9 +638,6 @@ try:
                     fn=execute_migration,
                     inputs=[onboarding_migrate_path],
                     outputs=[onboarding_migrate_status, onboarding_group]
-                ).then(
-                    fn=None,
-                    js="() => { setTimeout(() => { window.location.reload(); }, 500); }"
                 )
 
         room_list_on_startup = room_manager.get_room_list_for_ui()
