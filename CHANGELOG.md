@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **仕様書の大幅更新**: `docs/NEXUS_ARK_SPECIFICATION.md` を現行実装に合わせて大幅拡充（約250行→480行超）。約30の未記載機能を追記し、ユーザーフィードバック10項目を反映。 ([Report](docs/reports/2026-02-07_Specification_Update.md))
 
 ### Fixed
+- **情景描写機能の API キーローテーション不具合を修正**: 無料キー枯渇時に自動で次の利用可能なキーに切り替わらず、429エラーが発生したまま停止する問題を解決。 `agent/scenery_manager.py` にリトライロジックを実装。 ([Report](docs/reports/2026-02-08_scenery_api_rotation_fix.md))
 - **オンボーディングフロー修正**: APIキー保存形式を辞書形式（`gemini_api_keys`）に修正。リロード時のモーダル再表示問題を解消。 ([Report](docs/reports/2026-02-07_onboarding-flow-fix.md))
 - 司会AI（Supervisor）機能の安定化（応答消失、多重ループ、モデル設定同期）を実装。
 - APIエラー発生時にチャット履歴が消失し、エラーが表示されないバグを修正。
