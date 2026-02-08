@@ -47,7 +47,7 @@ REM This bypasses the project venv's site-packages initialization which is crash
 for /f "usebackq tokens=*" %%i in (`uv python find 2^>nul`) do set "PY_EXE=%%i"
 if "%PY_EXE%"=="" set "PY_EXE=python"
 
-"%PY_EXE%" -X utf8 tools\setup_local_llm.py
+"%PY_EXE%" -S -X utf8 tools\setup_local_llm.py
 
 echo.
 echo ---------------------------------------------------
