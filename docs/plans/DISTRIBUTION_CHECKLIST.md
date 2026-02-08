@@ -29,8 +29,9 @@
 
 - [x] `room_config.json` にテーマ設定を反映
 - [x] `rag_data/` に仕様書のRAGインデックスを事前構築 ✅ (29チャンク, 356KB)
-- [ ] `SystemPrompt.txt` の内容確認
-- [ ] `log.txt` の初期内容確認
+- [x] `SystemPrompt.txt` の内容確認 ✅
+- [x] `log.txt` の初期内容確認 ✅
+
 
 ### 5. ビルド & 検証
 - [x] `python tools/build_release.py` を実行
