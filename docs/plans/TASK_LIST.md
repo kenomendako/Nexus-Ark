@@ -74,7 +74,8 @@
 
 - [x] **配布・運用システムの刷新** [Report](../reports/2026-02-06_Distribution_System_Update.md)
   - `uv` + `pyproject.toml` への移行
-  - Pinokio対応 / オンボーディング / 知識同期ツールの実装対応)**
+  - Pinokio対応 / オンボーディング / 知識同期ツールの実装対応)
+  - [x] 配布用サンプルペルソナ（オリヴェ）の整備 [Report](../reports/2026-02-08_Olivie_Persona_Refinement.md)
   - [ ] `docs/research/配布調査.md` に基づく最新配布フローの反映
   - [ ] `version.json` によるバージョン管理の実装 <!-- id: 748 -->
   - [ ] `update_manager.py` の実装とUI統合 <!-- id: 749, 751 -->

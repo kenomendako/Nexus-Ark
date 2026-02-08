@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - **オンボーディングウィザード改善**: APIキー名の入力フィールドを追加し、案内文を改善。Google Gemini API へのリンクを追加。 ([Report](docs/reports/2026-02-07_onboarding-flow-fix.md))
+- **サンプルペルソナ（オリヴェ）の整備**: 情景描写テキストの文体をNexus Ark標準（記述体）に修正し、全8箇所の高品質画像を事前に生成して同梱。 ([Report](docs/reports/2026-02-08_Olivie_Persona_Refinement.md))
 - 司会AI（Supervisor）機能の不具合調査資料 (`docs/technical/supervisor_issues_debug_log.md`)。配布後の再開に向けた技術的な備忘録。
 
 ### Changed
