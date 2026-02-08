@@ -36,9 +36,9 @@ cd app
 echo [INFO] uv found. Syncing dependencies...
 echo.
 echo ============================================================
-echo  NOTE: 初回起動時は依存関係のダウンロードのため
-echo        2〜3分程度時間がかかる場合があります。
-echo        このウィンドウを閉じずにお待ちください。
+echo  NOTE: First-time startup may take 2-3 minutes
+echo        while downloading dependencies.
+echo        Please do not close this window.
 echo ============================================================
 echo.
 REM CRITICAL FIX: --no-install-project prevents creating a .pth file with Japanese paths
