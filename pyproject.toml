@@ -1,6 +1,6 @@
 [project]
 name = "nexus-ark"
-version = "1.0.0"
+version = "0.18.0"
 description = "Nexus Ark: AI Persona Interaction System"
 authors = [{ name = "Kenomendako", email = "kenomendako@example.com" }]
 readme = "README.md"
