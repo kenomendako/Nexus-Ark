@@ -240,8 +240,8 @@ def main():
         if os.path.exists(p_file):
             shutil.copy2(p_file, os.path.join(DIST_DIR, p_file))
 
-    # 7.2.1 Create icon.png for Pinokio (using Olivie's profile)
-    icon_src = "assets/sample_persona/Olivie/profile.png"
+    # 7.2.1 Create icon.png for Pinokio (using generic app logo)
+    icon_src = "assets/app_icon.png"
     if os.path.exists(icon_src):
         shutil.copy2(icon_src, os.path.join(DIST_DIR, "icon.png"))
         print(f"   - Created icon.png from {icon_src}")
