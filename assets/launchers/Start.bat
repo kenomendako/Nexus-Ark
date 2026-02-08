@@ -36,7 +36,7 @@ cd app
 echo [INFO] uv found. Syncing dependencies...
 echo.
 echo ============================================================
-echo  NOTE: First-time startup may take 2-3 minutes
+echo  NOTE: First-time startup may take several minutes
 echo        while downloading dependencies.
 echo        Please do not close this window.
 echo ============================================================
