@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.2.0 (Beta)] - 2026-02-08
 ### Added
+- **オンボーディングフローの刷新**: 新規インストールと旧バージョンからのマイグレーションを選択可能に。APIキー設定、アラーム、文字化け設定、キャラクターデータを引き継ぎ可能。 ([Report](docs/reports/2026-02-08_Onboarding_Migration_Completion.md))
+- **マイグレーション後の自動リロード**: データ移行成功時に `__SUCCESS__` マーカーを検知してブラウザを自動リロードする機能を追加。
+- **オリヴェRAG索引の自動更新**: マイグレーション時に、オリヴェのRAG索引を配布パッケージ同梱の最新版（ビルド済み）で強制的に上書きし、APIコストなしで最新仕様に対応。
 - docs/reports/2026-02-04_suppress_ui_announcements.md (完了レポート)
 
 ### Fixed
