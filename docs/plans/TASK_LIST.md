@@ -85,6 +85,13 @@
   - [x] 配布用サンプルペルソナ（オリヴェ）の整備 [Report](../reports/2026-02-08_Olivie_Persona_Refinement.md)
   - [ ] `docs/research/配布調査.md` に基づく最新配布フローの反映
   - [ ] `version.json` によるバージョン管理の実装 <!-- id: 748 -->
+- [x] **Pinokio 実機テストと配布確認** <!-- id: pinokio-test -->
+  - 状態: 🚫中止 (Too Heavy)
+  - 理由: 初期セットアップが一般ユーザーには困難。代替案として「Zip配布 + PowerShellランチャー」を採用。
+- [ ] **[NEW] 軽量配布パッケージ (Zip + PowerShell Launcher) の作成** <!-- id: ps-launcher -->
+  - 詳細: Git/Pythonのみを前提とした、ダブルクリックで起動可能な軽量ランチャーを整備する。
+  - 優先度: 🔴最優先
+
 - [x] **既存ユーザーのマイグレーションツールの実装** <!-- id: 813 -->
   - [x] 旧バージョン判定ロジックの実装
   - [x] データ移行スクリプト (`tools/migrate_from_old.py`) の作成

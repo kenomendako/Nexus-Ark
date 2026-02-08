@@ -28,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **メッセージ重複バグの修正**: メッセージ削除により特定月のログが0件になった際、古いログファイルが残留して重複データとして読み込まれる問題を `utils.py` の修正で解決。
 - アラーム応答生成時にターミナルに全システムプロンプトが出力されるのを廃止 (debug_modeを無効化)
 - ルーム移動時のGradioエラーの修正 (不正なプロバイダ値 'zhipu' などのサニタイズとUI選択肢の補完)
+- **Pinokio テスト中止**: 初期導入コストの高さから公式サポートを縮小。代替として「Zip配布 + 手動実行」をドキュメント化し、次フェーズで軽量ランチャーの実装を決定。 ([Report](docs/reports/2026-02-08_Pinokio_Test_Cancelled.md))
 ### Added
 - 影の僕（Shadow Servant）からの提案を独立したセクション `{pending_messages_section}` に分離。
 - 「研究ノートが空です」「創作ノートが空です」の冗長なアナウンスを削除。空の場合は何も表示しない（空文字を返す）ように変更。

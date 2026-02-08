@@ -227,15 +227,54 @@ def main():
         json.dump(ver_data, f, indent=4, ensure_ascii=False)
     print(f"🏷️  Version info updated: {ver_data['version']}")
 
-    # 7. Print final structure
+    # 7. Pinokio & Root Configuration Support
+    print(f"🧩 Configuring Pinokio & Root Environment...")
+    
+    # 7.1 Copy pyproject.toml to root (for uv sync at root)
+    if os.path.exists("pyproject.toml"):
+        shutil.copy2("pyproject.toml", os.path.join(DIST_DIR, "pyproject.toml"))
+    
+    # 7.2 Copy Pinokio JS files to root
+    pinokio_files = ["pinokio.js", "install.js", "update.js"]
+    for p_file in pinokio_files:
+        if os.path.exists(p_file):
+            shutil.copy2(p_file, os.path.join(DIST_DIR, p_file))
+
+    # 7.2.1 Create icon.png for Pinokio (using Olivie's profile)
+    icon_src = "assets/sample_persona/Olivie/profile.png"
+    if os.path.exists(icon_src):
+        shutil.copy2(icon_src, os.path.join(DIST_DIR, "icon.png"))
+        print(f"   - Created icon.png from {icon_src}")
+
+
+    # 7.3 Create Distribution-specific start.js (Run in app/ directory)
+    # This allows the app to find config.json and assets relative to CWD
+    start_js_path = os.path.join(DIST_DIR, "start.js")
+    start_js_content = """module.exports = {
+    run: [
+        {
+            method: "shell.run",
+            params: {
+                path: "app",
+                message: "uv run nexus_ark.py",
+            }
+        }
+    ]
+}
+"""
+    with open(start_js_path, "w", encoding="utf-8") as f:
+        f.write(start_js_content)
+    print(f"   - Created dist/start.js (configured for app/ execution)")
+
+    # 8. Print final structure
     print(f"\n✨ Build Complete! Output: {os.path.abspath(DIST_DIR)}")
     print(f"\n📁 Distribution Structure:")
     print(f"   {DIST_DIR}/")
-    print(f"   ├── Start.bat       (Windows起動)")
-    print(f"   ├── Start.sh        (Mac/Linux起動)")
-    print(f"   ├── README.md       (使い方)")
-    print(f"   └── app/            (アプリ本体)")
-    print(f"       └── nexus_ark.py, etc...")
+    print(f"   ├── pinokio.js      (Pinokio Entry)")
+    print(f"   ├── pyproject.toml  (Dependencies)")
+    print(f"   ├── app/            (Source Code)")
+    print(f"   │   └── nexus_ark.py")
+    print(f"   └── ...")
     print(f"\n   Review the 'dist' folder before pushing to the release repository.")
 
 if __name__ == "__main__":
