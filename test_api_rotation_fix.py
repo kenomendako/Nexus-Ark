@@ -1,78 +1,71 @@
+import sys
+import os
 import unittest
 from unittest.mock import MagicMock, patch
-import os
-import sys
 
-# Add current dir to path
+# プロジェクトルートをパスに追加
 sys.path.append(os.getcwd())
 
-import gemini_api
-import config_manager
-from google.api_core.exceptions import ResourceExhausted
-from langchain_core.messages import AIMessage
+import agent.scenery_manager as scenery_manager
+from google.api_core import exceptions as google_exceptions
 
-class TestApiRotation(unittest.TestCase):
-    
-    @patch('config_manager.GEMINI_API_KEYS', {"key1": "AIza1", "key2": "AIza2"})
-    @patch('config_manager.CONFIG_GLOBAL', {"enable_api_key_rotation": True})
-    @patch('config_manager.mark_key_as_exhausted')
-    @patch('config_manager.get_next_available_gemini_key')
-    @patch('agent.graph.app.stream')
-    @patch('config_manager.get_effective_settings')
-    @patch('room_manager.get_room_files_paths')
-    @patch('utils.load_chat_log')
-    def test_rotation_on_429(self, mock_load_log, mock_paths, mock_settings, mock_stream, mock_get_next, mock_mark):
-        # Setup
-        mock_paths.return_value = (None, None, None, None, None, None)
-        mock_load_log.return_value = []
-        mock_settings.return_value = {"model_name": "gemini-1.5-flash", "display_thoughts": True, "enable_api_key_rotation": True}
-        
-        # Simulating 429
-        error_429 = ResourceExhausted("429 RESOURCE_EXHAUSTED")
-        
-        def stream_side_effect(*args, **kwargs):
-            if mock_mark.call_count == 0:
-                raise error_429
-            else:
-                yield ("values", {"messages": [AIMessage(content="Success with key2")]})
-                
-        mock_stream.side_effect = stream_side_effect
-        
-        # Setup rotation
-        mock_get_next.side_effect = ["key2", None]
-        
-        # Arguments for invoke_nexus_agent_stream
-        agent_args = {
-            "room_to_respond": "test_room",
-            "api_key_name": "key1",
-            "api_history_limit": "all",
-            "debug_mode": False,
-            "history_log_path": None,
-            "user_prompt_parts": [],
-            "soul_vessel_room": "test_room",
-            "active_participants": [],
-            "active_attachments": [],
-            "shared_location_name": "Test",
-            "shared_scenery_text": "Test Scenery",
-            "season_en": "winter",
-            "time_of_day_en": "night"
-        }
-        
-        # Execute
-        results = list(gemini_api.invoke_nexus_agent_stream(agent_args))
-        
-        # Verify
-        mock_mark.assert_called_with("key1")
-        print("Verification: mark_key_as_exhausted called for key1")
-        
-        success_found = False
-        for r in results:
-            if r[0] == "values" and isinstance(r[1].get("messages", [None])[0], AIMessage):
-                if "Success with key2" in r[1]["messages"][0].content:
-                    success_found = True
-        
-        self.assertTrue(success_found, "Should have rotated and succeeded with key2")
-        print("Verification: Rotated and succeeded with key2")
+class TestAPIRotation(unittest.TestCase):
 
-if __name__ == "__main__":
+    @patch('agent.scenery_manager.LLMFactory.create_chat_model')
+    @patch('agent.scenery_manager.config_manager.get_active_gemini_api_key')
+    @patch('agent.scenery_manager.config_manager.mark_key_as_exhausted')
+    @patch('agent.scenery_manager.config_manager.get_key_name_by_value')
+    @patch('agent.scenery_manager.config_manager.get_effective_settings')
+    @patch('agent.scenery_manager.utils.get_current_location')
+    @patch('agent.scenery_manager.utils.parse_world_file')
+    @patch('agent.scenery_manager.get_world_settings_path')
+    def test_scenery_rotation_on_429(self, mock_get_path, mock_parse_world, mock_get_loc, mock_get_settings, mock_get_key_name, mock_mark_exhausted, mock_get_active_key, mock_create_model):
+        # 設定
+        room_name = "test_room"
+        initial_key = "key_1"
+        next_key = "key_2"
+        
+        mock_get_loc.return_value = "Living"
+        mock_parse_world.return_value = {"Area 1": {"Living": "A cozy living room"}}
+        mock_get_settings.return_value = {"enable_api_key_rotation": True}
+        
+        # 1回目の呼び出しでは key_1, 2回目は key_2 と判定
+        mock_get_key_name.side_effect = lambda k: "default" if k == initial_key else "paid" if k == next_key else "Unknown"
+        
+        # 1回目のLLM呼び出しで429エラー、2回目で成功
+        mock_llm_1 = MagicMock()
+        mock_llm_1.invoke.side_effect = google_exceptions.ResourceExhausted("429 Quota exhausted")
+        
+        mock_llm_2 = MagicMock()
+        mock_llm_2.invoke.return_value.content = "Beautiful scenery"
+        
+        mock_create_model.side_effect = [mock_llm_1, mock_llm_2]
+        
+        # 429発生時に次に返されるキー
+        mock_get_active_key.return_value = next_key
+
+        # IO周りのモック (関数内のローカルインポートに対応)
+        # scipy_manager.utils がモジュールとしてインポートされているので、そこをパッチする
+        with patch('agent.scenery_manager.utils.load_scenery_cache', return_value={}), \
+             patch('agent.scenery_manager.utils.save_scenery_cache'), \
+             patch('agent.scenery_manager.utils.get_season', return_value="summer"), \
+             patch('agent.scenery_manager.utils.get_time_of_day', return_value="morning"):
+            
+            loc, space, text = scenery_manager.generate_scenery_context(room_name, initial_key)
+
+        # 検証
+        self.assertEqual(text, "Beautiful scenery")
+        self.assertEqual(mock_create_model.call_count, 2)
+        
+        # 1回目のキーで枯渇マークが呼ばれたか
+        mock_mark_exhausted.assert_called_with("default")
+        
+        # 2回目のモデル作成で新しいキーが使われたか
+        called_args = mock_create_model.call_args_list
+        self.assertEqual(called_args[0][1]['api_key'], initial_key)
+        self.assertEqual(called_args[1][1]['api_key'], next_key)
+        
+        print("\n✅ API Key Rotation Test Passed!")
+
+if __name__ == '__main__':
     unittest.main()

@@ -81,7 +81,12 @@
   - [x] 配布用サンプルペルソナ（オリヴェ）の整備 [Report](../reports/2026-02-08_Olivie_Persona_Refinement.md)
   - [ ] `docs/research/配布調査.md` に基づく最新配布フローの反映
   - [ ] `version.json` によるバージョン管理の実装 <!-- id: 748 -->
-  - [ ] `update_manager.py` の実装とUI統合 <!-- id: 749, 751 -->
+- [x] **既存ユーザーのマイグレーションツールの実装** <!-- id: 813 -->
+  - [x] 旧バージョン判定ロジックの実装
+  - [x] データ移行スクリプト (`tools/migrate_from_old.py`) の作成
+  - [x] オンボーディングウィザードへの統合（スクリプト提供完了）
+  - [レポート](reports/2026-02-08_Migration_Tool_Implementation.md)
+- [ ] `update_manager.py` の実装とUI統合 <!-- id: 749, 751 -->
 - [x] **アラーム応答生成時のシステムプロンプト出力廃止** (High) [レポート](../reports/2026-02-04_suppress_alarm_debug_log.md)
   - 詳細: アラーム応答生成時に、デバッグモードが有効なためターミナルに全システムプロンプトが出力されるのを廃止する（通常応答と同じにする）。
   - 優先度: 🔴高
