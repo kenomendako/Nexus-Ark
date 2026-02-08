@@ -20,6 +20,7 @@
 - **UX改善**: 研究ノート・創作ノートが空の場合の冗長なアナウンスを廃止。
 
 ### Fixed / Implemented
+| 2026-02-08 | **Windows配布版の初期化不具合修正**<br>・起動時の `RAGManager` 強制初期化ロジックを追加<br>・メッセージ削除時のログ重複バグを修正（空月のファイル削除） | [レポート](reports/2026-02-08_Windows_RAG_Fix.md) |
 | 2026-02-08 | **情景描写機能の API キーローテーション不具合修正**<br>・429リトライロジックを `scenery_manager.py` に実装<br>・無料キー枯渇時に自動で代替キー（有料等）へ切り替える不具合を解消 | [レポート](reports/2026-02-08_scenery_api_rotation_fix.md) |
 | 2026-02-08 | **配布用サンプルペルソナ（オリヴェ）の整備**<br>・情景描写テキストの文体をNexus Ark標準（記述体）に全8箇所修正<br>・全8箇所の高品質画像アセットを事前生成し、キャッシュとして同梱完了 | [レポート](reports/2026-02-08_Olivie_Persona_Refinement.md) |
 | 2026-02-06 | **お出かけ機能のエピソード記憶修正**<br>・古いファイル参照 (`episodic_memory.json`) を廃止し `EpisodicMemoryManager` に移行<br>・月次フォルダ (`YYYY-MM.json`) のデータ読み込みに対応し、正しく表示・エクスポート可能に修正 | [レポート](reports/2026-02-06_Outing_Memory_Fix.md) |

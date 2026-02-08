@@ -518,13 +518,36 @@ def _write_segmented_logs(room_dir: str, messages: List[Dict[str, str]]):
         header = f"## {role}:{responder_id}"
         messages_by_month[current_month].append(f"{header}\n{content.strip()}\n\n")
 
-    # 全ファイルを一旦空にする（または全削除して書き直す）のではなく、
-    # 渡されたメッセージに含まれる月のみを上書きする。
-    # ※ load_chat_log が全期間をロードしている前提。
+    # v0.2.0-fix: 既存のログファイルを全て確認し、
+    # 新しいメッセージリストに含まれない月（＝全削除された月）はファイルを削除するか空にする。
+    
+    # 1. 既存のログファイル一覧を取得
+    existing_log_files = set()
+    if os.path.exists(logs_dir):
+        for f in os.listdir(logs_dir):
+            if f.endswith(".txt"):
+                existing_log_files.add(f)
+                
+    # 2. 書き込み対象の月（ファイル名）
+    target_months = set(f"{m}.txt" for m in messages_by_month.keys())
+    
+    # 3. 更新（上書き）
     for month, contents in messages_by_month.items():
         target_path = os.path.join(logs_dir, f"{month}.txt")
         with open(target_path, "w", encoding="utf-8") as f:
             f.write("".join(contents).lstrip())
+            
+    # 4. 削除された月のファイルをクリーンアップ（または空にする）
+    # メッセージが1つも無くなった月は、ファイルごと削除するのが自然。
+    for log_file in existing_log_files:
+        if log_file not in target_months:
+            # 新しいリストにこの月のデータがない ＝ 全削除された
+            file_path = os.path.join(logs_dir, log_file)
+            try:
+                os.remove(file_path)
+                print(f"  [Log Cleanup] Deleted empty log file: {log_file}")
+            except Exception as e:
+                print(f"  [Log Cleanup] Failed to delete {log_file}: {e}")
 
 def remove_thoughts_from_text(text: str) -> str:
     """

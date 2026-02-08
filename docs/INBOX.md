@@ -11,6 +11,10 @@ Antigravityが定期的に確認し、優先順位をつけてタスクリスト
 - [ ] [タスク名/問題の説明]
   - 詳細: 
   - 優先度: 🔴高 / 🟡中 / 🟢低
+```markdown
+- [ ] [v0.3.0 配布方式の刷新：PowerShellランチャー化]
+  - 詳細: docs/research/llama-cpp-python配布調査.md に基づき、`SetupLocalLLM.bat` を廃止し、`PYTHONUTF8=1` と動的ハードウェア検出を統合した `Launch.ps1` アーキテクチャへ移行する。`site.py` 問題の根本解決と `uv` エコシステムへの完全統合を目指す。
+  - 優先度: 🔴高
 ```
 
 - [ ] [ChatGPT/Claude アプリからの共有URLインポート対応]

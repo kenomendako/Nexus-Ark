@@ -80,7 +80,24 @@ class RAGManager:
         self.room_dir = Path(constants.ROOMS_DIR) / room_name
         self.rag_data_dir = self.room_dir / "rag_data"
         
+        # [v0.2.0-fix] Legacy path support: "faiss_index" -> "faiss_index_static"
+        # 配布パッケージなどで古いフォルダ名のままになっている場合、互換性を維持して読み込む
+        legacy_index_path = self.rag_data_dir / "faiss_index"
         self.static_index_path = self.rag_data_dir / "faiss_index_static"
+        
+        if legacy_index_path.exists() and not self.static_index_path.exists():
+            print(f"[RAGManager] Legacy index detected ('faiss_index'). Using as static index.")
+            # 読み取り専用で運用されることが多いため、リネームせず参照先を変更するか、
+            # あるいは次回保存時に static に移行されるようにパスだけセットする。
+            # ここではシンプルに「存在すればそちらを読む」ようにパス変数を上書きする手もあるが、
+            # 保存時に混乱するため、起動時にリネームを試みるのが最善。
+            try:
+                legacy_index_path.rename(self.static_index_path)
+                print(f"  -> Renamed to 'faiss_index_static' for consistency.")
+            except Exception as e:
+                print(f"  -> Rename failed ({e}). Using legacy path for read-only access.")
+                self.static_index_path = legacy_index_path
+
         self.dynamic_index_path = self.rag_data_dir / "faiss_index_dynamic"
         self.processed_files_record = self.rag_data_dir / "processed_static_files.json"
         

@@ -24,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - docs/reports/2026-02-04_suppress_ui_announcements.md (完了レポート)
 
 ### Fixed
+- **Windows配布版の初期化不具合を修正**: アプリ起動時に `RAGManager` が初期化されず、RAGデータの移行処理（`faiss_index`のリネーム等）が走らない問題を修正。`ui_handlers.py` で強制初期化ロジックを追加。 ([Report](docs/reports/2026-02-08_Windows_RAG_Fix.md))
+- **メッセージ重複バグの修正**: メッセージ削除により特定月のログが0件になった際、古いログファイルが残留して重複データとして読み込まれる問題を `utils.py` の修正で解決。
 - アラーム応答生成時にターミナルに全システムプロンプトが出力されるのを廃止 (debug_modeを無効化)
 - ルーム移動時のGradioエラーの修正 (不正なプロバイダ値 'zhipu' などのサニタイズとUI選択肢の補完)
 ### Added

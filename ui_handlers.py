@@ -62,6 +62,52 @@ from motivation_manager import MotivationManager
 _last_save_notification_time = {}  # {room_name: timestamp}
 NOTIFICATION_DEBOUNCE_SECONDS = 1.0
 
+# --- RAGマネージャー管理用 ---
+_rag_managers = {}
+
+def get_rag_manager(room_name: str):
+    """
+    指定されたルームのRAGマネージャーを取得（または遅延初期化）する。
+    """
+    global _rag_managers
+    if room_name not in _rag_managers:
+        # APIキーの取得方法を修正
+        effective_settings = config_manager.get_effective_settings(room_name)
+        
+        # 1. ルーム個別のキー設定を確認
+        api_key_name = effective_settings.get("api_key_name")
+        
+        # 2. なければグローバル設定や前回の設定を確認
+        if not api_key_name:
+            api_key_name = effective_settings.get("last_api_key_name")
+            
+        # 3. それでもなければ最後の手段（config_managerから直接）
+        if not api_key_name:
+             api_key_name = config_manager.CONFIG_GLOBAL.get("last_api_key_name")
+
+        # キー名から実際の値を取得
+        api_key_val = config_manager.GEMINI_API_KEYS.get(api_key_name)
+
+        # キーが見つからない、またはプレースホルダーの場合
+        if not api_key_val or api_key_val.startswith("YOUR_API_KEY"):
+            # 有効なキーが一つでもあればそれを使う（緊急策）
+            valid_keys = [v for k, v in config_manager.GEMINI_API_KEYS.items() if v and not v.startswith("YOUR_API_KEY")]
+            if valid_keys:
+                api_key_val = valid_keys[0]
+                print(f"[RAGManager] Using fallback API key for initialization.")
+            else:
+                print(f"[RAGManager] Warning: Valid API key not found for room '{room_name}'. RAG disabled.")
+                return None
+                
+        print(f"[RAGManager] Initializing for room: {room_name}")
+        try:
+            _rag_managers[room_name] = rag_manager.RAGManager(room_name, api_key_val)
+        except Exception as e:
+            print(f"[RAGManager] Initialization failed: {e}")
+            return None
+    
+    return _rag_managers[room_name]
+
 # --- 起動時の通知抑制用 ---
 # 初期化完了までは通知を抑制（handle_initial_loadで完了時にTrueにする）
 _initialization_completed = False
@@ -1129,6 +1175,15 @@ def handle_initial_load(room_name: str = None, expected_count: int = 179):
     )
 
     # --- 8. 全ての戻り値を正しい順序で組み立てる ---
+    # [v0.2.0-fix] 初期ロード時にRAGManagerをインスタンス化して、マイグレーションロジック（フォルダリネーム等）を走らせる
+    if has_valid_key:
+        try:
+            # ここで get_rag_manager を呼ぶことで __init__ が走り、
+            # faiss_index -> faiss_index_static のリネーム処理などが実行される
+            get_rag_manager(safe_initial_room)
+        except Exception as e:
+            print(f"[Init] Failed to initialize RAGManager for {safe_initial_room}: {e}")
+
     # `initial_load_outputs`のリストに対応
     final_outputs = (
         display_df, df_with_ids, feedback_text,
