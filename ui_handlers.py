@@ -435,7 +435,7 @@ def handle_save_groq_key(api_key: str):
     """
     if not api_key or not api_key.strip():
         gr.Warning("APIキーが空です。")
-        return
+        return gr.update()
     
     api_key = api_key.strip()
     
@@ -446,6 +446,8 @@ def handle_save_groq_key(api_key: str):
         gr.Info("Groq APIキーを保存しました。")
     else:
         gr.Info("Groq APIキーは既に保存されています。")
+    
+    return gr.update()
 
 def handle_save_local_model_path(model_path: str):
     """
@@ -990,7 +992,7 @@ def _get_safe_dropdown_update(room_name: str, note_type: str, default_filename: 
         return gr.update()
 
 
-def handle_initial_load(room_name: str = None, expected_count: int = 178):
+def handle_initial_load(room_name: str = None, expected_count: int = 179):
     """
     【v11: 時間デフォルト対応版】
     UIセッションが開始されるたびに、UIコンポーネントの初期状態を完全に再構築する、唯一の司令塔。
@@ -10137,7 +10139,7 @@ def handle_save_chat_log_raw(
     """
     if not room_name:
         gr.Warning("ルームが選択されていません。")
-        return gr.update(), gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(), gr.update()
     
     # 保存先パスの決定
     if not selected_month or selected_month == "最新":
@@ -10148,7 +10150,7 @@ def handle_save_chat_log_raw(
 
     if not log_path:
         gr.Error("ログファイルのパスが取得できませんでした。")
-        return gr.update(), gr.update(), gr.update()
+        return gr.update(), gr.update(), gr.update(), gr.update()
     
     try:
         # バックアップ作成（安全装置）
