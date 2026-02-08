@@ -42,7 +42,7 @@ if exist "app" (
 
 echo [INFO] Starting setup tool...
 echo.
-uv run --env PYTHONUTF8=1 python -X utf8 tools/setup_local_llm.py
+uv run python -X utf8 tools/setup_local_llm.py
 
 echo.
 echo ---------------------------------------------------
