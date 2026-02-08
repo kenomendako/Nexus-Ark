@@ -19,32 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - 司会AI（Supervisor）機能の安定化（応答消失、多重ループ、モデル設定同期）を実装。
 - APIエラー発生時にチャット履歴が消失し、エラーが表示されないバグを修正。
 
-### Changed
-- 司会AI（Supervisor）機能の一時封印（配布優先対応）。設定画面から非表示化し、内部ロジックを強制無効化することで、リリース時の安定性を確保。 ([Report](docs/reports/2026-02-05_Supervisor_Stability_Fix_and_Sealing.md))
-
-### Fixed
-- **設定保存通知の消失と過剰反応を適正化**: 手動保存時には確実に通知を出し、ルーム切り替え時や起動時の自動処理による通知（ノイズ）をGrace Period導入により抑制。 ([Report](docs/reports/2026-02-06_Fix_Room_State_and_Notifications.md))
-- **ルーム状態混線の修正 (Frontend Binding)**: チャット送信先を内部StateではなくUIコンポーネントの値に直接バインドすることで、モバイル環境等で発生していたルーム混線（表示と中身の不一致）を解消。 ([Report](docs/reports/2026-02-06_Fix_Room_State_and_Notifications.md))
-- Zhipu AI グループ会話時の Error 1210 を修正。`llm_factory.py` のプロバイダ名取得キー不整合 (`profile`→`name`) を修正し、パラメータ最適化が正しく適用されるようになった。 ([Report](docs/reports/2026-02-05_Zhipu_Provider_Name_Key_Fix.md))
-- 不要なUIアナウンス（設定保存、ログ読み込み、空ノート警告）を抑制し、コンソールログに変更。
-- 研究・創作ノートが空の場合のツール戻り値を修正し、不要なAI発言を抑制。
-- Supervisor AIのモデル定数 (`SUPERVISOR_MODEL`) を廃止し、実際に使用されているモデル名をログに表示するように修正 ([Report](docs/reports/2026-02-05_Supervisor_Model_Fix.md))
-- OpenAI互換モデル設定が再起動時にプロファイルのデフォルトモデルに戻る問題を修正。ルーム読み込み時にプロファイルからモデル一覧を取得するよう改善。 ([Report](docs/reports/2026-02-05_OpenAI_Model_Persistence_Fix.md))
-
-### [Unreleased]
-### Added
-- **Gemini**: 共有URLからの会話ログインポート機能を実装 (Playwrightベース)。API制約を回避するため、ヘッドレスブラウザでチャットログを構造化して取り込む機能を実装。PC版 (`gemini.google.com`) とモバイル版短縮URL (`g.co`) の両方に対応。 ([Report](docs/reports/2026-02-06_Gemini_Import_Playwright.md))
-- **Distribution System**: Implemented `pyproject.toml` and standard `uv` based workflow.
-- **Pinokio Support**: Added `pinokio.js`, `install.js`, `start.js`, `update.js` for 1-click install.
-- **Onboarding System**: Added `onboarding_manager.py` and a new "Wizard Overlay" in `nexus_ark.py` for first-time setup (API Key handling).
-- **Knowledge Sync**: Added `tools/update_knowledge.py` to automatically sync specification docs to persona knowledge.
-- **Launch Scripts**: Added `start_nexus_ark.bat` and `start_nexus_ark.sh`.
-
-### Fixed
-- **System**: Improved folder structure handling for distribution builds.
-- **お出かけ機能のエピソード記憶読み込み修正**: 月次フォルダに移行したエピソード記憶を正しく読み込めるように `ui_handlers.py` を更新。 ([Report](docs/reports/2026-02-06_Outing_Memory_Fix.md))
-
-## [v20] - 2026-02-05 (Pre-release)
+## [0.2.0] - 2026-02-08
 ### Added
 - docs/reports/2026-02-04_suppress_ui_announcements.md (完了レポート)
 
@@ -673,6 +648,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [1.0.0] - 2025-10-19
+## [0.1.0] - 2025-10-19
 
 *前回リリース*
