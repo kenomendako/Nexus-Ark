@@ -1,51 +1,89 @@
 @echo off
 chcp 65001 > nul
 setlocal
+cd /d "%~dp0"
 
+echo ---------------------------------------------------
+echo  Nexus Ark Launching...
+echo ---------------------------------------------------
+
+REM Force Python to use UTF-8 mode (Safety net)
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+
+REM Check if uv is installed
+where uv >nul 2>nul
+if %errorlevel% EQU 0 goto :FOUND_UV
+
+echo [INFO] 'uv' tool not found. Installing...
 echo.
-echo   ╔═══════════════════════════════════════╗
-echo   ║       Nexus Ark を起動中...          ║
-echo   ╚═══════════════════════════════════════╝
+
+REM Install uv via PowerShell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+REM Add install paths to PATH for this session
+set "PATH=%USERPROFILE%\.local\bin;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Roaming\uv\bin;%PATH%"
+
+REM Verify installation
+where uv >nul 2>nul
+if %errorlevel% NEQ 0 goto :UV_INSTALL_FAILED
+
+:FOUND_UV
+REM Check for app directory
+if not exist "app" goto :MISSING_APP_DIR
+cd app
+
+echo [INFO] uv found. Syncing dependencies...
+REM CRITICAL FIX: --no-install-project prevents creating a .pth file with Japanese paths
+uv sync --no-install-project
+if %errorlevel% NEQ 0 goto :SYNC_FAILED
+
+echo [INFO] Starting Application...
 echo.
 
-:: Move to app directory
-cd /d "%~dp0app"
-
-:: Check if uv is available
-where uv >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [INFO] uv がインストールされていません。インストール中...
-    powershell -NoProfile -Command "irm https://astral.sh/uv/install.ps1 | iex"
-    if %errorlevel% neq 0 (
-        echo [ERROR] uv のインストールに失敗しました。
-        echo         手動でインストールしてください: https://docs.astral.sh/uv/
-        pause
-        exit /b 1
-    )
-    :: Refresh PATH
-    set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+REM Invoke python directly. 
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" nexus_ark.py
+) else (
+    uv run nexus_ark.py
 )
 
-:: Sync dependencies
-echo [INFO] 依存関係を確認中...
-uv sync --quiet
-if %errorlevel% neq 0 (
-    echo [ERROR] 依存関係のインストールに失敗しました。
-    pause
-    exit /b 1
-)
-
-echo [OK] 準備完了！アプリケーションを起動します。
-echo.
-echo ---------------------------------------------------
-echo  ブラウザで http://127.0.0.1:7860 を開いてください
-echo ---------------------------------------------------
-echo.
-
-uv run nexus_ark.py
+if %errorlevel% NEQ 0 goto :APP_CRASHED
 
 echo.
 echo ---------------------------------------------------
-echo  アプリケーションが終了しました。
+echo  Application Closed Normally
 echo ---------------------------------------------------
 pause
+exit /b 0
+
+:UV_INSTALL_FAILED
+echo.
+echo [ERROR] uv installation failed or could not be found in PATH.
+echo Please install 'uv' manually from https://github.com/astral-sh/uv
+echo.
+pause
+exit /b 1
+
+:MISSING_APP_DIR
+echo.
+echo [ERROR] 'app' directory not found!
+echo Please ensure you have extracted all files correctly.
+echo.
+pause
+exit /b 1
+
+:SYNC_FAILED
+echo.
+echo [ERROR] Failed to sync dependencies.
+echo Please check your internet connection.
+echo.
+pause
+exit /b 1
+
+:APP_CRASHED
+echo.
+echo [ERROR] Application crashed!
+echo.
+pause
+exit /b 1
