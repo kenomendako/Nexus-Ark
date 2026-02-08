@@ -646,6 +646,22 @@ try:
                                 shutil.copytree(str(char_dir), str(target_dir))
                                 print(f"[Migration] Copied character: {char_dir.name}")
                         
+                        # --- 3. オリヴェのRAG索引を新バージョンから復元 ---
+                        # 旧バージョンにはRAG索引がないため、新バージョンの索引で補完
+                        sample_olivie_rag = dest_path / "assets" / "sample_persona" / "Olivie" / "rag_data"
+                        olivie_names = ["Olivie", "オリヴェ"]
+                        for olivie_name in olivie_names:
+                            target_olivie = dest_chars / olivie_name
+                            if target_olivie.exists():
+                                target_rag = target_olivie / "rag_data"
+                                target_index = target_rag / "faiss_index"
+                                # 索引がない場合のみコピー
+                                if sample_olivie_rag.exists() and (not target_index.exists() or not (target_index / "index.faiss").exists()):
+                                    if target_rag.exists():
+                                        shutil.rmtree(target_rag)
+                                    shutil.copytree(str(sample_olivie_rag), str(target_rag))
+                                    print(f"[Migration] Restored RAG index for: {olivie_name}")
+                        
                         # Mark as complete
                         onboarding_manager.mark_setup_completed()
                         
