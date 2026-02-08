@@ -42,7 +42,7 @@ if exist "app" (
 
 echo [INFO] Starting setup tool...
 echo.
-uv run python -X utf8 tools/setup_local_llm.py
+powershell -ExecutionPolicy ByPass -Command "$env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'; uv run python tools/setup_local_llm.py"
 
 echo.
 echo ---------------------------------------------------
