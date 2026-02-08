@@ -673,6 +673,15 @@ try:
                     fn=execute_migration,
                     inputs=[onboarding_migrate_path],
                     outputs=[onboarding_migrate_status, onboarding_group]
+                ).then(
+                    fn=None,
+                    # onboarding_overlayが非表示（=成功）の場合のみリロード
+                    js="""() => { 
+                        const overlay = document.getElementById('onboarding_overlay');
+                        if (overlay && overlay.style.display === 'none') {
+                            setTimeout(() => { window.location.reload(); }, 1000);
+                        }
+                    }"""
                 )
 
         room_list_on_startup = room_manager.get_room_list_for_ui()
