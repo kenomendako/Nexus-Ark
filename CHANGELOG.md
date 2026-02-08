@@ -19,7 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - 司会AI（Supervisor）機能の安定化（応答消失、多重ループ、モデル設定同期）を実装。
 - APIエラー発生時にチャット履歴が消失し、エラーが表示されないバグを修正。
 
-## [0.2.0] - 2026-02-08
+## [0.2.0 (Beta)] - 2026-02-08
 ### Added
 - docs/reports/2026-02-04_suppress_ui_announcements.md (完了レポート)
 
@@ -648,6 +648,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [0.1.0] - 2025-10-19
+## [0.1.0 (Beta)] - 2025-10-19
 
 *前回リリース*
