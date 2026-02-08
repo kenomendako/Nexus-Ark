@@ -2,6 +2,10 @@
 setlocal
 cd /d "%~dp0"
 
+REM Force UTF-8 encoding for console and Python
+chcp 65001 >nul
+set PYTHONUTF8=1
+
 echo ---------------------------------------------------
 echo  Nexus Ark - Local LLM Setup
 echo ---------------------------------------------------
