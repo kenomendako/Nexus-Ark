@@ -2484,6 +2484,13 @@ def _get_updated_scenery_and_image(room_name: str, api_key_name: str, force_text
         return scenery_text, scenery_image_path
 
     except Exception as e:
+        err_str = str(e).upper()
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            error_message = f"利用可能なすべてのAPIキーの制限に達しました（429エラー）。しばらく待つか、別のプロバイダを検討してください。"
+            print(f"--- [API制限] {error_message} ---")
+            gr.Warning(error_message)
+            return "（API制限により情景を取得できませんでした）", None
+        
         error_message = f"情景描写システムの処理中にエラーが発生しました。設定ファイル（world_settings.txtなど）が破損している可能性があります。"
         print(f"--- [司令塔エラー] {error_message} ---")
         traceback.print_exc()
