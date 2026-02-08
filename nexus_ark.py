@@ -473,29 +473,96 @@ try:
         with gr.Group(visible=False, elem_id="onboarding_overlay") as onboarding_group:
             with gr.Column(elem_id="onboarding_content"):
                 gr.Markdown("# Welcome to Nexus Ark")
-                gr.Markdown("Nexus Arkへようこそ！<br>Nexus Arkはあなただけのペルソナ（AI人格）と暮らし、育むための場です。<br>まずはAPIキーを設定しましょう。")
+                gr.Markdown("Nexus Arkへようこそ！<br>Nexus Arkはあなただけのペルソナ（AI人格）と暮らし、育むための場です。")
                 
-                gr.Markdown("<br>")  # 空行
-                gr.Markdown("### 🔑 APIキー設定")
-                gr.Markdown("Nexus Arkを動作させるには、[Google Gemini API](https://aistudio.google.com/apikey)のAPIキーが必要です。（無料プランあり）")
+                # --- Step 1: 選択画面 ---
+                with gr.Group(visible=True) as onboarding_step1:
+                    gr.Markdown("<br>")
+                    gr.Markdown("### セットアップ方法を選択してください")
+                    
+                    with gr.Row():
+                        onboarding_new_btn = gr.Button("🆕 新規インストール", variant="primary", size="lg", scale=1)
+                        onboarding_migrate_btn = gr.Button("📦 旧版からデータを引き継ぐ", variant="secondary", size="lg", scale=1)
+                    
+                    gr.Markdown("💡 旧バージョンのNexus Arkをお使いの方は「旧版からデータを引き継ぐ」を選択すると、設定やキャラクターデータを自動で移行できます。")
                 
-                onboarding_key_name = gr.Textbox(
-                    label="キーの名前（任意）",
-                    placeholder="例: my_free_key",
-                    value="default",
-                    info="複数のAPIキーを管理する際の識別名です。"
+                # --- Step 2a: 新規インストール（APIキー設定） ---
+                with gr.Group(visible=False) as onboarding_step2_new:
+                    gr.Markdown("<br>")
+                    gr.Markdown("### 🔑 APIキー設定")
+                    gr.Markdown("Nexus Arkを動作させるには、[Google Gemini API](https://aistudio.google.com/apikey)のAPIキーが必要です。（無料プランあり）")
+                    
+                    onboarding_key_name = gr.Textbox(
+                        label="キーの名前（任意）",
+                        placeholder="例: my_free_key",
+                        value="default",
+                        info="複数のAPIキーを管理する際の識別名です。"
+                    )
+                    
+                    onboarding_api_key = gr.Textbox(
+                        label="Gemini API Key",
+                        placeholder="AIzaSy...",
+                        type="password"
+                    )
+                    
+                    gr.Markdown("※ APIキーは端末内にのみ保存され、外部に送信されることはありません。")
+                    
+                    with gr.Row():
+                        onboarding_back_btn1 = gr.Button("← 戻る", variant="secondary", size="sm")
+                        onboarding_finish_btn = gr.Button("✨ 設定を保存して開始", variant="primary", size="lg")
+                    onboarding_error_msg = gr.Textbox(visible=False, label="エラー")
+                
+                # --- Step 2b: マイグレーション ---
+                with gr.Group(visible=False) as onboarding_step2_migrate:
+                    gr.Markdown("<br>")
+                    gr.Markdown("### 📦 旧バージョンからのデータ移行")
+                    gr.Markdown("旧Nexus Arkのフォルダパスを入力してください。設定ファイルとキャラクターデータが自動的に移行されます。")
+                    
+                    onboarding_migrate_path = gr.Textbox(
+                        label="旧Nexus Arkフォルダのパス",
+                        placeholder="例: C:\\Users\\username\\Documents\\NexusArk",
+                        info="config.json があるフォルダを指定してください"
+                    )
+                    
+                    gr.Markdown("""
+**移行されるデータ:**
+- `config.json` (APIキー設定)
+- `characters/` フォルダ (キャラクターデータ全て)
+- `alarms.json` (アラーム設定)
+- その他の設定ファイル
+""")
+                    
+                    with gr.Row():
+                        onboarding_back_btn2 = gr.Button("← 戻る", variant="secondary", size="sm")
+                        onboarding_migrate_exec_btn = gr.Button("📦 データを移行して開始", variant="primary", size="lg")
+                    onboarding_migrate_status = gr.Textbox(visible=False, label="ステータス")
+                
+                # --- イベントハンドラ ---
+                def show_new_install():
+                    return gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+                
+                def show_migrate():
+                    return gr.update(visible=False), gr.update(visible=False), gr.update(visible=True)
+                
+                def go_back():
+                    return gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
+                
+                onboarding_new_btn.click(
+                    fn=show_new_install,
+                    outputs=[onboarding_step1, onboarding_step2_new, onboarding_step2_migrate]
                 )
-                
-                onboarding_api_key = gr.Textbox(
-                    label="Gemini API Key",
-                    placeholder="AIzaSy...",
-                    type="password"
+                onboarding_migrate_btn.click(
+                    fn=show_migrate,
+                    outputs=[onboarding_step1, onboarding_step2_new, onboarding_step2_migrate]
                 )
-                
-                gr.Markdown("※ APIキーは端末内にのみ保存され、外部に送信されることはありません。")
-                
-                onboarding_finish_btn = gr.Button("✨ 設定を保存して開始", variant="primary", size="lg")
-                onboarding_error_msg = gr.Textbox(visible=False, label="エラー")
+                onboarding_back_btn1.click(
+                    fn=go_back,
+                    outputs=[onboarding_step1, onboarding_step2_new, onboarding_step2_migrate]
+                )
+                onboarding_back_btn2.click(
+                    fn=go_back,
+                    outputs=[onboarding_step1, onboarding_step2_new, onboarding_step2_migrate]
+                )
                 
                 def finish_onboarding(key_name, api_key):
                     if not api_key:
@@ -520,11 +587,54 @@ try:
                         return gr.update(visible=False), gr.update(visible=False) # Hide overlay
                     except Exception as e:
                         return gr.update(visible=True, value=f"保存に失敗しました: {e}"), gr.update(visible=True)
+                
+                def execute_migration(migrate_path):
+                    if not migrate_path or not migrate_path.strip():
+                        return gr.update(visible=True, value="パスを入力してください。"), gr.update(visible=True)
+                    
+                    migrate_path = migrate_path.strip()
+                    
+                    # パス存在チェック
+                    if not os.path.exists(migrate_path):
+                        return gr.update(visible=True, value=f"指定されたパスが見つかりません: {migrate_path}"), gr.update(visible=True)
+                    
+                    # config.json の存在チェック
+                    config_path = os.path.join(migrate_path, "config.json")
+                    if not os.path.exists(config_path):
+                        return gr.update(visible=True, value=f"config.json が見つかりません。正しいNexus Arkフォルダを指定してください。"), gr.update(visible=True)
+                    
+                    try:
+                        # マイグレーションツールをインポートして実行
+                        from tools.migrate_from_old import MigrationTool
+                        
+                        migration = MigrationTool(migrate_path)
+                        migration.migrate_all()
+                        
+                        # Mark as complete
+                        onboarding_manager.mark_setup_completed()
+                        
+                        # グローバル設定を再読み込み
+                        config_manager.load_config()
+                        
+                        return gr.update(visible=False), gr.update(visible=False)
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        return gr.update(visible=True, value=f"移行に失敗しました: {e}"), gr.update(visible=True)
 
                 onboarding_finish_btn.click(
                     fn=finish_onboarding,
                     inputs=[onboarding_key_name, onboarding_api_key],
                     outputs=[onboarding_error_msg, onboarding_group]
+                ).then(
+                    fn=None,
+                    js="() => { setTimeout(() => { window.location.reload(); }, 500); }"
+                )
+                
+                onboarding_migrate_exec_btn.click(
+                    fn=execute_migration,
+                    inputs=[onboarding_migrate_path],
+                    outputs=[onboarding_migrate_status, onboarding_group]
                 ).then(
                     fn=None,
                     js="() => { setTimeout(() => { window.location.reload(); }, 500); }"
