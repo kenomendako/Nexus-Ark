@@ -64,8 +64,6 @@ dependencies = [
     "hdbscan>=0.8.33",
     "sentence-transformers>=2.2.0",
     "python-chess",
-    # --- Local LLM Support ---
-    "llama-cpp-python",
     "playwright>=1.58.0",
     "pytest-playwright>=0.7.2",
 ]
@@ -73,6 +71,9 @@ dependencies = [
 [project.optional-dependencies]
 win = [
     "pywin32==311 ; sys_platform == 'win32'"
+]
+local = [
+    "llama-cpp-python"
 ]
 
 [tool.uv]
