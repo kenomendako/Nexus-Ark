@@ -652,9 +652,9 @@ try:
                         # グローバル設定を再読み込み
                         config_manager.load_config()
                         
-                        # 成功メッセージを表示
-                        gr.Info("✅ データ移行が完了しました！ブラウザを更新してください。")
-                        return gr.update(visible=False), gr.update(visible=False)
+                        # 成功メッセージを表示（__SUCCESS__マーカーでJSがリロードをトリガー）
+                        gr.Info("✅ データ移行が完了しました！自動でリロードします...")
+                        return gr.update(visible=True, value="__SUCCESS__ 移行完了！リロード中..."), gr.update(visible=True)
                     except Exception as e:
                         import traceback
                         error_details = traceback.format_exc()
@@ -676,12 +676,22 @@ try:
                     outputs=[onboarding_migrate_status, onboarding_group]
                 ).then(
                     fn=None,
-                    # onboarding_overlayが非表示（=成功）の場合のみリロード
+                    # ステータス欄のテキストに__SUCCESS__が含まれていたらリロード
                     js="""() => { 
-                        const overlay = document.getElementById('onboarding_overlay');
-                        if (overlay && overlay.style.display === 'none') {
-                            setTimeout(() => { window.location.reload(); }, 1000);
-                        }
+                        setTimeout(() => {
+                            const statusElements = document.querySelectorAll('#onboarding_overlay textarea, #onboarding_overlay input');
+                            for (const el of statusElements) {
+                                if (el.value && el.value.includes('__SUCCESS__')) {
+                                    window.location.reload();
+                                    return;
+                                }
+                            }
+                            // フォールバック: オーバーレイが隠れているかチェック
+                            const overlay = document.getElementById('onboarding_overlay');
+                            if (overlay && !overlay.offsetParent) {
+                                window.location.reload();
+                            }
+                        }, 500);
                     }"""
                 )
 
