@@ -88,9 +88,9 @@
 - [x] **Pinokio 実機テストと配布確認** <!-- id: pinokio-test -->
   - 状態: 🚫中止 (Too Heavy)
   - 理由: 初期セットアップが一般ユーザーには困難。代替案として「Zip配布 + PowerShellランチャー」を採用。
-- [ ] **[NEW] 軽量配布パッケージ (Zip + PowerShell Launcher) の作成** <!-- id: ps-launcher -->
-  - 詳細: Git/Pythonのみを前提とした、ダブルクリックで起動可能な軽量ランチャーを整備する。
-  - 優先度: 🔴最優先
+- [x] **軽量配布パッケージ (Zip + PowerShell Launcher) の作成** <!-- id: ps-launcher -->
+  - 詳細: Git/Pythonのみを前提とした、ダブルクリックで起動可能な軽量ランチャーを整備。
+  - 状況: 完了。Start.bat/Start.shでuv自動インストール・起動確認済み。
 
 - [x] **既存ユーザーのマイグレーションツールの実装** <!-- id: 813 -->
   - [x] 旧バージョン判定ロジックの実装
