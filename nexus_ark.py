@@ -47,6 +47,7 @@ logging.config.dictConfig(LOGGING_CONFIG)
 # この一行が、他のライブラリによる設定の上書きを完全に禁止する
 logging.config.dictConfig = lambda *args, **kwargs: None
 print("--- [Nexus Ark] アプリケーション固有のロギング設定を適用しました ---")
+print("--- [Nexus Ark] ライブラリを読み込み中... (初回は2〜3分かかる場合があります) ---")
 # --- [ここまでが新しいブロック] ---
 
 # --- [Gradio警告の抑制] ---
