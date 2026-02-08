@@ -5,13 +5,13 @@ const path = require('path')
 module.exports = {
   title: "Nexus Ark",
   description: "AI Persona Interaction System with localized memory and emotional intelligence.",
-  icon: "📂",
+  icon: "icon.png",
   menu: async (kernel) => {
     let installed = await kernel.exists(__dirname, "venv") || await kernel.exists(__dirname, ".venv")
     if (process.platform === 'win32') {
-        installed = installed || await kernel.exists(__dirname, "uv")
+      installed = installed || await kernel.exists(__dirname, "uv")
     }
-    
+
     if (installed) {
       return [{
         html: '<i class="fa-solid fa-rocket"></i> Start Application',
