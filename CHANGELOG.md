@@ -4,17 +4,13 @@ All notable changes to Nexus Ark will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-- **ワールドビルダーの利便性向上**: `plan_world_edit` 実行時に変更されたエリア・場所を UI アナウンス（🛠️）に明示する機能を追加。内部指示メッセージ（「この編集タスクは完了しました」等）の除去ロジックも実装。 ([Report](docs/reports/2026-02-09_World_Builder_Refinement.md))
-- **睡眠時記憶整理の更新日保存を修正** (2025-12-29): エピソード記憶・話題クラスタ・記憶圧縮の自動更新後にUIに表示される最終更新日が古いままになる問題を修正。ステータス読み込み時に`override_settings`を優先確認するよう改善。
-
-### Changed
-- **仕様書の大幅更新**: `docs/NEXUS_ARK_SPECIFICATION.md` を現行実装に合わせて大幅拡充（約250行→480行超）。約30の未記載機能を追記し、ユーザーフィードバック10項目を反映。 ([Report](docs/reports/2026-02-07_Specification_Update.md))
+## [0.2.2] - 2026-02-09
+- **お出かけログ構成の高度化と帰宅インポートUXの改善**: 「本日分のみ」のエクスポート、文字数閾値ベースの自動要約、インポート前のプレビュー・編集機能、システムマーカー（開始・終了通知）の表示制御を実装。Gemini URL取込時の取得不具合も修正。 ([Report](docs/reports/2026-02-09_Outing_Feature_Enhancements.md))
+- **重複防止・過去ログ除去ロジックの強化**: エクスポート時に付与される「## 直近の会話ログ」見出しとタグのセットを、正規表現により確実に除去。Gemini 貼り付け時の改行揺らぎにも対応。
 
 ### Fixed
-- **情景描写機能の API キーローテーション不具合を修正**: 無料キー枯渇時に自動で次の利用可能なキーに切り替わらず、429エラーが発生したまま停止する問題を解決。 `agent/scenery_manager.py` にリトライロジックを実装。 ([Report](docs/reports/2026-02-08_scenery_api_rotation_fix.md))
-- **オンボーディングフロー修正**: APIキー保存形式を辞書形式（`gemini_api_keys`）に修正。リロード時のモーダル再表示問題を解消。 ([Report](docs/reports/2026-02-07_onboarding-flow-fix.md))
-- 司会AI（Supervisor）機能の安定化（応答消失、多重ループ、モデル設定同期）を実装。
-- APIエラー発生時にチャット履歴が消失し、エラーが表示されないバグを修正。
+- **起動エラーの解消**: 変数名変更の漏れ（`NameError: gemini_import_button`）を修正。
+- **インポート時エラーの解消**: Gemini URL からの取得時に発生していた引数不整合（`AttributeError`）を修正。
 
 ## [0.2.1] - 2026-02-08
 - **お出かけ機能のログ重複防止と言語サニタイズ**: 過去ログおよびエピソード記憶のエクスポート時に AI のメタタグ（表情、感情、トレース）と思考ログを除去する機能を実装。さらに過去ログをタグで囲む（`<nexus_ark_past_logs>`）ことで、帰宅（インポート）時の自動重複除去を実現。 (2026-02-09)
