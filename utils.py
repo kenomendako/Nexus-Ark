@@ -678,7 +678,16 @@ def save_scenery_cache(room_name: str, cache_key: str, location_name: str, scene
         print(f"!! エラー: 情景キャッシュの保存に失敗しました: {e}")
 
 def format_tool_result_for_ui(tool_name: str, tool_result: str) -> Optional[str]:
-    if not tool_name or not tool_result: return None
+    if not tool_name: return None # tool_nameがない場合は表示しない
+    if not tool_result: return f"🛠️ ツール「{tool_name}」を実行しました。"
+    
+    # AIへの内部的な指示（システムプロンプト的なメッセージ）を除去
+    internal_msg_patterns = [
+        r'\*\*このファイル編集タスクは完了しました。.*',
+        r'\*\*このタスクの実行を宣言するような前置きは不要です。.*'
+    ]
+    for pattern in internal_msg_patterns:
+        tool_result = re.sub(pattern, '', tool_result, flags=re.DOTALL).strip()
     
     # 開発者ツールには特別なエラー検知ロジックを適用
     # ファイル内容に "Exception:" や "Error:" などが含まれることが頻繁にあるため、
