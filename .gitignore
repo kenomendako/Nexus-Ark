@@ -32,3 +32,6 @@ config.json
 alarms.json
 redaction_rules.json
 .gemini_key_states.json
+
+# Internal Data (Do not commit)
+.gemini/

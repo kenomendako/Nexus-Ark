@@ -1,9 +1,0 @@
-[
-    {
-        "id": "organize-notes",
-        "title": "研究ノート・創作ノートの整理",
-        "description": "ルームフォルダに直置きされているノート類（research_notes.md, creative_notes.md 等）を専用フォルダに移動し、肥大化対策として分割・アーカイブの仕組みを導入する。あわせて、各ツールからの参照パスを修正する。",
-        "priority": "🔴高",
-        "status": "[/]"
-    }
-]
