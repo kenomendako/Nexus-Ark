@@ -10,7 +10,12 @@
 - [x] **ワールドビルダーの利便性向上とUIクリーンアップ** <!-- id: new --> ([Report](../reports/2026-02-09_World_Builder_Refinement.md))
 - [x] **[BUG] Windows配布版のRAG初期化不全とメッセージ重複の修正** <!-- id: new --> ([Report](../reports/2026-02-08_Windows_RAG_Fix.md))
   - 詳細: アプリ起動時にRAGManagerが初期化されずマイグレーションが走らない問題と、ログ削除時の重複バグを修正。
+  - 詳細: アプリ起動時にRAGManagerが初期化されずマイグレーションが走らない問題と、ログ削除時の重複バグを修正。
   - 優先度: 🔴最高 (Critical)
+
+- [x] **README刷新と配布構成の最終化** <!-- id: new --> ([Report](../reports/2026-02-09_README_Refinement_Completion.md))
+  - 詳細: GitHub/配布用READMEを統合し、トーンを統一。配布パッケージのルートにドキュメントを配置し、構成を簡素化。
+  - 優先度: 🔴高
 
 - [x] **[BUG] 「お出かけ」機能でエピソード記憶が読み込まれない** <!-- id: new --> ([Report](../reports/2026-02-06_Outing_Memory_Fix.md))
   - 詳細: エピソード記憶の月次フォルダ分割に対応しておらず、データが読み込まれない問題を修正。

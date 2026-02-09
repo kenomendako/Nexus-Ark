@@ -208,6 +208,19 @@ def main():
         else:
             print(f"⚠️  Warning: Source file not found: {src}")
 
+    # --- NEW: Copy Documentation to Root ---
+    print(f"📄 Copying Documentation to Root...")
+    # README
+    if os.path.exists("README_DIST.md"):
+        shutil.copy2("README_DIST.md", os.path.join(DIST_DIR, "README.md"))
+        print(f"   - Copied README_DIST.md -> dist/README.md")
+    
+    # Specification
+    if os.path.exists("docs/NEXUS_ARK_SPECIFICATION.md"):
+        shutil.copy2("docs/NEXUS_ARK_SPECIFICATION.md", os.path.join(DIST_DIR, "NEXUS_ARK_SPECIFICATION.md"))
+        print(f"   - Copied Specification -> dist/NEXUS_ARK_SPECIFICATION.md")
+    # ---------------------------------------
+
     # 5. Inject Knowledge to Sample Persona
     spec_src = "docs/NEXUS_ARK_SPECIFICATION.md"
     sample_knowledge_dest = os.path.join(APP_DIR, "assets/sample_persona/Olivie/knowledge/NEXUS_ARK_SPECIFICATION.md")
