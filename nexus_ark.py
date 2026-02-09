@@ -3033,8 +3033,8 @@ try:
                         # エピソード記憶
                         with gr.Accordion("📖 エピソード記憶", open=False):
                             outing_episode_days_slider = gr.Slider(
-                                minimum=0, maximum=30, value=7, step=1,
-                                label="過去N日分", info="0で無効"
+                                minimum=0, maximum=90, value=7, step=1,
+                                label="過去N日分", info="0で無効 (最大90日)"
                             )
                             outing_episodic_text = gr.Textbox(
                                 label="エピソード記憶", lines=8, max_lines=20, interactive=True,
@@ -3049,10 +3049,27 @@ try:
                         # 会話ログ
                         with gr.Accordion("💬 会話ログ", open=False):
                             with gr.Row():
-                                outing_log_count_slider = gr.Slider(
-                                    minimum=5, maximum=50, value=20, step=5,
-                                    label="最新N件", scale=2
+                                outing_log_mode = gr.Radio(
+                                    choices=["最新N件", "本日分（高度）"],
+                                    value="最新N件",
+                                    label="構成モード",
+                                    scale=1
                                 )
+                                outing_log_count_slider = gr.Slider(
+                                    minimum=5, maximum=100, value=20, step=5,
+                                    label="取得件数", scale=1, visible=True
+                                )
+                                with gr.Column(visible=False) as outing_log_today_options:
+                                    outing_auto_summary_checkbox = gr.Checkbox(
+                                        label="自動要約を有効化",
+                                        value=False
+                                    )
+                                    outing_log_summary_threshold = gr.Slider(
+                                        minimum=5000, maximum=100000, value=12000, step=1000,
+                                        label="要約閾値",
+                                        info="この文字数を超えると前半を要約します"
+                                    )
+                            with gr.Row():
                                 outing_logs_include_timestamp = gr.Checkbox(label="タイムスタンプを含む", value=False, scale=1)
                                 outing_logs_include_model = gr.Checkbox(label="モデル名を含む", value=False, scale=1)
                                 outing_logs_wrap_tags = gr.Checkbox(label="過去ログをタグで囲む（帰宅時の重複除去用）", value=True, scale=1)
@@ -3085,14 +3102,31 @@ try:
                                 outing_import_source = gr.Textbox(label="お出かけ先の名称", value="Antigravity", placeholder="例: Antigravity, 外出先")
                                 outing_import_user_header = gr.Textbox(label="ユーザーの発言ヘッダー", value="[user]", placeholder="例: [user]")
                                 outing_import_agent_header = gr.Textbox(label="AIの発言ヘッダー", value="[ルシアン]", placeholder="例: [ルシアン]")
-                            outing_import_button = gr.Button("ログを統合して帰宅する (ファイル)", variant="primary")
+                            
+                            with gr.Row():
+                                outing_import_include_marker = gr.Checkbox(label="システムマーカー（開始・終了アナウンス）を含める", value=True)
+                            
+                            with gr.Row():
+                                outing_import_load_button = gr.Button("1. ファイルを読み込んでプレビュー", variant="secondary")
+                            
+                            outing_import_preview_text = gr.Textbox(
+                                label="インポート内容のプレビュー（ここで編集・調整できます）",
+                                lines=10, max_lines=25,
+                                placeholder="ファイルを読み込むとここに内容が表示されます",
+                                interactive=True,
+                                visible=False
+                            )
+                            
+                            outing_import_execute_button = gr.Button("2. ログを履歴に統合して帰宅する", variant="primary", visible=False)
                         
                         # URL取り込み (Gemini)
                         with gr.Group():
                             gr.Markdown("### ♊ Gemini共有URLから取り込み")
                             gr.Markdown("共有リンクから会話内容を直接読み込みます。")
                             gemini_import_url = gr.Textbox(label="共有URL", placeholder="https://gemini.google.com/share/...", lines=1)
-                            gemini_import_button = gr.Button("ログを統合して帰宅する (URL)", variant="primary")
+                            with gr.Row():
+                                gemini_import_include_marker = gr.Checkbox(label="システムマーカーを含める", value=True)
+                            gemini_import_load_button = gr.Button("1. URLの内容を読み込んでプレビュー", variant="secondary")
                             gemini_import_status = gr.Markdown("")
 
                         outing_import_status = gr.Markdown("ステータス: 待機中")
@@ -5079,21 +5113,6 @@ try:
             ]
         )
 
-        # --- Gemini Importer Event Handlers ---
-        gemini_import_button.click(
-            fn=ui_handlers.handle_gemini_import_button_click,
-            inputs=[
-                gemini_import_url,
-                current_room_name,
-                api_history_limit_state,
-                room_add_timestamp_checkbox,
-                room_display_thoughts_checkbox,
-                screenshot_mode_checkbox,
-                redaction_rules_state
-            ],
-            outputs=[chatbot_display, current_log_map_state, gemini_import_status, gemini_import_url]
-        )
-
         # --- Theme Management Event Handlers ---
         theme_tab.select(
             fn=ui_handlers.handle_theme_tab_load,
@@ -5528,7 +5547,9 @@ try:
         outing_load_button.click(
             fn=ui_handlers.handle_outing_load_all_sections,
             inputs=[
-                current_room_name, outing_episode_days_slider, outing_log_count_slider,
+                current_room_name, outing_episode_days_slider, 
+                outing_log_mode, outing_log_count_slider,
+                outing_auto_summary_checkbox, outing_log_summary_threshold,
                 outing_logs_include_timestamp, outing_logs_include_model
             ],
             outputs=[
@@ -5590,17 +5611,37 @@ try:
             outputs=None
         )
 
-        # 帰宅（インポート）
-        outing_import_button.click(
-            fn=ui_handlers.handle_import_return_log,
+        # 帰宅（インポート）- ステップ1: 読み込みとプレビュー
+        outing_import_load_button.click(
+            fn=ui_handlers.handle_outing_import_preview,
             inputs=[
-                outing_import_file, current_room_name,
-                outing_import_source,
+                outing_import_file, outing_import_source,
                 outing_import_user_header, outing_import_agent_header,
+                outing_import_include_marker
+            ],
+            outputs=[outing_import_preview_text, outing_import_execute_button, outing_import_status]
+        )
+
+        # 帰宅（インポート）- ステップ2: 最終統合
+        outing_import_execute_button.click(
+            fn=ui_handlers.handle_outing_import_finalize,
+            inputs=[
+                outing_import_preview_text, current_room_name,
+                outing_import_source, outing_import_include_marker,
                 api_history_limit_state, room_add_timestamp_checkbox,
                 room_display_thoughts_checkbox, screenshot_mode_checkbox, redaction_rules_state
             ],
-            outputs=[chatbot_display, current_log_map_state, outing_import_status, outing_import_file]
+            outputs=[chatbot_display, current_log_map_state, outing_import_status, outing_import_file, outing_import_preview_text, outing_import_execute_button]
+        )
+        
+        # Gemini URLインポート - ステップ1: 読み込みとプレビュー
+        gemini_import_load_button.click(
+            fn=ui_handlers.handle_gemini_import_preview,
+            inputs=[
+                gemini_import_url, current_room_name,
+                gemini_import_include_marker
+            ],
+            outputs=[outing_import_preview_text, outing_import_execute_button, gemini_import_status]
         )
         
         # 合計文字数のリアルタイム更新（テキスト・チェックボックス変更時）
@@ -5634,17 +5675,40 @@ try:
             inputs=[current_room_name, outing_episode_days_slider],
             outputs=[outing_episodic_text, outing_episodic_chars]
         )
-        outing_log_count_slider.change(
-            fn=ui_handlers.handle_outing_reload_logs,
-            inputs=[current_room_name, outing_log_count_slider, outing_logs_include_timestamp, outing_logs_include_model],
-            outputs=[outing_logs_text, outing_logs_chars]
+        # 会話ログの構成モードによる表示切り替え
+        def update_outing_log_visibility(mode):
+            if mode == "最新N件":
+                return gr.update(visible=True), gr.update(visible=False)
+            else:
+                return gr.update(visible=False), gr.update(visible=True)
+
+        outing_log_mode.change(
+            fn=update_outing_log_visibility,
+            inputs=[outing_log_mode],
+            outputs=[outing_log_count_slider, outing_log_today_options]
         )
+
+        # 構成モードや閾値の変更時に再読み込み
+        for comp in [outing_log_mode, outing_log_count_slider, outing_auto_summary_checkbox, outing_log_summary_threshold]:
+            comp.change(
+                fn=ui_handlers.handle_outing_reload_logs,
+                inputs=[
+                    current_room_name, outing_log_mode, outing_log_count_slider,
+                    outing_auto_summary_checkbox, outing_log_summary_threshold,
+                    outing_logs_include_timestamp, outing_logs_include_model
+                ],
+                outputs=[outing_logs_text, outing_logs_chars]
+            )
         
         # ログ表示オプション変更時に再読み込み
         for opt in [outing_logs_include_timestamp, outing_logs_include_model]:
             opt.change(
                 fn=ui_handlers.handle_outing_reload_logs,
-                inputs=[current_room_name, outing_log_count_slider, outing_logs_include_timestamp, outing_logs_include_model],
+                inputs=[
+                    current_room_name, outing_log_mode, outing_log_count_slider,
+                    outing_auto_summary_checkbox, outing_log_summary_threshold,
+                    outing_logs_include_timestamp, outing_logs_include_model
+                ],
                 outputs=[outing_logs_text, outing_logs_chars]
             )
         
@@ -5674,7 +5738,11 @@ try:
         )
         outing_logs_reload.click(
             fn=ui_handlers.handle_outing_reload_logs,
-            inputs=[current_room_name, outing_log_count_slider, outing_logs_include_timestamp, outing_logs_include_model],
+            inputs=[
+                current_room_name, outing_log_mode, outing_log_count_slider,
+                outing_auto_summary_checkbox, outing_log_summary_threshold,
+                outing_logs_include_timestamp, outing_logs_include_model
+            ],
             outputs=[outing_logs_text, outing_logs_chars]
         )
 

@@ -10414,6 +10414,138 @@ def _get_recent_log_entries(log_path: str, count: int, include_timestamp=True, i
         return []
 
 
+
+def _get_log_entries_since_date(log_path: str, since_date_str: str, include_timestamp=True, include_model=True) -> list:
+    """
+    指定された日付以降のログエントリを抽出する。
+    since_date_str: YYYY-MM-DD
+    """
+    if not os.path.exists(log_path):
+        return []
+        
+    try:
+        with open(log_path, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        import re
+        entries = []
+        lines = content.split('\n')
+        current_header = None
+        current_content = []
+        current_date = "0000-00-00"
+        
+        # ヘッダーパターン: ## ROLE:NAME または [NAME]
+        header_pattern = r'^(?:## [^:]+:|\[)([^\]\n]+)(?:\])?'
+        # タイムスタンプ・モデル名行のパターン: YYYY-MM-DD (Day) HH:MM:SS | Model
+        ts_model_pattern = r'^(\d{4}-\d{2}-\d{2}) \(.*\d{2}:\d{2}:\d{2}(?: \| .*)?$'
+        
+        target_entries = []
+        
+        def save_entry(h, contents, date):
+            if h is not None and date >= since_date_str:
+                raw_text = '\n'.join(contents).strip()
+                # 思考署名やメタタグのみを除去
+                cleaned_text = utils.clean_persona_text(raw_text)
+                target_entries.append((h, cleaned_text))
+
+        for line in lines:
+            # ヘッダーチェック
+            header_match = re.match(header_pattern, line)
+            if header_match:
+                save_entry(current_header, current_content, current_date)
+                current_header = header_match.group(1).strip()
+                current_content = []
+            else:
+                # コンテンツ行の処理（日付更新の可能性あり）
+                ts_match = re.match(ts_model_pattern, line)
+                if ts_match:
+                    current_date = ts_match.group(1)
+                    # フィルタリング
+                    filtered_line = line
+                    if not include_timestamp and not include_model:
+                        continue
+                    parts = line.split('|')
+                    if len(parts) == 2:
+                        ts = parts[0].strip()
+                        model = parts[1].strip()
+                        if not include_timestamp and include_model:
+                            filtered_line = f"| {model}"
+                        elif include_timestamp and not include_model:
+                            filtered_line = ts
+                    elif not include_timestamp:
+                        if re.match(r'^\d{4}-\d{2}-\d{2} \(.*\d{2}:\d{2}:\d{2}$', line.strip()):
+                            continue
+                    current_content.append(filtered_line)
+                else:
+                    current_content.append(line)
+                    
+        # 最後の処理
+        save_entry(current_header, current_content, current_date)
+        return target_entries
+        
+    except Exception as e:
+        print(f"Error in _get_log_entries_since_date: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
+def _get_today_log_entries_with_summary(
+    room_name: str, 
+    log_path: str,
+    auto_summary: bool,
+    summary_threshold: int,
+    include_timestamp: bool,
+    include_model: bool
+) -> str:
+    """
+    本日分のログを抽出し、必要に応じて自動要約を適用して返す。
+    """
+    import gemini_api
+    import summary_manager
+    
+    # 1. 本日分の開始日を特定
+    today_cutoff = gemini_api._get_effective_today_cutoff(room_name)
+    
+    # 2. その日付以降の全エントリを取得
+    entries = _get_log_entries_since_date(log_path, today_cutoff, include_timestamp, include_model)
+    
+    if not entries:
+        return ""
+        
+    # 3. テキスト化
+    full_text = "\n\n".join([f"[{header}]\n{content}" for header, content in entries])
+    
+    # 4. 自動要約チェック
+    if auto_summary and len(full_text) > summary_threshold:
+        # 直近の会話を保護
+        keep_count = constants.AUTO_SUMMARY_KEEP_RECENT_TURNS * 2
+        if len(entries) > keep_count:
+            older_entries = entries[:-keep_count]
+            recent_entries = entries[-keep_count:]
+            
+            # 要約用メッセージリスト作成
+            older_msgs = []
+            for h, c in older_entries:
+                role = "USER" if h.lower() == "user" else "AGENT"
+                older_msgs.append({"role": role, "responder": h, "content": c})
+                
+            # APIキー取得
+            api_key_name = config_manager.initial_api_key_name_global
+            api_key = config_manager.GEMINI_API_KEYS.get(api_key_name)
+            
+            if api_key:
+                gr.Info("お出かけ用ログを自動要約中...")
+                # 既存の要約があれば結合されるロジックにするか？
+                # お出かけ用は単発なので None で渡す
+                summary = summary_manager.generate_summary(older_msgs, None, room_name, api_key)
+                if summary:
+                    recent_text = "\n\n".join([f"[{header}]\n{content}" for header, content in recent_entries])
+                    return f"【本日のこれまでの会話の要約】\n{summary}\n\n---\n（以下は、要約以降および直近の会話です）\n\n{recent_text}"
+    
+    return full_text
+
+
 def _get_episodic_memory_entries(room_name: str, days: int) -> str:
     """
     エピソード記憶から過去N日分のエントリを取得する。
@@ -10838,7 +10970,16 @@ def handle_export_outing_from_preview(preview_text: str, room_name: str):
 
 # ===== 専用タブ用ハンドラ =====
 
-def handle_outing_load_all_sections(room_name: str, episode_days: int, log_count: int, include_timestamp=True, include_model=True):
+def handle_outing_load_all_sections(
+    room_name: str, 
+    episode_days: int, 
+    log_mode: str,
+    log_count: int, 
+    auto_summary: bool,
+    summary_threshold: int,
+    include_timestamp=True, 
+    include_model=True
+):
     """
     お出かけ専用タブ用：全セクションのデータを読み込む
     Returns: (system_prompt, sys_chars, permanent, perm_chars, diary, diary_chars,
@@ -10876,8 +11017,13 @@ def handle_outing_load_all_sections(room_name: str, episode_days: int, log_count
         # 会話ログ
         logs = ""
         if log_path and os.path.exists(log_path):
-            log_entries = _get_recent_log_entries(log_path, log_count, include_timestamp, include_model)
-            logs = "\n\n".join([f"[{header}]\n{content}" for header, content in log_entries])
+            if log_mode == "本日分（高度）":
+                logs = _get_today_log_entries_with_summary(
+                    room_name, log_path, auto_summary, summary_threshold, include_timestamp, include_model
+                )
+            else:
+                log_entries = _get_recent_log_entries(log_path, log_count, include_timestamp, include_model)
+                logs = "\n\n".join([f"[{header}]\n{content}" for header, content in log_entries])
         
         # 文字数計算
         sys_chars = len(system_prompt)
@@ -10967,13 +11113,21 @@ def handle_outing_compress_section(text: str, section_name: str, room_name: str)
 def _strip_past_logs(text: str) -> str:
     """
     <nexus_ark_past_logs>...</nexus_ark_past_logs> タグで囲まれた部分を除去する。
+    「## 直近の会話ログ」見出しがその直前にある場合は、それも含めて除去する。
     """
     if not text:
         return ""
-    # XMLタグ形式および類似の形式を想定した正規表現（非最短一致）
-    # 改行を含めて除去するため DOTALL フラグを使用
-    pattern = re.compile(r'<nexus_ark_past_logs>.*?</nexus_ark_past_logs>', re.DOTALL)
-    return pattern.sub('', text).strip()
+    
+    # 1. 見出し + タグのパターン（改行や空白の揺らぎを許容）
+    # ※ re.DOTALL により改行を含めてマッチング。見出しとタグの間の任意の空白・改行に対応。
+    header_with_tag = re.compile(r'#+\s*直近の会話ログ\s*[\r\n\s]*<nexus_ark_past_logs>.*?</nexus_ark_past_logs>', re.DOTALL)
+    text = header_with_tag.sub('', text)
+    
+    # 2. 見出しがない単独タグのパターン
+    tag_only = re.compile(r'<nexus_ark_past_logs>.*?</nexus_ark_past_logs>', re.DOTALL)
+    text = tag_only.sub('', text)
+    
+    return text.strip()
 
 def handle_outing_export_sections(
     room_name: str,
@@ -11079,9 +11233,17 @@ def handle_outing_reload_episodic(room_name: str, episode_days: int):
     return episodic, f"文字数: **{char_count:,}**"
 
 
-def handle_outing_reload_logs(room_name: str, log_count: int, include_timestamp=True, include_model=True):
+def handle_outing_reload_logs(
+    room_name: str, 
+    log_mode: str,
+    log_count: int, 
+    auto_summary: bool,
+    summary_threshold: int,
+    include_timestamp=True, 
+    include_model=True
+):
     """
-    スライダー変更時に会話ログを再読み込み
+    構成変更時に会話ログを再読み込み
     """
     if not room_name:
         return "", "文字数: 0"
@@ -11089,8 +11251,13 @@ def handle_outing_reload_logs(room_name: str, log_count: int, include_timestamp=
     log_path, _, _, _, _, _ = room_manager.get_room_files_paths(room_name)
     logs = ""
     if log_path and os.path.exists(log_path):
-        log_entries = _get_recent_log_entries(log_path, log_count, include_timestamp, include_model)
-        logs = "\n\n".join([f"[{header}]\n{content}" for header, content in log_entries])
+        if log_mode == "本日分（高度）":
+            logs = _get_today_log_entries_with_summary(
+                room_name, log_path, auto_summary, summary_threshold, include_timestamp, include_model
+            )
+        else:
+            log_entries = _get_recent_log_entries(log_path, log_count, include_timestamp, include_model)
+            logs = "\n\n".join([f"[{header}]\n{content}" for header, content in log_entries])
     
     char_count = len(logs)
     return logs, f"文字数: **{char_count:,}**"
@@ -11133,20 +11300,13 @@ def handle_outing_reload_core_memory(room_name: str):
     return permanent, f"文字数: **{perm_chars:,}**", diary, f"文字数: **{diary_chars:,}**"
     
 
-def handle_import_return_log(
-    file_obj, room_name, source_name, user_header, agent_header,
-    api_history_limit_state, add_timestamp, display_thoughts,
-    screenshot_mode, redaction_rules
-):
+def handle_outing_import_preview(file_obj, source_name, user_header, agent_header, include_marker):
     """
-    お出かけ先からの会話ログを現在のルームにインポート（追記）する
+    帰宅インポート ステップ1: ファイルを読み込み、パースして内部保存形式(## ROLE)でプレビューを生成する
     """
     if file_obj is None:
-        return gr.update(), gr.update(), "ステータス: ⚠️ ファイルが選択されていません", gr.update()
+        return gr.update(), gr.update(visible=False), "ステータス: ⚠️ ファイルが選択されていません"
     
-    if not room_name:
-        return gr.update(), gr.update(), "ステータス: ⚠️ ルームが選択されていません", gr.update()
-
     if not source_name:
         source_name = "外出先"
 
@@ -11156,11 +11316,10 @@ def handle_import_return_log(
             with open(file_obj.name, "r", encoding="utf-8") as f:
                 content = f.read()
         except UnicodeDecodeError:
-            # 失敗した場合は cp932 (Windows-31J) を試す
             with open(file_obj.name, "r", encoding="cp932") as f:
                 content = f.read()
 
-        # 過去ログタグを除去
+        # 過去ログタグを除去（重複防止ロジック）
         content = _strip_past_logs(content)
 
         # 正規表現で分割
@@ -11170,123 +11329,148 @@ def handle_import_return_log(
         
         parts = pattern.split(content)
         if len(parts) <= 1:
-            return gr.update(), gr.update(), "ステータス: ⚠️ 指定されたヘッダーが見つかりませんでした", gr.update()
+            return gr.update(), gr.update(visible=False), "ステータス: ⚠️ ヘッダーが見つかりませんでした。設定を確認してください。"
 
-        log_entries = []
+        preview_entries = []
         for i in range(1, len(parts), 2):
             header = parts[i]
             text = parts[i+1].strip()
             if not text: continue
-
+            
+            # 保存用形式に変換してプレビュー表示
             if header == user_header:
-                log_entries.append(f"## USER:user\n{text}")
-            elif header == agent_header:
-                log_entries.append(f"## AGENT:{room_name}\n{text}")
+                internal_header = "## USER:user"
+            else:
+                internal_header = f"## AGENT:外出先({source_name})"
+            
+            preview_entries.append(f"{internal_header}\n{text}")
 
-        if not log_entries:
-            return gr.update(), gr.update(), "ステータス: ⚠️ インポート可能なメッセージが分割後に見つかりませんでした", gr.update()
+        if not preview_entries:
+            return gr.update(), gr.update(visible=False), "ステータス: ⚠️ メッセージが見つかりませんでした"
 
-        # システムマーカーを追加
-        final_entries = []
-        final_entries.append(f"## SYSTEM:外出\n\n--- {source_name} での会話開始 ---")
-        final_entries.extend(log_entries)
-        final_entries.append(f"## SYSTEM:外出\n\n--- {source_name} での会話終了 ---")
-
-        # log.txt に追記
-        log_path, _, _, _, _, _ = room_manager.get_room_files_paths(room_name)
+        preview_text = "\n\n".join(preview_entries)
         
-        # バックアップ作成
+        # マーカーありの場合はプレビューの前後に追加
+        if include_marker:
+            marker_start = f"## SYSTEM:外出\n\n--- {source_name} での会話開始 ---"
+            marker_end = f"## SYSTEM:外出\n\n--- {source_name} での会話終了 ---"
+            preview_text = f"{marker_start}\n\n{preview_text}\n\n{marker_end}"
+
+        return gr.update(value=preview_text, visible=True), gr.update(visible=True), "ステータス: 📝 内容を確認・編集してください"
+
+    except Exception as e:
+        print(f"Import Preview Error: {e}")
+        return gr.update(), gr.update(visible=False), f"ステータス: ❌ エラー: {str(e)}"
+
+
+def handle_outing_import_finalize(
+    preview_text, room_name, source_name, include_marker,
+    api_history_limit_state, add_timestamp, display_thoughts,
+    screenshot_mode, redaction_rules
+):
+    """
+    帰宅インポート ステップ2: プレビュー内容を最終調整してルームログにマージする
+    """
+    if not preview_text or not preview_text.strip():
+        return gr.update(), gr.update(), "ステータス: ⚠️ インポートする内容がありません", gr.update(), gr.update(), gr.update()
+    
+    if not room_name:
+        return gr.update(), gr.update(), "ステータス: ⚠️ ルームが選択されていません", gr.update(), gr.update(), gr.update()
+
+    try:
+        import re
+        final_text = preview_text.strip()
+        
+        # 正規表現で「## AGENT:外出先(...)」形式を現在のルーム名に一括置換
+        # これにより、ユーザーがプレビュー上で編集した内容を尊重しつつ、
+        # エージェント名だけを正しくマッピングする。
+        final_text = re.sub(r'## AGENT:外出先\([^)]*\)', f"## AGENT:{room_name}", final_text)
+        
+        # ※ include_marker はプレビュー生成時に処理済みという方針のため、ここでは処理しない
+        # (もしプレビュー時に追加していない場合は、ここで行う)
+
+        log_path, _, _, _, _, _ = room_manager.get_room_files_paths(room_name)
         room_manager.create_backup(room_name, 'log')
         
         with open(log_path, "a", encoding="utf-8") as f:
-            # 既存のログの末尾に改行がなければ追加
             if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
                 f.write("\n\n")
-            
-            # 分かりやすいようにHTMLコメントで区切りを入れる
             import_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"<!-- Return Home Import: {import_timestamp} from {source_name} -->\n\n")
-            
-            f.write("\n\n".join(final_entries))
+            f.write(final_text)
             f.write("\n\n")
 
-        gr.Info(f"{len(log_entries)}件のメッセージをインポートしました。おかえりなさい！")
+        gr.Info(f"ログをインポートしました。おかえりなさい！")
         
-        # チャットログをリロードして最新状態にする
         chatbot_display, current_log_map_state = reload_chat_log(
             room_name, api_history_limit_state, add_timestamp,
             display_thoughts, screenshot_mode, redaction_rules
         )
         
-        return chatbot_display, current_log_map_state, f"ステータス: ✅ {len(log_entries)}件インポート完了", None
+        return (
+            chatbot_display, current_log_map_state, 
+            "ステータス: ✅ インポート完了", None, 
+            gr.update(visible=False), gr.update(visible=False)
+        )
 
     except Exception as e:
-        print(f"Return Home Import Error: {e}")
-        traceback.print_exc()
-        return gr.update(), gr.update(), f"ステータス: ❌ エラー: {str(e)}", gr.update()
+        print(f"Finalize Import Error: {e}")
+        return gr.update(), gr.update(), f"ステータス: ❌ エラー: {str(e)}", gr.update(), gr.update(), gr.update()
 
 
-
-def handle_gemini_import_button_click(
-    url: str,
-    room_name: str,
-    api_history_limit,
-    add_timestamp,
-    display_thoughts,
-    screenshot_mode,
-    redaction_rules
-):
+def handle_gemini_import_preview(url: str, room_name: str, include_marker: bool):
+    """
+    帰宅インポート（Gemini）ステップ1: URLから内容を読み込み、プレビューを生成する
+    """
     if not url or not url.strip():
-        return gr.update(), gr.update(), "ステータス: ⚠️ URLを入力してください", gr.update()
+        return gr.update(), gr.update(visible=False), "ステータス: ⚠️ URLを入力してください"
     
     if not room_name:
-        return gr.update(), gr.update(), "ステータス: ⚠️ ルームが選択されていません", gr.update()
-        
-    print(f"Gemini URL Import: {url} for room {room_name}")
-    
+        return gr.update(), gr.update(visible=False), "ステータス: ⚠️ ルームが選択されていません"
+
     try:
+        from tools import gemini_importer
+        gr.Info("Geminiの共有URLから内容を取得しています...")
         success, msg, messages = gemini_importer.import_gemini_log_from_url(url.strip(), room_name)
         
         if not success:
-            return gr.update(), gr.update(), f"ステータス: ❌ {msg}", gr.update()
+            return gr.update(), gr.update(visible=False), f"ステータス: ❌ {msg}"
             
-        # --- Log Appending Logic ---
-        final_entries = []
-        final_entries.append("## SYSTEM:外出\n\n--- Gemini (お出かけ) での会話開始 ---")
-        
+        preview_entries = []
         for m in messages:
-            role = m["role"]
-            content = m["content"]
-            header = "## USER:user" if role == "user" else f"## AGENT:{room_name}"
-            # 内容の文字列化と空白除去
-            content_str = str(content).strip()
-            final_entries.append(f"{header}\n\n{content_str}")
+            role = m.get("role", "user")
+            content = str(m.get("content", "")).strip()
             
-        final_entries.append("## SYSTEM:外出\n\n--- Gemini (お出かけ) での会話終了 ---")
-        
-        # ログ保存
-        log_path, _, _, _, _, _ = room_manager.get_room_files_paths(room_name)
-        room_manager.create_backup(room_name, 'log')
-        
-        with open(log_path, "a", encoding="utf-8") as f:
-            if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
-                f.write("\n\n")
-            import_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"<!-- Gemini URL Import: {import_timestamp} from {url} -->\n\n")
-            f.write("\n\n".join(final_entries))
-            f.write("\n\n")
+            # 各メッセージ内容から過去ログタグ（と見出し）を除去
+            content = _strip_past_logs(content)
+            if not content: continue
             
-        gr.Info(f"{len(messages)}件のメッセージをインポートしました。おかえりなさい！")
+            # プレビューでは「外出先」としてのヘッダーを付けておく
+            if role == "user":
+                header = "## USER:user"
+            else:
+                header = f"## AGENT:外出先(Gemini)"
+            
+            preview_entries.append(f"{header}\n{content}")
+            
+        preview_text = "\n\n".join(preview_entries)
         
-        # 画面更新
-        chatbot, mapping = reload_chat_log(room_name, api_history_limit, add_timestamp, display_thoughts, screenshot_mode, redaction_rules)
-        
-        return chatbot, mapping, f"ステータス: ✅ {len(messages)}件インポート完了", ""
+        # マーカーありの場合はプレビューの前後に追加
+        if include_marker:
+            marker_start = "## SYSTEM:外出\n\n--- Gemini 共有URLからの取り込み開始 ---"
+            marker_end = "## SYSTEM:外出\n\n--- Gemini 共有URLからの取り込み終了 ---"
+            preview_text = f"{marker_start}\n\n{preview_text}\n\n{marker_end}"
+
+        return (
+            gr.update(value=preview_text, visible=True), 
+            gr.update(visible=True), 
+            f"ステータス: ✅ {len(messages)}件読み込み完了。確認して統合を実行してください。"
+        )
 
     except Exception as e:
-        print(f"Gemini Import Handler Error: {e}")
+        print(f"Gemini Preview Error: {e}")
         traceback.print_exc()
-        return gr.update(), gr.update(), f"ステータス: ❌ エラー: {e}", gr.update()
+        return gr.update(), gr.update(visible=False), f"ステータス: ❌ エラー: {e}"
 
 
 # ===== 🧠 内的状態（Internal State）用ハンドラ =====
