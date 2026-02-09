@@ -3055,6 +3055,7 @@ try:
                                 )
                                 outing_logs_include_timestamp = gr.Checkbox(label="タイムスタンプを含む", value=False, scale=1)
                                 outing_logs_include_model = gr.Checkbox(label="モデル名を含む", value=False, scale=1)
+                                outing_logs_wrap_tags = gr.Checkbox(label="過去ログをタグで囲む（帰宅時の重複除去用）", value=True, scale=1)
                             outing_logs_text = gr.Textbox(
                                 label="会話ログ", lines=8, max_lines=20, interactive=True,
                                 placeholder="「データ読み込み」でロードされます"
@@ -3064,7 +3065,6 @@ try:
                                 outing_logs_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
                                 outing_logs_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
                                 outing_logs_enabled = gr.Checkbox(label="エクスポートに含める", value=True)
-                                outing_logs_wrap_tags = gr.Checkbox(label="過去ログをタグで囲む（帰宅時の重複除去用）", value=True)
                         
                         # --- エクスポート実行 ---
                         gr.Markdown("---")
