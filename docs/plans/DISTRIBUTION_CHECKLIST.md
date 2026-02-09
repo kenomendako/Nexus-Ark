@@ -122,6 +122,8 @@ Nexus Ark/
 | `alarms.json` | アラーム設定 |
 | `redaction_rules.json` | 検閲ルール |
 | `.gemini_key_states.json` | APIキーローテーション状態 |
+| `*.lock` | ファイルロック（実行中のみ） |
+| `validation_report*.txt` | 開発用バリデーションレポート |
 
 ### 開発・キャッシュ（含めない）
 | ファイル/フォルダ | 内容 |

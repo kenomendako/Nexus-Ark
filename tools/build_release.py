@@ -15,10 +15,10 @@ LAUNCHER_DIR = "assets/launchers"
 # Files/Directories to EXCLUDE globally
 GLOBAL_IGNORE_PATTERNS = [
     ".git", ".gitignore", ".github", ".agent", ".gemini", ".vscode", ".idea",
-    "__pycache__", "*.pyc", "*.pyo", "*.log",
+    "__pycache__", "*.pyc", "*.pyo", "*.log", "*.lock",
     "venv", "env", ".venv", "dist", "build", "tmp", "temp",
     "tests", "outing", "scripts",  # Note: "tools" removed - needed for runtime!
-    "bra_scraper.py", "test_*.py",
+    "bra_scraper.py", "test_*.py", "validation_report*.txt",
     "README.md", "README_DIST.md",  # Will use launcher README
     "INBOX.md",
     "LICENSE", # Copy manually if needed
