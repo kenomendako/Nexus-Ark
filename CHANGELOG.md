@@ -4,11 +4,8 @@ All notable changes to Nexus Ark will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-### Added
-- **オンボーディングウィザード改善**: APIキー名の入力フィールドを追加し、案内文を改善。Google Gemini API へのリンクを追加。 ([Report](docs/reports/2026-02-07_onboarding-flow-fix.md))
-- **サンプルペルソナ（オリヴェ）の整備**: 情景描写テキストの文体をNexus Ark標準（記述体）に修正し、全8箇所の高品質画像を事前に生成して同梱。 ([Report](docs/reports/2026-02-08_Olivie_Persona_Refinement.md))
-- **既存ユーザーのマイグレーションツールの実装**: v0.1.0 Beta からのデータ（設定、キャラクター、ログ）を安全に引き継ぎつつ、オリヴェのみ最新アセットをマージする「二段階移行ロジック」を搭載した `tools/migrate_from_old.py` とバージョン判定基盤を実装。 ([Report](docs/reports/2026-02-08_Migration_Tool_Implementation.md))
-- 司会AI（Supervisor）機能の不具合調査資料 (`docs/technical/supervisor_issues_debug_log.md`)。配布後の再開に向けた技術的な備忘録。
+- **ワールドビルダーの利便性向上**: `plan_world_edit` 実行時に変更されたエリア・場所を UI アナウンス（🛠️）に明示する機能を追加。内部指示メッセージ（「この編集タスクは完了しました」等）の除去ロジックも実装。 ([Report](docs/reports/2026-02-09_World_Builder_Refinement.md))
+- **睡眠時記憶整理の更新日保存を修正** (2025-12-29): エピソード記憶・話題クラスタ・記憶圧縮の自動更新後にUIに表示される最終更新日が古いままになる問題を修正。ステータス読み込み時に`override_settings`を優先確認するよう改善。
 
 ### Changed
 - **仕様書の大幅更新**: `docs/NEXUS_ARK_SPECIFICATION.md` を現行実装に合わせて大幅拡充（約250行→480行超）。約30の未記載機能を追記し、ユーザーフィードバック10項目を反映。 ([Report](docs/reports/2026-02-07_Specification_Update.md))
@@ -20,8 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - APIエラー発生時にチャット履歴が消失し、エラーが表示されないバグを修正。
 
 ## [0.2.1] - 2026-02-08
-### Added
-- 「お出かけ」機能のエクスポート時に AI のメタタグ（表情、感情、メモリトレース）と思考ログを除去するクリーンアップ機能を追加。
+- **ワールドビルダーの利便性向上とUIクリーンアップ**: `plan_world_edit` の変更内容詳細化、UIアナウンスからの内部指示メッセージ除去、およびルシアンの世界設定フォーマット整形を完了。 (2026-02-09)
+- **お出かけ機能のエクスポートメタタグ除去と不具合修正**: 過去ログおよびエピソード記憶のエクスポート時に AI のメタタグ（表情、感情、トレース）と思考ログを除去する機能を実装。除去に伴う不自然な空行発生バグも改行正規化ロジックにより解消。 (2026-02-09)
 
 ### Improved
 - メタタグ除去ロジックを共通ユーティリティ関数 (`utils.clean_persona_text`) に統合。チャット表示とエクスポートで同一のフィルタリングが適用されるように改善。

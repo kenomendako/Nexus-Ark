@@ -1,11 +1,11 @@
 {
   "menkenongi": {
-    "exhausted": true,
+    "exhausted": false,
     "exhausted_at": 1770531167.2192461
   },
   "bakeno": {
-    "exhausted": false,
-    "exhausted_at": 1770529393.2049544
+    "exhausted": true,
+    "exhausted_at": 1770600688.302531
   },
   "stmh821": {
     "exhausted": true,
