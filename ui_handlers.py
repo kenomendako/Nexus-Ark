@@ -10964,13 +10964,25 @@ def handle_outing_compress_section(text: str, section_name: str, room_name: str)
         return text, f"文字数: {len(text):,}"
 
 
+def _strip_past_logs(text: str) -> str:
+    """
+    <nexus_ark_past_logs>...</nexus_ark_past_logs> タグで囲まれた部分を除去する。
+    """
+    if not text:
+        return ""
+    # XMLタグ形式および類似の形式を想定した正規表現（非最短一致）
+    # 改行を含めて除去するため DOTALL フラグを使用
+    pattern = re.compile(r'<nexus_ark_past_logs>.*?</nexus_ark_past_logs>', re.DOTALL)
+    return pattern.sub('', text).strip()
+
 def handle_outing_export_sections(
     room_name: str,
     system_prompt: str, sys_enabled: bool,
     permanent: str, perm_enabled: bool,
     diary: str, diary_enabled: bool,
     episodic: str, ep_enabled: bool,
-    logs: str, logs_enabled: bool
+    logs: str, logs_enabled: bool,
+    wrap_logs_with_tags: bool = True
 ):
     """
     お出かけ専用タブ用：有効なセクションを結合してエクスポート
@@ -10996,7 +11008,10 @@ def handle_outing_export_sections(
             sections.append(f"## エピソード記憶\n\n{episodic.strip()}")
         
         if logs_enabled and logs.strip():
-            sections.append(f"## 直近の会話ログ\n\n{logs.strip()}")
+            log_content = logs.strip()
+            if wrap_logs_with_tags:
+                log_content = f"<nexus_ark_past_logs>\n{log_content}\n</nexus_ark_past_logs>"
+            sections.append(f"## 直近の会話ログ\n\n{log_content}")
         
         if not sections:
             gr.Warning("エクスポートするセクションがありません。")
@@ -11144,6 +11159,9 @@ def handle_import_return_log(
             # 失敗した場合は cp932 (Windows-31J) を試す
             with open(file_obj.name, "r", encoding="cp932") as f:
                 content = f.read()
+
+        # 過去ログタグを除去
+        content = _strip_past_logs(content)
 
         # 正規表現で分割
         user_h = re.escape(user_header)

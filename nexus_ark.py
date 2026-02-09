@@ -3064,6 +3064,7 @@ try:
                                 outing_logs_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
                                 outing_logs_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
                                 outing_logs_enabled = gr.Checkbox(label="エクスポートに含める", value=True)
+                                outing_logs_wrap_tags = gr.Checkbox(label="過去ログをタグで囲む（帰宅時の重複除去用）", value=True)
                         
                         # --- エクスポート実行 ---
                         gr.Markdown("---")
@@ -5576,7 +5577,8 @@ try:
                 outing_permanent_text, outing_permanent_enabled,
                 outing_diary_text, outing_diary_enabled,
                 outing_episodic_text, outing_episodic_enabled,
-                outing_logs_text, outing_logs_enabled
+                outing_logs_text, outing_logs_enabled,
+                outing_logs_wrap_tags
             ],
             outputs=[outing_download_file]
         )
