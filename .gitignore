@@ -31,3 +31,4 @@ build/
 config.json
 alarms.json
 redaction_rules.json
+.gemini_key_states.json
