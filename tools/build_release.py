@@ -19,7 +19,8 @@ GLOBAL_IGNORE_PATTERNS = [
     "venv", "env", ".venv", "dist", "build", "tmp", "temp",
     "tests", "outing", "scripts",  # Note: "tools" removed - needed for runtime!
     "bra_scraper.py", "test_*.py", "validation_report*.txt",
-    "README.md", "README_DIST.md",  # Will use launcher README
+    "README.md", "README_DIST.md", "CHANGELOG.md",  # User requested exclusion
+    "*.zip",  # Prevent recursive inclusion of build artifacts
     "INBOX.md",
     "LICENSE", # Copy manually if needed
     # --- User-specific data (NEVER include in distribution) ---
@@ -208,12 +209,21 @@ def main():
         else:
             print(f"⚠️  Warning: Source file not found: {src}")
 
-    # --- NEW: Copy Documentation to Root ---
+    # --- NEW: Copy Documentation to Root with Link Fix ---
     print(f"📄 Copying Documentation to Root...")
     # README
     if os.path.exists("README_DIST.md"):
-        shutil.copy2("README_DIST.md", os.path.join(DIST_DIR, "README.md"))
-        print(f"   - Copied README_DIST.md -> dist/README.md")
+        # Read content
+        with open("README_DIST.md", "r", encoding="utf-8") as f:
+            content = f.read()
+        
+        # Rewrite links: ./assets/ -> ./app/assets/
+        content = content.replace("./assets/", "./app/assets/")
+        
+        # Write to dist
+        with open(os.path.join(DIST_DIR, "README.md"), "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"   - Copied README_DIST.md -> dist/README.md (with link adjustments)")
     
     # Specification
     if os.path.exists("docs/NEXUS_ARK_SPECIFICATION.md"):
@@ -258,6 +268,8 @@ def main():
     if os.path.exists(icon_src):
         shutil.copy2(icon_src, os.path.join(DIST_DIR, "icon.png"))
         print(f"   - Created icon.png from {icon_src}")
+
+
 
 
     # 7.3 Create Distribution-specific start.js (Run in app/ directory)

@@ -35,12 +35,15 @@ LOGGING_CONFIG = {
             "formatter": "standard", "use_gzip": True,
         },
     },
-    "root": { "level": "DEBUG", "handlers": ["console", "file"] },
+    "root": { "level": "INFO", "handlers": ["console", "file"] },
     "loggers": {
+        "nexus_ark": { "level": "DEBUG", "propagate": True },
         "memos": { "level": "WARNING", "propagate": True },
         "gradio": { "level": "WARNING", "propagate": True },
         "httpx": { "level": "WARNING", "propagate": True },
         "neo4j": { "level": "WARNING", "propagate": True },
+        "PIL": { "level": "WARNING", "propagate": False },
+        "urllib3": { "level": "WARNING", "propagate": True },
     },
 }
 logging.config.dictConfig(LOGGING_CONFIG)
@@ -591,6 +594,7 @@ try:
                 
                 def execute_migration(migrate_path):
                     import shutil
+                    import datetime
                     from pathlib import Path
                     
                     if not migrate_path or not migrate_path.strip():
@@ -632,33 +636,98 @@ try:
                                 if not char_dir.is_dir() or char_dir.name.startswith("."):
                                     continue
                                 
-                                target_dir = dest_chars / char_dir.name
-                                print(f"[Migration] Migrating character: {char_dir.name}")
+                                # ターゲットディレクトリ名を決定
+                                # "オリヴェ" (およびその表記ゆれ) は "Olivie" にマッピングして統合
+                                import unicodedata
+                                normalized_name = unicodedata.normalize('NFC', char_dir.name)
+                                target_name = char_dir.name
+                                
+                                # 既知のオリヴェ表記を正規化
+                                if normalized_name in ["オリヴェ", "オリベ", "Olivie", "olivie"]:
+                                    target_name = "Olivie"
+                                
+                                target_dir = dest_chars / target_name
+                                print(f"[Migration] Migrating character: {char_dir.name} (norm: {normalized_name}) -> {target_name}")
                                 
                                 if target_dir.exists():
-                                    # 既存フォルダをバックアップ
-                                    backup_dir = dest_chars / f"{char_dir.name}_new_bak"
-                                    if not backup_dir.exists():
-                                        shutil.move(str(target_dir), str(backup_dir))
-                                    else:
-                                        shutil.rmtree(target_dir)
+                                    # 既存フォルダ（初期生成されたOlivieなど）をバックアップ
+                                    # [v2] characters/フォルダの外に移動してUIに表示されないようにする
+                                    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                                    global_migration_backup_dir = dest_path / "backups" / "migration_retired"
+                                    global_migration_backup_dir.mkdir(parents=True, exist_ok=True)
+                                    
+                                    backup_dir = global_migration_backup_dir / f"{target_name}_{timestamp_str}"
+                                    shutil.move(str(target_dir), str(backup_dir))
+                                    print(f"[Migration] Retired existing {target_name} to: {backup_dir}")
+                                else:
+                                    # 存在しない場合でも、もし元が「オリヴェ」で先が「Olivie」なら、
+                                    # すでに「Olivie」にマージ済みかもしれないのでチェック
+                                    pass
                                 
                                 shutil.copytree(str(char_dir), str(target_dir))
                                 print(f"[Migration] Copied character: {char_dir.name}")
                         
-                        # --- 3. オリヴェのRAG索引を新バージョンから差し替え ---
-                        # 新しい仕様書に対応したRAG索引を事前にビルド済みなので、それで上書き
-                        sample_olivie_rag = dest_path / "assets" / "sample_persona" / "Olivie" / "rag_data"
-                        olivie_names = ["Olivie", "オリヴェ"]
-                        for olivie_name in olivie_names:
-                            target_olivie = dest_chars / olivie_name
-                            if target_olivie.exists() and sample_olivie_rag.exists():
-                                target_rag = target_olivie / "rag_data"
-                                # 古いRAG索引を削除して新しいものに差し替え
-                                if target_rag.exists():
-                                    shutil.rmtree(target_rag)
-                                shutil.copytree(str(sample_olivie_rag), str(target_rag))
-                                print(f"[Migration] Replaced RAG index for: {olivie_name}")
+                        # --- 3. オリヴェの特例アップグレード（アセットマージ） ---
+                        # サンプルペルソナから最新のアセット（仕様書、RAG、画像、設定）を注入する
+                        sample_olivie_path = dest_path / "assets" / "sample_persona" / "Olivie"
+                        target_olivie_path = dest_chars / "Olivie"
+                        
+                        # オリヴェが存在し、かつサンプルアセットがある場合のみ実行
+                        if target_olivie_path.exists() and sample_olivie_path.exists():
+                            print("[Migration] Upgrading Olivie with latest assets...")
+                            
+                            # A. RAGデータの置換 (強制上書き)
+                            target_rag = target_olivie_path / "rag_data"
+                            source_rag = sample_olivie_path / "rag_data"
+                            if source_rag.exists():
+                                if target_rag.exists(): shutil.rmtree(target_rag)
+                                shutil.copytree(str(source_rag), str(target_rag))
+                                print("  - Replaced RAG data")
+
+                            # B. 知識ファイル(Specification)の置換
+                            target_know = target_olivie_path / "knowledge"
+                            source_know = sample_olivie_path / "knowledge"
+                            if source_know.exists():
+                                if not target_know.exists(): target_know.mkdir(parents=True)
+                                for f in source_know.glob("*.md"):
+                                    shutil.copy2(f, target_know / f.name)
+                                print("  - Updated knowledge specifications")
+
+                            # C. 情景画像の追加 (存在しないもののみ追加)
+                            target_imgs = target_olivie_path / "spaces" / "images"
+                            source_imgs = sample_olivie_path / "spaces" / "images"
+                            if source_imgs.exists():
+                                if not target_imgs.exists(): target_imgs.mkdir(parents=True)
+                                for img in source_imgs.iterdir():
+                                    if not (target_imgs / img.name).exists():
+                                        shutil.copy2(img, target_imgs / img.name)
+                                print("  - Added new scenery images")
+                            
+                            # D. テーマ設定のマージ
+                            try:
+                                t_conf_path = target_olivie_path / "room_config.json"
+                                s_conf_path = sample_olivie_path / "room_config.json"
+                                if t_conf_path.exists() and s_conf_path.exists():
+                                    with open(t_conf_path, "r", encoding="utf-8") as f: t_data = json.load(f)
+                                    with open(s_conf_path, "r", encoding="utf-8") as f: s_data = json.load(f)
+                                    
+                                    # テーマ関連設定を強制上書き
+                                    if "override_settings" not in t_data: t_data["override_settings"] = {}
+                                    s_overrides = s_data.get("override_settings", {})
+                                    
+                                    keys_to_merge = ["room_theme_enabled", "theme_ui_opacity", "voice_id", "voice_style_prompt"]
+                                    # theme_ で始まるキーも全て対象
+                                    keys_to_merge.extend([k for k in s_overrides.keys() if k.startswith("theme_")])
+                                    
+                                    for k in keys_to_merge:
+                                        if k in s_overrides:
+                                            t_data["override_settings"][k] = s_overrides[k]
+                                    
+                                    with open(t_conf_path, "w", encoding="utf-8") as f:
+                                        json.dump(t_data, f, indent=4, ensure_ascii=False)
+                                    print("  - Merged room configuration (theme settings)")
+                            except Exception as e:
+                                print(f"  - Warning: Failed to merge room_config: {e}")
                         
                         # Mark as complete
                         onboarding_manager.mark_setup_completed()
@@ -3033,8 +3102,8 @@ try:
                         # エピソード記憶
                         with gr.Accordion("📖 エピソード記憶", open=False):
                             outing_episode_days_slider = gr.Slider(
-                                minimum=0, maximum=30, value=7, step=1,
-                                label="過去N日分", info="0で無効"
+                                minimum=0, maximum=90, value=7, step=1,
+                                label="過去N日分", info="0で無効 (最大90日)"
                             )
                             outing_episodic_text = gr.Textbox(
                                 label="エピソード記憶", lines=8, max_lines=20, interactive=True,
@@ -3049,12 +3118,30 @@ try:
                         # 会話ログ
                         with gr.Accordion("💬 会話ログ", open=False):
                             with gr.Row():
-                                outing_log_count_slider = gr.Slider(
-                                    minimum=5, maximum=50, value=20, step=5,
-                                    label="最新N件", scale=2
+                                outing_log_mode = gr.Radio(
+                                    choices=["最新N件", "本日分（高度）"],
+                                    value="最新N件",
+                                    label="構成モード",
+                                    scale=1
                                 )
+                                outing_log_count_slider = gr.Slider(
+                                    minimum=5, maximum=100, value=20, step=5,
+                                    label="取得件数", scale=1, visible=True
+                                )
+                                with gr.Column(visible=False) as outing_log_today_options:
+                                    outing_auto_summary_checkbox = gr.Checkbox(
+                                        label="自動要約を有効化",
+                                        value=False
+                                    )
+                                    outing_log_summary_threshold = gr.Slider(
+                                        minimum=5000, maximum=100000, value=12000, step=1000,
+                                        label="要約閾値",
+                                        info="この文字数を超えると前半を要約します"
+                                    )
+                            with gr.Row():
                                 outing_logs_include_timestamp = gr.Checkbox(label="タイムスタンプを含む", value=False, scale=1)
                                 outing_logs_include_model = gr.Checkbox(label="モデル名を含む", value=False, scale=1)
+                                outing_logs_wrap_tags = gr.Checkbox(label="過去ログをタグで囲む（帰宅時の重複除去用）", value=True, scale=1)
                             outing_logs_text = gr.Textbox(
                                 label="会話ログ", lines=8, max_lines=20, interactive=True,
                                 placeholder="「データ読み込み」でロードされます"
@@ -3084,14 +3171,31 @@ try:
                                 outing_import_source = gr.Textbox(label="お出かけ先の名称", value="Antigravity", placeholder="例: Antigravity, 外出先")
                                 outing_import_user_header = gr.Textbox(label="ユーザーの発言ヘッダー", value="[user]", placeholder="例: [user]")
                                 outing_import_agent_header = gr.Textbox(label="AIの発言ヘッダー", value="[ルシアン]", placeholder="例: [ルシアン]")
-                            outing_import_button = gr.Button("ログを統合して帰宅する (ファイル)", variant="primary")
+                            
+                            with gr.Row():
+                                outing_import_include_marker = gr.Checkbox(label="システムマーカー（開始・終了アナウンス）を含める", value=True)
+                            
+                            with gr.Row():
+                                outing_import_load_button = gr.Button("1. ファイルを読み込んでプレビュー", variant="secondary")
+                            
+                            outing_import_preview_text = gr.Textbox(
+                                label="インポート内容のプレビュー（ここで編集・調整できます）",
+                                lines=10, max_lines=25,
+                                placeholder="ファイルを読み込むとここに内容が表示されます",
+                                interactive=True,
+                                visible=False
+                            )
+                            
+                            outing_import_execute_button = gr.Button("2. ログを履歴に統合して帰宅する", variant="primary", visible=False)
                         
                         # URL取り込み (Gemini)
                         with gr.Group():
                             gr.Markdown("### ♊ Gemini共有URLから取り込み")
                             gr.Markdown("共有リンクから会話内容を直接読み込みます。")
                             gemini_import_url = gr.Textbox(label="共有URL", placeholder="https://gemini.google.com/share/...", lines=1)
-                            gemini_import_button = gr.Button("ログを統合して帰宅する (URL)", variant="primary")
+                            with gr.Row():
+                                gemini_import_include_marker = gr.Checkbox(label="システムマーカーを含める", value=True)
+                            gemini_import_load_button = gr.Button("1. URLの内容を読み込んでプレビュー", variant="secondary")
                             gemini_import_status = gr.Markdown("")
 
                         outing_import_status = gr.Markdown("ステータス: 待機中")
@@ -5078,21 +5182,6 @@ try:
             ]
         )
 
-        # --- Gemini Importer Event Handlers ---
-        gemini_import_button.click(
-            fn=ui_handlers.handle_gemini_import_button_click,
-            inputs=[
-                gemini_import_url,
-                current_room_name,
-                api_history_limit_state,
-                room_add_timestamp_checkbox,
-                room_display_thoughts_checkbox,
-                screenshot_mode_checkbox,
-                redaction_rules_state
-            ],
-            outputs=[chatbot_display, current_log_map_state, gemini_import_status, gemini_import_url]
-        )
-
         # --- Theme Management Event Handlers ---
         theme_tab.select(
             fn=ui_handlers.handle_theme_tab_load,
@@ -5527,7 +5616,9 @@ try:
         outing_load_button.click(
             fn=ui_handlers.handle_outing_load_all_sections,
             inputs=[
-                current_room_name, outing_episode_days_slider, outing_log_count_slider,
+                current_room_name, outing_episode_days_slider, 
+                outing_log_mode, outing_log_count_slider,
+                outing_auto_summary_checkbox, outing_log_summary_threshold,
                 outing_logs_include_timestamp, outing_logs_include_model
             ],
             outputs=[
@@ -5576,7 +5667,8 @@ try:
                 outing_permanent_text, outing_permanent_enabled,
                 outing_diary_text, outing_diary_enabled,
                 outing_episodic_text, outing_episodic_enabled,
-                outing_logs_text, outing_logs_enabled
+                outing_logs_text, outing_logs_enabled,
+                outing_logs_wrap_tags
             ],
             outputs=[outing_download_file]
         )
@@ -5588,17 +5680,37 @@ try:
             outputs=None
         )
 
-        # 帰宅（インポート）
-        outing_import_button.click(
-            fn=ui_handlers.handle_import_return_log,
+        # 帰宅（インポート）- ステップ1: 読み込みとプレビュー
+        outing_import_load_button.click(
+            fn=ui_handlers.handle_outing_import_preview,
             inputs=[
-                outing_import_file, current_room_name,
-                outing_import_source,
+                outing_import_file, outing_import_source,
                 outing_import_user_header, outing_import_agent_header,
+                outing_import_include_marker
+            ],
+            outputs=[outing_import_preview_text, outing_import_execute_button, outing_import_status]
+        )
+
+        # 帰宅（インポート）- ステップ2: 最終統合
+        outing_import_execute_button.click(
+            fn=ui_handlers.handle_outing_import_finalize,
+            inputs=[
+                outing_import_preview_text, current_room_name,
+                outing_import_source, outing_import_include_marker,
                 api_history_limit_state, room_add_timestamp_checkbox,
                 room_display_thoughts_checkbox, screenshot_mode_checkbox, redaction_rules_state
             ],
-            outputs=[chatbot_display, current_log_map_state, outing_import_status, outing_import_file]
+            outputs=[chatbot_display, current_log_map_state, outing_import_status, outing_import_file, outing_import_preview_text, outing_import_execute_button]
+        )
+        
+        # Gemini URLインポート - ステップ1: 読み込みとプレビュー
+        gemini_import_load_button.click(
+            fn=ui_handlers.handle_gemini_import_preview,
+            inputs=[
+                gemini_import_url, current_room_name,
+                gemini_import_include_marker
+            ],
+            outputs=[outing_import_preview_text, outing_import_execute_button, gemini_import_status]
         )
         
         # 合計文字数のリアルタイム更新（テキスト・チェックボックス変更時）
@@ -5632,17 +5744,40 @@ try:
             inputs=[current_room_name, outing_episode_days_slider],
             outputs=[outing_episodic_text, outing_episodic_chars]
         )
-        outing_log_count_slider.change(
-            fn=ui_handlers.handle_outing_reload_logs,
-            inputs=[current_room_name, outing_log_count_slider, outing_logs_include_timestamp, outing_logs_include_model],
-            outputs=[outing_logs_text, outing_logs_chars]
+        # 会話ログの構成モードによる表示切り替え
+        def update_outing_log_visibility(mode):
+            if mode == "最新N件":
+                return gr.update(visible=True), gr.update(visible=False)
+            else:
+                return gr.update(visible=False), gr.update(visible=True)
+
+        outing_log_mode.change(
+            fn=update_outing_log_visibility,
+            inputs=[outing_log_mode],
+            outputs=[outing_log_count_slider, outing_log_today_options]
         )
+
+        # 構成モードや閾値の変更時に再読み込み
+        for comp in [outing_log_mode, outing_log_count_slider, outing_auto_summary_checkbox, outing_log_summary_threshold]:
+            comp.change(
+                fn=ui_handlers.handle_outing_reload_logs,
+                inputs=[
+                    current_room_name, outing_log_mode, outing_log_count_slider,
+                    outing_auto_summary_checkbox, outing_log_summary_threshold,
+                    outing_logs_include_timestamp, outing_logs_include_model
+                ],
+                outputs=[outing_logs_text, outing_logs_chars]
+            )
         
         # ログ表示オプション変更時に再読み込み
         for opt in [outing_logs_include_timestamp, outing_logs_include_model]:
             opt.change(
                 fn=ui_handlers.handle_outing_reload_logs,
-                inputs=[current_room_name, outing_log_count_slider, outing_logs_include_timestamp, outing_logs_include_model],
+                inputs=[
+                    current_room_name, outing_log_mode, outing_log_count_slider,
+                    outing_auto_summary_checkbox, outing_log_summary_threshold,
+                    outing_logs_include_timestamp, outing_logs_include_model
+                ],
                 outputs=[outing_logs_text, outing_logs_chars]
             )
         
@@ -5672,7 +5807,11 @@ try:
         )
         outing_logs_reload.click(
             fn=ui_handlers.handle_outing_reload_logs,
-            inputs=[current_room_name, outing_log_count_slider, outing_logs_include_timestamp, outing_logs_include_model],
+            inputs=[
+                current_room_name, outing_log_mode, outing_log_count_slider,
+                outing_auto_summary_checkbox, outing_log_summary_threshold,
+                outing_logs_include_timestamp, outing_logs_include_model
+            ],
             outputs=[outing_logs_text, outing_logs_chars]
         )
 

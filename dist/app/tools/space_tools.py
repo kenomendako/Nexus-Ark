@@ -129,6 +129,7 @@ def _apply_world_edits(instructions: List[Dict[str, Any]], room_name: str) -> st
     world_data = utils.parse_world_file(world_settings_path)
 
     try:
+        applied_changes = []
         for i, inst in enumerate(instructions):
             op = inst.get("operation", "").lower()
             area = inst.get("area_name")
@@ -138,9 +139,11 @@ def _apply_world_edits(instructions: List[Dict[str, Any]], room_name: str) -> st
             if not op or not area:
                 return f"【エラー】指示 {i+1} に 'operation' または 'area_name' がありません。"
 
+            op_label = ""
             if op == "update_place_description":
                 if not place or value is None: return f"【エラー】指示 {i+1} (update) に 'place_name' または 'value' がありません。"
                 world_data.setdefault(area, {})[place] = _format_value_as_text(value)
+                op_label = "更新"
             elif op == "append_place_description":
                 if not place or value is None: return f"【エラー】指示 {i+1} (append) に 'place_name' または 'value' がありません。"
                 existing = world_data.setdefault(area, {}).get(place, "")
@@ -148,13 +151,16 @@ def _apply_world_edits(instructions: List[Dict[str, Any]], room_name: str) -> st
                     world_data[area][place] = f"{existing}\n{_format_value_as_text(value)}"
                 else:
                     world_data[area][place] = _format_value_as_text(value)
+                op_label = "追記"
             elif op == "add_place":
                 if not place or value is None: return f"【エラー】指示 {i+1} (add_place) に 'place_name' または 'value' がありません。"
                 world_data.setdefault(area, {})[place] = _format_value_as_text(value)
+                op_label = "追加"
             elif op == "delete_place":
                 if not place: return f"【エラー】指示 {i+1} (delete_place) に 'place_name' がありません。"
                 if area in world_data and place in world_data[area]:
                     del world_data[area][place]
+                op_label = "削除"
             elif op == "patch_place_description":
                 # 部分編集: find/replace を使って特定箇所のみを置換
                 find_text = inst.get("find")
@@ -172,14 +178,19 @@ def _apply_world_edits(instructions: List[Dict[str, Any]], room_name: str) -> st
                 
                 # 置換を実行（最初の一致のみ）
                 world_data[area][place] = current_content.replace(find_text, _format_value_as_text(replace_text), 1)
+                op_label = "修正"
             else:
                 return f"【エラー】指示 {i+1} の操作 '{op}' は無効です。"
+            
+            applied_changes.append(f"[{op_label}] {area} > {place}")
 
         # world_builderのsave_world_dataを再利用してファイルに書き込む
         from world_builder import save_world_data
-        save_world_data(room_name, world_data) # save_world_dataはGradioの通知を出すが、ツール実行では無視されるので問題ない
+        save_world_data(room_name, world_data) 
 
-        return f"成功: {len(instructions)}件の指示に基づき、世界設定(world_settings.txt)を更新しました。"
+        summary_lines = "\n".join([f"- {change}" for change in applied_changes])
+        return f"成功: 以下の変更を世界設定(world_settings.txt)に適用しました：\n{summary_lines}"
+
     except Exception as e:
         traceback.print_exc()
         return f"【エラー】世界設定の編集中に予期せぬエラーが発生しました: {e}"

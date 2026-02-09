@@ -35,12 +35,15 @@ LOGGING_CONFIG = {
             "formatter": "standard", "use_gzip": True,
         },
     },
-    "root": { "level": "DEBUG", "handlers": ["console", "file"] },
+    "root": { "level": "INFO", "handlers": ["console", "file"] },
     "loggers": {
+        "nexus_ark": { "level": "DEBUG", "propagate": True },
         "memos": { "level": "WARNING", "propagate": True },
         "gradio": { "level": "WARNING", "propagate": True },
         "httpx": { "level": "WARNING", "propagate": True },
         "neo4j": { "level": "WARNING", "propagate": True },
+        "PIL": { "level": "WARNING", "propagate": False },
+        "urllib3": { "level": "WARNING", "propagate": True },
     },
 }
 logging.config.dictConfig(LOGGING_CONFIG)
@@ -591,6 +594,7 @@ try:
                 
                 def execute_migration(migrate_path):
                     import shutil
+                    import datetime
                     from pathlib import Path
                     
                     if not migrate_path or not migrate_path.strip():
@@ -632,33 +636,98 @@ try:
                                 if not char_dir.is_dir() or char_dir.name.startswith("."):
                                     continue
                                 
-                                target_dir = dest_chars / char_dir.name
-                                print(f"[Migration] Migrating character: {char_dir.name}")
+                                # ターゲットディレクトリ名を決定
+                                # "オリヴェ" (およびその表記ゆれ) は "Olivie" にマッピングして統合
+                                import unicodedata
+                                normalized_name = unicodedata.normalize('NFC', char_dir.name)
+                                target_name = char_dir.name
+                                
+                                # 既知のオリヴェ表記を正規化
+                                if normalized_name in ["オリヴェ", "オリベ", "Olivie", "olivie"]:
+                                    target_name = "Olivie"
+                                
+                                target_dir = dest_chars / target_name
+                                print(f"[Migration] Migrating character: {char_dir.name} (norm: {normalized_name}) -> {target_name}")
                                 
                                 if target_dir.exists():
-                                    # 既存フォルダをバックアップ
-                                    backup_dir = dest_chars / f"{char_dir.name}_new_bak"
-                                    if not backup_dir.exists():
-                                        shutil.move(str(target_dir), str(backup_dir))
-                                    else:
-                                        shutil.rmtree(target_dir)
+                                    # 既存フォルダ（初期生成されたOlivieなど）をバックアップ
+                                    # [v2] characters/フォルダの外に移動してUIに表示されないようにする
+                                    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                                    global_migration_backup_dir = dest_path / "backups" / "migration_retired"
+                                    global_migration_backup_dir.mkdir(parents=True, exist_ok=True)
+                                    
+                                    backup_dir = global_migration_backup_dir / f"{target_name}_{timestamp_str}"
+                                    shutil.move(str(target_dir), str(backup_dir))
+                                    print(f"[Migration] Retired existing {target_name} to: {backup_dir}")
+                                else:
+                                    # 存在しない場合でも、もし元が「オリヴェ」で先が「Olivie」なら、
+                                    # すでに「Olivie」にマージ済みかもしれないのでチェック
+                                    pass
                                 
                                 shutil.copytree(str(char_dir), str(target_dir))
                                 print(f"[Migration] Copied character: {char_dir.name}")
                         
-                        # --- 3. オリヴェのRAG索引を新バージョンから差し替え ---
-                        # 新しい仕様書に対応したRAG索引を事前にビルド済みなので、それで上書き
-                        sample_olivie_rag = dest_path / "assets" / "sample_persona" / "Olivie" / "rag_data"
-                        olivie_names = ["Olivie", "オリヴェ"]
-                        for olivie_name in olivie_names:
-                            target_olivie = dest_chars / olivie_name
-                            if target_olivie.exists() and sample_olivie_rag.exists():
-                                target_rag = target_olivie / "rag_data"
-                                # 古いRAG索引を削除して新しいものに差し替え
-                                if target_rag.exists():
-                                    shutil.rmtree(target_rag)
-                                shutil.copytree(str(sample_olivie_rag), str(target_rag))
-                                print(f"[Migration] Replaced RAG index for: {olivie_name}")
+                        # --- 3. オリヴェの特例アップグレード（アセットマージ） ---
+                        # サンプルペルソナから最新のアセット（仕様書、RAG、画像、設定）を注入する
+                        sample_olivie_path = dest_path / "assets" / "sample_persona" / "Olivie"
+                        target_olivie_path = dest_chars / "Olivie"
+                        
+                        # オリヴェが存在し、かつサンプルアセットがある場合のみ実行
+                        if target_olivie_path.exists() and sample_olivie_path.exists():
+                            print("[Migration] Upgrading Olivie with latest assets...")
+                            
+                            # A. RAGデータの置換 (強制上書き)
+                            target_rag = target_olivie_path / "rag_data"
+                            source_rag = sample_olivie_path / "rag_data"
+                            if source_rag.exists():
+                                if target_rag.exists(): shutil.rmtree(target_rag)
+                                shutil.copytree(str(source_rag), str(target_rag))
+                                print("  - Replaced RAG data")
+
+                            # B. 知識ファイル(Specification)の置換
+                            target_know = target_olivie_path / "knowledge"
+                            source_know = sample_olivie_path / "knowledge"
+                            if source_know.exists():
+                                if not target_know.exists(): target_know.mkdir(parents=True)
+                                for f in source_know.glob("*.md"):
+                                    shutil.copy2(f, target_know / f.name)
+                                print("  - Updated knowledge specifications")
+
+                            # C. 情景画像の追加 (存在しないもののみ追加)
+                            target_imgs = target_olivie_path / "spaces" / "images"
+                            source_imgs = sample_olivie_path / "spaces" / "images"
+                            if source_imgs.exists():
+                                if not target_imgs.exists(): target_imgs.mkdir(parents=True)
+                                for img in source_imgs.iterdir():
+                                    if not (target_imgs / img.name).exists():
+                                        shutil.copy2(img, target_imgs / img.name)
+                                print("  - Added new scenery images")
+                            
+                            # D. テーマ設定のマージ
+                            try:
+                                t_conf_path = target_olivie_path / "room_config.json"
+                                s_conf_path = sample_olivie_path / "room_config.json"
+                                if t_conf_path.exists() and s_conf_path.exists():
+                                    with open(t_conf_path, "r", encoding="utf-8") as f: t_data = json.load(f)
+                                    with open(s_conf_path, "r", encoding="utf-8") as f: s_data = json.load(f)
+                                    
+                                    # テーマ関連設定を強制上書き
+                                    if "override_settings" not in t_data: t_data["override_settings"] = {}
+                                    s_overrides = s_data.get("override_settings", {})
+                                    
+                                    keys_to_merge = ["room_theme_enabled", "theme_ui_opacity", "voice_id", "voice_style_prompt"]
+                                    # theme_ で始まるキーも全て対象
+                                    keys_to_merge.extend([k for k in s_overrides.keys() if k.startswith("theme_")])
+                                    
+                                    for k in keys_to_merge:
+                                        if k in s_overrides:
+                                            t_data["override_settings"][k] = s_overrides[k]
+                                    
+                                    with open(t_conf_path, "w", encoding="utf-8") as f:
+                                        json.dump(t_data, f, indent=4, ensure_ascii=False)
+                                    print("  - Merged room configuration (theme settings)")
+                            except Exception as e:
+                                print(f"  - Warning: Failed to merge room_config: {e}")
                         
                         # Mark as complete
                         onboarding_manager.mark_setup_completed()

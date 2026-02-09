@@ -78,6 +78,7 @@ local = [
 
 [tool.uv]
 managed = true
+package = false
 
 [build-system]
 requires = ["hatchling"]

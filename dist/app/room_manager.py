@@ -159,6 +159,9 @@ def get_room_list_for_ui() -> List[Tuple[str, str]]:
 
     valid_rooms = []
     for folder_name in os.listdir(rooms_dir):
+        # ドットで始まるフォルダ（OSの隠しフォルダ等）のみ無視
+        if folder_name.startswith("."):
+            continue
         room_path = os.path.join(rooms_dir, folder_name)
         if os.path.isdir(room_path):
             config_file = os.path.join(room_path, "room_config.json")

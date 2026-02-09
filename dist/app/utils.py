@@ -558,15 +558,52 @@ def remove_thoughts_from_text(text: str) -> str:
     if not text:
         return ""
 
-    # 1. 古い【Thoughts】ブロックを除去
-    # 新しい思考ログ形式（`THOUGHT:`）も誤って除去しないように、より厳密な正規表現に変更
-    text_no_blocks = re.sub(r"【Thoughts】[\s\S]*?【/Thoughts】\s*|\[THOUGHT\][\s\S]*?\[/THOUGHT\]\s*", "", text, flags=re.IGNORECASE).strip()
+    # 1. ブロック形式（【Thoughts】, [THOUGHT]）を除去
+    # 大文字小文字を区別せず、タグとその中身を除去
+    text = re.sub(r"【Thoughts】[\s\S]*?【/Thoughts】\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\[THOUGHT\][\s\S]*?\[/THOUGHT\]\s*", "", text, flags=re.IGNORECASE)
 
-    # 2. 新しい THOUGHT: プレフィックス行を除去
-    lines = text_no_blocks.split('\n')
+    # 2. プレフィックス行形式（THOUGHT:）を除去
+    lines = text.split('\n')
     cleaned_lines = [line for line in lines if not line.strip().upper().startswith("THOUGHT:")]
 
     return "\n".join(cleaned_lines).strip()
+
+def clean_persona_text(text: str, remove_thoughts: bool = True) -> str:
+    """
+    AIの出力に含まれるメタデータタグや内部状態タグを除去し、
+    ユーザー向けのクリーンなテキストを返す。
+    
+    除去対象:
+    - 【表情】…表情名…
+    - <persona_emotion ... />
+    - <memory_trace ... />
+    - その他 XML 形式のタグ (タグそのもののみ除去し、中身は残す場合は別途検討)
+    - 思考ログ (remove_thoughts=True の場合)
+    """
+    if not text:
+        return ""
+
+    # 1. 思考ログの除去
+    if remove_thoughts:
+        text = remove_thoughts_from_text(text)
+
+    # 2. 特殊なメタタグの除去 (タグとその周囲の空白・改行を適切に処理)
+    # 前後の空白（改行含む）も含めてマッチさせ、適切な改行に置換または削除する方針
+    # ここでは単純化のため、一旦タグのみを除去し、後で改行を正規化する
+    text = re.sub(r"【表情】…\w+…", "", text)
+    text = re.sub(r"<persona_emotion\s+[^>]*/>", "", text)
+    text = re.sub(r"<memory_trace\s+[^>]*/>", "", text)
+    
+    # 3. 汎用的なXMLタグの除去
+    # タグそのもののみを除去
+    text = re.sub(r"<[^>]+/>", "", text)
+    
+    # 4. 改行の正規化
+    # 3つ以上の連続する改行を2つ（1行の空行）にまとめる
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    
+    return text.strip()
 
 def get_current_location(character_name: str) -> Optional[str]:
     try:
@@ -641,7 +678,16 @@ def save_scenery_cache(room_name: str, cache_key: str, location_name: str, scene
         print(f"!! エラー: 情景キャッシュの保存に失敗しました: {e}")
 
 def format_tool_result_for_ui(tool_name: str, tool_result: str) -> Optional[str]:
-    if not tool_name or not tool_result: return None
+    if not tool_name: return None # tool_nameがない場合は表示しない
+    if not tool_result: return f"🛠️ ツール「{tool_name}」を実行しました。"
+    
+    # AIへの内部的な指示（システムプロンプト的なメッセージ）を除去
+    internal_msg_patterns = [
+        r'\*\*このファイル編集タスクは完了しました。.*',
+        r'\*\*このタスクの実行を宣言するような前置きは不要です。.*'
+    ]
+    for pattern in internal_msg_patterns:
+        tool_result = re.sub(pattern, '', tool_result, flags=re.DOTALL).strip()
     
     # 開発者ツールには特別なエラー検知ロジックを適用
     # ファイル内容に "Exception:" や "Error:" などが含まれることが頻繁にあるため、
@@ -728,7 +774,18 @@ def format_tool_result_for_ui(tool_name: str, tool_result: str) -> Optional[str]
             display_text = f'ファイル「{file_match.group(1)}」の {file_match.group(2)} （全{file_match.group(3)}行）を読み取りました。'
         else:
             display_text = 'ファイルを読み取りました。'
+    elif tool_name == 'plan_world_edit':
+        # 変更箇所を抽出してサマリーを表示
+        changes = re.findall(r'- \[(.*?)\] (.*?) > (.*)', tool_result)
+        if changes:
+            change_texts = [f'[{c[0]}] {c[1]}>{c[2]}' for c in changes]
+            summary = "、".join(change_texts)
+            if len(summary) > 60: summary = summary[:57] + "..."
+            display_text = f'世界設定を更新しました（{summary}）'
+        else:
+            display_text = '世界設定の更新を計画・実行しました。'
     return f"🛠️ {display_text}" if display_text else f"🛠️ ツール「{tool_name}」を実行しました。"
+
 
 def get_season(month: int) -> str:
     if month in [3, 4, 5]: return "spring"
