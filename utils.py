@@ -765,7 +765,18 @@ def format_tool_result_for_ui(tool_name: str, tool_result: str) -> Optional[str]
             display_text = f'ファイル「{file_match.group(1)}」の {file_match.group(2)} （全{file_match.group(3)}行）を読み取りました。'
         else:
             display_text = 'ファイルを読み取りました。'
+    elif tool_name == 'plan_world_edit':
+        # 変更箇所を抽出してサマリーを表示
+        changes = re.findall(r'- \[(.*?)\] (.*?) > (.*)', tool_result)
+        if changes:
+            change_texts = [f'[{c[0]}] {c[1]}>{c[2]}' for c in changes]
+            summary = "、".join(change_texts)
+            if len(summary) > 60: summary = summary[:57] + "..."
+            display_text = f'世界設定を更新しました（{summary}）'
+        else:
+            display_text = '世界設定の更新を計画・実行しました。'
     return f"🛠️ {display_text}" if display_text else f"🛠️ ツール「{tool_name}」を実行しました。"
+
 
 def get_season(month: int) -> str:
     if month in [3, 4, 5]: return "spring"
