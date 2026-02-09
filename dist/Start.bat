@@ -34,6 +34,13 @@ if not exist "app" goto :MISSING_APP_DIR
 cd app
 
 echo [INFO] uv found. Syncing dependencies...
+echo.
+echo ============================================================
+echo  NOTE: First-time startup may take several minutes
+echo        while downloading dependencies.
+echo        Please do not close this window.
+echo ============================================================
+echo.
 REM CRITICAL FIX: --no-install-project prevents creating a .pth file with Japanese paths
 uv sync --no-install-project
 if %errorlevel% NEQ 0 goto :SYNC_FAILED

@@ -7775,10 +7775,12 @@ def _get_knowledge_status(room_name: str) -> str:
     base_dir = Path(constants.ROOMS_DIR) / room_name / "rag_data"
     static_index = base_dir / "faiss_index_static"
     dynamic_index = base_dir / "faiss_index_dynamic"
+    legacy_index = base_dir / "faiss_index"  # レガシーパス（配布版デフォルト）
     
-    # 静的または動的、どちらかのインデックスが存在すれば「作成済み」とみなす
+    # 静的、動的、またはレガシー、いずれかのインデックスが存在すれば「作成済み」とみなす
     is_created = (static_index.exists() and any(static_index.iterdir())) or \
-                 (dynamic_index.exists() and any(dynamic_index.iterdir()))
+                 (dynamic_index.exists() and any(dynamic_index.iterdir())) or \
+                 (legacy_index.exists() and any(legacy_index.iterdir()))
 
     if is_created:
         return "✅ 索引は作成済みです。（知識ベースやログが更新された場合は、再構築ボタンを押してください）"

@@ -3440,26 +3440,8 @@ def format_history_for_gradio(
             # --- [新ロジック v4: 汎用コードブロック対応パーサー] ---
 
             # display_thoughtsがFalseの場合、思考ログを物理的に除去する
-            content_for_parsing = content_to_parse
-            if not display_thoughts:
-                content_for_parsing = re.sub(r"(\[THOUGHT\][\s\S]*?\[/THOUGHT\])", "", content_for_parsing, flags=re.IGNORECASE)
-                content_for_parsing = re.sub(r"【/?Thoughts】", "", content_for_parsing, flags=re.IGNORECASE)
-                lines = content_for_parsing.split('\n')
-                content_for_parsing = "\n".join([line for line in lines if not line.strip().upper().startswith("THOUGHT:")])
-
-            # --- [新ロジック v5: メタデータタグの非表示化] ---
-            # 【表情】…表情名…、<persona_emotion.../>、<memory_trace.../> を表示から除去
-            content_for_parsing = re.sub(r"【表情】…\w+…", "", content_for_parsing)
-            content_for_parsing = re.sub(r"<persona_emotion\s+[^>]*/>", "", content_for_parsing)
-            content_for_parsing = re.sub(r"<memory_trace\s+[^>]*/>", "", content_for_parsing)
-
-            # --- [新ロジック v6: THOUGHTタグの整合性修正] ---
-            # [THOUGHT] があるが [/THOUGHT] がない（閉じ忘れ）場合、
-            # 冒頭の [THOUGHT] を除去して表示崩れを防ぐ
-            if re.search(r"\[THOUGHT\]", content_for_parsing, flags=re.IGNORECASE) and not re.search(r"\[/THOUGHT\]", content_for_parsing, flags=re.IGNORECASE):
-                content_for_parsing = re.sub(r"^\[THOUGHT\]\s*", "", content_for_parsing, flags=re.IGNORECASE)
-
-            content_for_parsing = content_for_parsing.strip()
+            # また、表情タグや感情タグなどのメタデータも常に除去する (v5)
+            content_for_parsing = utils.clean_persona_text(content_to_parse, remove_thoughts=not display_thoughts)
 
             # 思考ログのタグを、標準的なコードブロック記法に統一する
             content_for_parsing = re.sub(r"\[/?THOUGHT\]", "```", content_for_parsing, flags=re.IGNORECASE)
@@ -10385,7 +10367,10 @@ def _get_recent_log_entries(log_path: str, count: int, include_timestamp=True, i
             if header_match:
                 # 前のエントリを保存
                 if current_header is not None:
-                    entries.append((current_header, '\n'.join(current_content).strip()))
+                    raw_text = '\n'.join(current_content).strip()
+                    # エクスポート用にメタタグと思考を除去
+                    cleaned_text = utils.clean_persona_text(raw_text)
+                    entries.append((current_header, cleaned_text))
                 current_header = header_match.group(1).strip()
                 current_content = []
             else:
@@ -10415,7 +10400,10 @@ def _get_recent_log_entries(log_path: str, count: int, include_timestamp=True, i
         
         # 最後のエントリを保存
         if current_header is not None:
-            entries.append((current_header, '\n'.join(current_content).strip()))
+            raw_text = '\n'.join(current_content).strip()
+            # エクスポート用にメタタグと思考を除去
+            cleaned_text = utils.clean_persona_text(raw_text)
+            entries.append((current_header, cleaned_text))
         
         # 直近N件を取得
         return entries[-count:] if len(entries) > count else entries
@@ -10475,7 +10463,9 @@ def _get_episodic_memory_entries(room_name: str, days: int) -> str:
         result_lines = []
         for _, date_key, summary in filtered_entries:
             result_lines.append(f"### {date_key}")
-            result_lines.append(summary if isinstance(summary, str) else str(summary))
+            # エクスポート用にメタタグを除去
+            cleaned_summary = utils.clean_persona_text(summary if isinstance(summary, str) else str(summary))
+            result_lines.append(cleaned_summary)
             result_lines.append("")
             
         return "\n".join(result_lines)
