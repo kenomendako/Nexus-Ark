@@ -105,6 +105,9 @@
     - [x] `research_tools.py` の修正
     - [x] `creative_tools.py` の修正
     - [レポート](docs/reports/2026-02-04_suppress_empty_note_announcements.md)
+- [x] **お出かけ機能エクスポートのメタタグ除去と不具合修正** (High) [レポート](../reports/2026-02-09_Outing_Export_Tag_Removal.md)
+  - 詳細: エクスポートされた会話ログ・エピソード記憶から表情タグ、感情タグ、メモリトレース、思考ログを除去。除去後の不自然な改行発生バグも修正。
+  - 優先度: 🔴高
 - [x] 不要なUIアナウンスの抑制 (UI表示)
     - [x] `ui_handlers.py` の `gr.Info` を `print` に変更（設定保存、ログ読み込み）
     - [x] 「対象のノートは空です」のUI通知を抑制
