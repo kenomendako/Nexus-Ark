@@ -110,9 +110,18 @@ def parse_ui_handlers():
                             expected_count = default_val.value
 
             # Check return/yield statements
+            has_yield = False
+            for child in ast.walk(node):
+                if isinstance(child, ast.Yield) or isinstance(child, ast.YieldFrom):
+                    has_yield = True
+                    break
+
             for child in ast.walk(node):
                 if isinstance(child, ast.Return):
                     if child.value is None:
+                        # If it's a generator, an empty return just stops iteration, it's not a value yielding 0 items.
+                        if has_yield:
+                            continue
                         returns.append(0)
                         continue
                     
@@ -143,11 +152,11 @@ def parse_ui_handlers():
                      if isinstance(child.value, (ast.Tuple, ast.List)):
                         returns.append(len(child.value.elts))
                      else:
-                        returns.append("UNKNOWN_YIELD")
-                
-                # Note: yield from is harder as it delegates to another generator.
-                # We often use yield from _stream_and_handle_response... 
-                # Ideally check the target function if it's a known handler, but that's complex.
+                         # yield single_item -> 1 item
+                        returns.append(1)
+            
+            # If function is a generator but has no yields found by walk (e.g. only YieldFrom), we might need to be careful
+            # But here we just filter the empty returns.
 
             handlers_info[node.name] = {
                 'returns': returns,

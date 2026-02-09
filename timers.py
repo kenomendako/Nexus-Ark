@@ -68,9 +68,25 @@ class UnifiedTimer:
         elapsed_time = time.time() - self.start_time
         
         # 現在のフェーズの総時間から経過時間を引く
-        # このロジックは単純なタイマーとポモドーロの最初の作業フェーズにのみ対応
-        # より正確な実装には状態管理が必要だが、重複チェックにはこれで十分
-        current_duration = self.duration if self.timer_type == "通常タイマー" else self.work_duration
+        if self.timer_type == "通常タイマー":
+            current_duration = self.duration
+        else:
+            # ポモドーロの場合、今が作業フェーズか休憩フェーズかを判定する必要がある
+            # _run_pomodoro 内で詳細な状態管理を行うのが理想だが、
+            # 現状のシンプルな実装に合わせて、開始からの経過時間で推測する
+            total_cycle_duration = self.work_duration + self.break_duration
+            time_in_cycle = elapsed_time % total_cycle_duration
+            
+            if time_in_cycle < self.work_duration:
+                # 作業フェーズ中
+                current_duration = self.work_duration
+                elapsed_in_phase = time_in_cycle
+            else:
+                # 休憩フェーズ中
+                current_duration = self.break_duration
+                elapsed_in_phase = time_in_cycle - self.work_duration
+                
+            return max(0, current_duration - elapsed_in_phase)
         
         remaining = current_duration - elapsed_time
         return max(0, remaining)
@@ -275,7 +291,8 @@ class UnifiedTimer:
                     return
 
                 print(f"--- [ポモドーロ開始: 作業 {i+1}/{self.cycles}] ---")
-                self._run_single_timer(self.work_duration, self.work_theme, f"ポモドーロ作業 {i+1}/{self.cycles}")
+                # 作業終了後に「休憩」に関するテーマをAIに渡す
+                self._run_single_timer(self.work_duration, self.break_theme, f"ポモドーロ作業 {i+1}/{self.cycles}")
                 if self._stop_event.is_set():
                     print("--- [ポモドーロタイマー] ユーザーにより停止されました ---")
                     return
@@ -283,7 +300,8 @@ class UnifiedTimer:
                 # 最後のサイクルの後の休憩は実行しない
                 if i < self.cycles - 1:
                     print(f"--- [ポモドーロ開始: 休憩 {i+1}/{self.cycles}] ---")
-                    self._run_single_timer(self.break_duration, self.break_theme, f"ポモドーロ休憩 {i+1}/{self.cycles}")
+                    # 休憩終了後に「作業再開」に関するテーマをAIに渡す
+                    self._run_single_timer(self.break_duration, self.work_theme, f"ポモドーロ休憩 {i+1}/{self.cycles}")
 
             print("--- [ポモドーロタイマー] 全サイクル完了 ---")
         finally:

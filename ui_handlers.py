@@ -5393,8 +5393,8 @@ def handle_timer_submission(timer_type, duration, work, brk, cycles, room, work_
                 work_minutes=int(work),
                 break_minutes=int(brk),
                 cycles=int(cycles),
-                work_theme=work_theme or "作業終了の時間です。",
-                break_theme=brk_theme or "休憩終了の時間です。",
+                work_theme=work_theme or "休憩終了。作業を再開しましょう。",
+                break_theme=brk_theme or "作業終了。休憩に入ってください。",
                 room_name=room
             )
             gr.Info("ポモドーロタイマーを設定しました。")
@@ -5868,7 +5868,9 @@ def handle_play_audio_button_click(selected_message: Optional[Dict[str, str]], r
     api_key = config_manager.GEMINI_API_KEYS.get(api_key_name)
 
     if not api_key or api_key.startswith("YOUR_API_KEY"):
-        raise gr.Error(f"APIキー '{api_key_name}' が無効です。")
+        gr.Error(f"APIキー '{api_key_name}' が無効です。")
+        yield gr.update(), gr.update(value="🔊 選択した発言を再生", interactive=True), gr.update(interactive=True)
+        return
 
     from audio_manager import generate_audio_from_text
     gr.Info(f"「{room_name}」の声で音声を生成しています...")
@@ -5878,7 +5880,9 @@ def handle_play_audio_button_click(selected_message: Optional[Dict[str, str]], r
         gr.Info("再生します。")
         yield gr.update(value=audio_filepath, visible=True), gr.update(value="🔊 選択した発言を再生", interactive=True), gr.update(interactive=True)
     else:
-        raise gr.Error(audio_filepath or "音声の生成に失敗しました。")
+        error_msg = audio_filepath or "音声の生成に失敗しました。"
+        gr.Error(error_msg)
+        yield gr.update(), gr.update(value="🔊 選択した発言を再生", interactive=True), gr.update(interactive=True)
 
 def handle_voice_preview(room_name: str, selected_voice_name: str, voice_style_prompt: str, text_to_speak: str, api_key_name: str):
     """
