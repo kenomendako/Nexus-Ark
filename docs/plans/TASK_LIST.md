@@ -7,8 +7,23 @@
 
 ルシアン（エージェント）の記憶の整合性と、システムプロンプトの肥大化によるコスト増を解決します。また、報告されたUIの不整合と不具合を修正します。
 
-- [x] **ワールドビルダーの利便性向上とUIクリーンアップ** <!-- id: new --> ([Report](../reports/2026-02-09_World_Builder_Refinement.md))
-- [x] **[BUG] Windows配布版のRAG初期化不全とメッセージ重複の修正** <!-- id: new --> ([Report](../reports/2026-02-08_Windows_RAG_Fix.md))
+- [x] **[BUG] Windows環境でのインストール失敗 (ValueError: Unable to determine which files to ship)** <!-- id: new --> ([Report](../reports/2026-02-10_v0.2.1_Hotfix.md))
+  - 詳細: 一部のWindows環境で `uv sync` 実行時に `hatchling` がソースファイルを見つけられずエラーになる問題を修正。`pyproject.toml` の `package = false` 設定により解決。
+  - 優先度: 🔴最高 (Critical)
+
+- [x] **[BUG] API枯渇時の応答消失不具合の修正** <!-- id: new --> ([Report](../reports/2026-02-10_v0.2.1_Hotfix.md))
+  - 詳細: すべてのAPIキーが枯渇した際、エラーメッセージがUIに表示されず沈黙する不具合を修正。
+  - 優先度: 🟠高 (High)
+
+- [x] **[BUG] APIキーローテーション設定が無視される不具合の修正** <!-- id: new --> ([Report](../reports/2026-02-10_v0.2.1_Hotfix.md))
+  - 詳細: 設定でローテーションをオフにしていても、初回キー選択時に枯渇チェックが走ってローテーションが発生してしまう不具合を修正。
+  - 優先度: 🟡中 (Medium)
+
+- [x] **[BUG] 履歴ロード順序による過去ログ流出の修正** <!-- id: new --> ([Report](../reports/2026-02-10_v0.2.1_Hotfix.md))
+  - 詳細: API枯渇・早期リターン時に、フィルタリング前の全履歴がUIに渡されてしまう不具合を修正。
+  - 優先度: 🟡中 (Medium)
+
+- [x] **[BUG] 起動時の不要な設定および通知の抑制** <!-- id: new --> ([Report](../reports/2026-02-10_v0.2.1_Hotfix.md))
   - 詳細: アプリ起動時にRAGManagerが初期化されずマイグレーションが走らない問題と、ログ削除時の重複バグを修正。
   - 詳細: アプリ起動時にRAGManagerが初期化されずマイグレーションが走らない問題と、ログ削除時の重複バグを修正。
   - 優先度: 🔴最高 (Critical)

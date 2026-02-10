@@ -681,34 +681,8 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
     if room_api_key_name:
         current_retry_api_key_name = room_api_key_name
     
-    # --- [2026-01-31 FIX] 初回キー選択時の枯渇チェック ---
-    # 指定されたキーが枯渇状態の場合、自動で代替キーに切り替える
-    # これにより、無料キーが枯渇しても有料キーに自動フォールバックできる
-    if config_manager.is_key_exhausted(current_retry_api_key_name):
-        print(f"  [Rotation] 指定キー '{current_retry_api_key_name}' は枯渇状態。代替キーを探索中...")
-        alternative_key = config_manager.get_next_available_gemini_key(
-            current_exhausted_key=current_retry_api_key_name
-        )
-        if alternative_key:
-            print(f"  [Rotation] 代替キー '{alternative_key}' に切り替えます")
-            current_retry_api_key_name = alternative_key
-            # ローテーション結果を永続化
-            config_manager.save_config_if_changed("last_api_key_name", alternative_key)
-        else:
-            yield ("values", {"messages": [AIMessage(content="[エラー: 利用可能なAPIキーがありません。しばらく時間をおいてから再試行してください。]")]})
-            return
-        
-    # --- [API Key Rotation Limit] ---
-    # 試行済みのキーを記憶し、1回の実行中に一度試したキーは二度と使わないようにする
-    tried_keys = {current_retry_api_key_name}
-        
-    api_key = config_manager.GEMINI_API_KEYS.get(current_retry_api_key_name)
-
-    if not api_key or api_key.startswith("YOUR_API_KEY"):
-        yield ("values", {"messages": [AIMessage(content=f"[エラー: APIキー '{current_retry_api_key_name}' が無効です。]")]})
-        return
-
     # 履歴構築（ここでJSONからの署名注入が行われる）
+    # [2026-02-10 FIX] 冒頭の枯渇チェックで messages を使用するため、定義を上に移動
     messages = []
     add_timestamp = effective_settings.get("add_timestamp", False)
     
@@ -720,6 +694,9 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
     if responding_ai_log_f and os.path.exists(responding_ai_log_f):
         own_history_raw = utils.load_chat_log(responding_ai_log_f)
         messages = convert_raw_log_to_lc_messages(own_history_raw, room_to_respond, add_timestamp, send_thoughts_final, provider=current_provider)
+
+    # 【重要】最終的なメッセージリストを走査し、ロールの重複を排除
+    messages = merge_consecutive_messages(messages, add_timestamp=add_timestamp)
 
     # スナップショット
     if history_log_path and os.path.exists(history_log_path) and history_log_path != responding_ai_log_f:
@@ -733,12 +710,9 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
     if is_first_responder and messages and isinstance(messages[-1], HumanMessage):
         messages.pop()
 
-    # プロンプトパーツの結合
+    # プロンプトパーツの結合（添付ファイル等）
     final_prompt_parts = []
     if active_attachments:
-        full_raw_history = utils.load_chat_log(responding_ai_log_f)
-        total_messages = len(full_raw_history)
-        final_prompt_parts.append({"type": "text", "text": "【現在アクティブな添付ファイルリスト】\n"})
         for file_path_str in active_attachments:
             try:
                 from pathlib import Path
@@ -746,34 +720,25 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
                 display_name = '_'.join(path_obj.name.split('_')[1:]) or path_obj.name
                 kind = filetype.guess(file_path_str)
                 if kind and kind.mime.startswith('image/'):
-                    # 画像: image_url形式でBase64エンコード
                     with open(file_path_str, "rb") as f:
                         encoded_string = base64.b64encode(f.read()).decode("utf-8")
                     final_prompt_parts.append({"type": "text", "text": f"- [{display_name}]"})
                     final_prompt_parts.append({"type": "image_url", "image_url": {"url": f"data:{kind.mime};base64,{encoded_string}"}})
                 elif kind and (kind.mime.startswith('audio/') or kind.mime.startswith('video/')):
-                    # 音声/動画: file形式でBase64エンコード（LangChainソースコードのdocstring準拠）
                     with open(file_path_str, "rb") as f:
                         encoded_string = base64.b64encode(f.read()).decode("utf-8")
                     final_prompt_parts.append({"type": "text", "text": f"- [{display_name}]"})
-                    final_prompt_parts.append({
-                        "type": "file",
-                        "source_type": "base64",
-                        "mime_type": kind.mime,
-                        "data": encoded_string
-                    })
+                    final_prompt_parts.append({"type": "file", "source_type": "base64", "mime_type": kind.mime, "data": encoded_string})
                 else:
-                    # テキスト系ファイル: 内容を読み込んでテキストとして送信
                     content = path_obj.read_text(encoding='utf-8', errors='ignore')
                     final_prompt_parts.append({"type": "text", "text": f"- [{display_name}]:\n{content}"})
             except Exception as e:
                 print(f"添付ファイル処理エラー: {e}")
-
+        
     if is_first_responder and user_prompt_parts:
         final_prompt_parts.extend(user_prompt_parts)
 
     if final_prompt_parts:
-        # 画像がない場合は、文字列として結合して送信することで、Gemini API との相性を最大化する。
         has_images = any(isinstance(p, dict) and p.get('type') in ('file', 'image_url') for p in final_prompt_parts)
         if not has_images:
             flat_content = "\n".join([p.get('text', '') if isinstance(p, dict) else str(p) for p in final_prompt_parts])
@@ -786,36 +751,57 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
 
     # 履歴制限
     if api_history_limit == "today":
-        # 本日分: エピソード記憶の有無に応じて適切な日付でフィルタ
         cutoff_date = _get_effective_today_cutoff(room_to_respond)
-        original_messages = messages.copy()  # フィルタ前のコピーを保持
+        original_messages = messages.copy()
         messages = _filter_messages_from_today(messages, cutoff_date)
-        
-        # 【最低送信数の保証】エピソード記憶作成後でも最低N往復分は送信
         min_messages = constants.MIN_TODAY_LOG_FALLBACK_TURNS * 2
         if len(messages) < min_messages and len(original_messages) > len(messages):
-            # 本日分が不足 → 元のメッセージリスト末尾から最低数を確保
             messages = original_messages[-min_messages:] if len(original_messages) >= min_messages else original_messages
-
-        # 【自動会話要約】閾値を超えていたら要約処理
-        auto_summary_enabled = effective_settings.get("auto_summary_enabled", False)
-        if auto_summary_enabled:
-            messages = _apply_auto_summary(
-                messages, 
-                room_to_respond, 
-                api_key,
-                effective_settings.get("auto_summary_threshold", constants.AUTO_SUMMARY_DEFAULT_THRESHOLD),
-                allow_generation=True
-            )
-        
         print(f"  - [History Limit] 本日分モード: {len(messages)}件のメッセージを送信")
     elif api_history_limit.isdigit():
         limit = int(api_history_limit)
         if limit > 0 and len(messages) > limit * 2:
             messages = messages[-(limit * 2):]
-    # "all" の場合は制限なし
 
-    # Agent State 初期化
+    # 現在のチャット欄にあるメッセージ数（新規追加分を除く）をUIに伝える
+    # [Note] 早期リターン時にスライス不備で過去ログが再表示されるのを防ぐため、ここで確定させる
+    yield ("initial_count", len(messages))
+
+    # --- [Phase 1.1] 枯渇チェック (以前の [2026-01-31 FIX] 部分) ---
+    if config_manager.is_key_exhausted(current_retry_api_key_name):
+        # Rotation有効確認
+        enable_rotation = effective_settings.get("enable_api_key_rotation")
+        if enable_rotation is None: # 個別未設定なら共通設定
+             enable_rotation = config_manager.CONFIG_GLOBAL.get("enable_api_key_rotation", True)
+        
+        if not enable_rotation:
+            print(f"  [Rotation] 指定キー '{current_retry_api_key_name}' は枯渇状態ですが、ローテーションが無効なためエラーとします")
+            error_msg = AIMessage(content=f"[エラー: 指定されたAPIキー '{current_retry_api_key_name}' が枯渇しています。設定でローテーションが無効なため、処理を中断しました。]")
+            yield ("values", {"messages": messages + [error_msg]})
+            return
+
+        print(f"  [Rotation] 指定キー '{current_retry_api_key_name}' は枯渇状態。代替キーを探索中...")
+        alternative_key = config_manager.get_next_available_gemini_key(
+            current_exhausted_key=current_retry_api_key_name
+        )
+        if alternative_key:
+            print(f"  [Rotation] 代替キー '{alternative_key}' に切り替えます")
+            current_retry_api_key_name = alternative_key
+            config_manager.save_config_if_changed("last_api_key_name", alternative_key)
+        else:
+            error_msg = AIMessage(content="[エラー: 利用可能なAPIキーがありません。しばらく時間をおいてから再試行してください。]")
+            yield ("values", {"messages": messages + [error_msg]})
+            return
+        
+    tried_keys = {current_retry_api_key_name}
+    api_key = config_manager.GEMINI_API_KEYS.get(current_retry_api_key_name)
+
+    if not api_key or api_key.startswith("YOUR_API_KEY"):
+        error_msg = AIMessage(content=f"[エラー: APIキー '{current_retry_api_key_name}' が無効です。]")
+        yield ("values", {"messages": messages + [error_msg]})
+        return
+
+    # Agent State 初期化 (messages は確定済み、初期カウント yield 済み)
     initial_state = {
         "messages": messages, "room_name": room_to_respond,
         "api_key": api_key, "api_key_name": current_retry_api_key_name,
@@ -834,12 +820,10 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
         "loop_count": 0,
         "season_en": season_en, "time_of_day_en": time_of_day_en,
         "skip_tool_execution": skip_tool_execution_flag,
-        "tool_use_enabled": config_manager.is_tool_use_enabled(room_to_respond),  # 【ツール不使用モード】ルーム個別設定を反映
-        "enable_supervisor": enable_supervisor_flag, # Supervisor有効フラグ
-        "speakers_this_turn": []  # [v19] 今ターン発言済みリスト（Supervisor用）
+        "tool_use_enabled": config_manager.is_tool_use_enabled(room_to_respond),
+        "enable_supervisor": enable_supervisor_flag,
+        "speakers_this_turn": []
     }
-
-    yield ("initial_count", len(messages))
 
     # --- 【2026-01-19 FIX】Gemini 3 Flash デッドロック対策 ---
     # Gemini 3 Flash Preview + ツール使用 + ストリーミングの組み合わせで
@@ -970,7 +954,8 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
             )
             
             if not next_key_name:
-                 yield ("values", {"messages": [AIMessage(content=f"[エラー: API割り当て制限(429)を超過しました。利用可能なすべてのAPIキーを試しましたが、成功しませんでした。]")]})
+                 error_msg = AIMessage(content=f"[エラー: API割り当て制限(429)を超過しました。利用可能なすべてのAPIキーを試しましたが、成功しませんでした。]")
+                 yield ("values", {"messages": initial_state.get("messages", []) + [error_msg]})
                  return
                  
             tried_keys.add(next_key_name)

@@ -1,0 +1,1 @@
+[project]\nname = "nexus-ark"\nversion = "0.1.0"\n[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"

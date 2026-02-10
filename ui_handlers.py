@@ -510,7 +510,8 @@ def handle_save_local_model_path(model_path: str):
         else:
             gr.Info("ローカルモデルパスをクリアしました。")
     else:
-        gr.Info("ローカルモデルパスは既に保存されています。")
+        if _initialization_completed:
+            gr.Info("ローカルモデルパスは既に保存されています。")
 
 def _get_location_choices_for_ui(room_name: str) -> list:
     """
@@ -6554,7 +6555,8 @@ def handle_paid_keys_change(paid_key_names: List[str]):
         return gr.update()
     
     if config_manager.save_config_if_changed("paid_api_key_names", paid_key_names):
-        gr.Info("有料APIキーの設定を更新しました。")
+        if _initialization_completed:
+            gr.Info("有料APIキーの設定を更新しました。")
 
     # グローバル変数を更新して即時反映
     config_manager.load_config()
@@ -6572,24 +6574,28 @@ def handle_rotation_setting_change(enabled: bool):
     config_manager.load_config()
     
     status_text = "有効" if enabled else "無効"
-    gr.Info(f"APIキー自動ローテーションを【{status_text}】に設定しました。")
+    # 初期化完了フラグだけでなく、完了時刻からの経過時間もチェックして起動時の余計な通知を防ぐ
+    if _initialization_completed and (time.time() - _initialization_completed_time > 2.0):
+        gr.Info(f"APIキー自動ローテーションを【{status_text}】に設定しました。")
     return
 
 
 def handle_allow_external_connection_change(allow_external: bool):
     """外部接続設定が変更されたら即時保存する。"""
     if config_manager.save_config_if_changed("allow_external_connection", allow_external):
-        if allow_external:
-            gr.Info("外部接続を許可しました。アプリを再起動すると反映されます。")
-        else:
-            gr.Info("外部接続を無効にしました。アプリを再起動すると反映されます。")
+        if _initialization_completed:
+            if allow_external:
+                gr.Info("外部接続を許可しました。アプリを再起動すると反映されます。")
+            else:
+                gr.Info("外部接続を無効にしました。アプリを再起動すると反映されます。")
     config_manager.load_config()
 
 def handle_notification_service_change(service_choice: str):
     if service_choice in ["Discord", "Pushover"]:
         service_value = service_choice.lower()
         if config_manager.save_config_if_changed("notification_service", service_value):
-            gr.Info(f"通知サービスを「{service_choice}」に設定しました。")
+            if _initialization_completed:
+                gr.Info(f"通知サービスを「{service_choice}」に設定しました。")
 
 def handle_save_moonshot_key(api_key: str):
     """Moonshot AI (Kimi) APIキーを保存する。"""
