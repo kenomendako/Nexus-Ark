@@ -1,0 +1,4 @@
+{
+  "tests/test_api_key_rotation.py": true,
+  "tests/test_ui_formatting.py::test_format_tool_result": true
+}
