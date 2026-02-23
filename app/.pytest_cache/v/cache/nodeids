@@ -1,0 +1,4 @@
+[
+  "tests/test_ui_formatting.py::test_format_tool_result",
+  "tests/test_update_staging.py::test_update_application_and_protection"
+]

@@ -1,0 +1,28 @@
+{
+ "signatures": [
+  {
+   "keyid": "eb0c396d6f011da52a28cd5366f90b087f6afc1c758c7e493201c8ffc43a60d4",
+   "sig": "c07b178a98cc71fb26cd1b4944a255422a32034ab8f5b3bde9476a29ad18e6589ab728c39af813bebf112feacf3bb5277c229d95c75bae867ebc26c571605105"
+  }
+ ],
+ "signed": {
+  "_type": "targets",
+  "expires": "2027-02-23T06:07:43Z",
+  "spec_version": "1.0.31",
+  "targets": {
+   "Nexus-Ark-0.2.2.3.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "a550cafdfc39ab5698ecb7db1278c5084f36cd65925e69561d43ff3e9670033d"
+    },
+    "length": 6995940
+   }
+  },
+  "version": 1
+ }
+}
