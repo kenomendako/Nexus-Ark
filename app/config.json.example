@@ -1,0 +1,105 @@
+{
+  "active_provider": "google",
+  "active_openai_profile": "OpenRouter",
+  "openai_provider_settings": [
+    {
+      "name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key": "YOUR_API_KEY_HERE",
+      "default_model": "openai/gpt-oss-120b:free",
+      "available_models": [
+        "deepseek/deepseek-r1-0528:free",
+        "google/gemma-3-27b-it:free",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "nvidia/nemotron-3-nano-30b-a3b:free",
+        "qwen/qwen3-coder:free",
+        "xiaomi/mimo-v2-flash:free"
+      ]
+    },
+    {
+      "name": "Groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key": "YOUR_API_KEY_HERE",
+      "default_model": "mixtral-8x7b-32768",
+      "available_models": [
+        "llama-3.1-8b-instant",
+        "llama-3.3-70b-versatile",
+        "openai/gpt-oss-120b",
+        "qwen/qwen3-32b"
+      ]
+    },
+    {
+      "name": "Local Ollama",
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "YOUR_API_KEY_HERE",
+      "default_model": "⭐ qwen2.5:3b",
+      "tool_use_enabled": false,
+      "available_models": [
+        "gemma2:2b",
+        "phi3.5",
+        "phi3.5:latest",
+        "qwen2.5:0.5b",
+        "qwen2.5:3b",
+        "⭐ qwen2.5:3b"
+      ]
+    },
+    {
+      "name": "OpenAI Official",
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "YOUR_API_KEY_HERE",
+      "default_model": "gpt-5.2-2025-12-11",
+      "available_models": [
+        "chatgpt-4o-latest",
+        "gpt-5.2-2025-12-11"
+      ],
+      "tool_use_enabled": true
+    }
+  ],
+  "gemini_api_keys": {
+    "bakeno": "YOUR_API_KEY_HERE",
+    "menkenongi": "YOUR_API_KEY_HERE",
+    "stmh821": "YOUR_API_KEY_HERE",
+    "kenokaicoo": "YOUR_API_KEY_HERE"
+  },
+  "paid_api_key_names": [
+    "kenokaicoo"
+  ],
+  "available_models": [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview"
+  ],
+  "default_model": "gemini-2.5-pro",
+  "image_generation_mode": "new",
+  "search_provider": "tavily",
+  "last_room": "ルシアン",
+  "last_model": "gemini-3-flash-preview",
+  "last_api_key_name": "kenokaicoo",
+  "last_send_thoughts_to_api": true,
+  "last_api_history_limit_option": "today",
+  "alarm_api_history_turns": 10,
+  "notification_service": "pushover",
+  "notification_webhook_url": "YOUR_WEBHOOK_URL_HERE",
+  "pushover_app_token": "YOUR_APP_TOKEN_HERE",
+  "pushover_user_key": "YOUR_USER_KEY_HERE",
+  "log_archive_threshold_mb": 10,
+  "log_keep_size_mb": 5,
+  "backup_rotation_count": 10,
+  "theme_settings": {
+    "active_theme": "nexus_ark_theme",
+    "custom_themes": {}
+  },
+  "allow_external_connection": true,
+  "tavily_api_key": "YOUR_API_KEY_HERE",
+  "internal_model_settings": {
+    "provider": "google",
+    "processing_model": "gemini-2.5-flash-lite",
+    "summarization_model": "gemini-2.5-flash",
+    "supervisor_model": "gemini-2.5-flash-lite"
+  },
+  "zhipu_api_key": "YOUR_API_KEY_HERE",
+  "groq_api_key": "YOUR_API_KEY_HERE",
+  "moonshot_api_key": "YOUR_API_KEY_HERE"
+}
