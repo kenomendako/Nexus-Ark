@@ -1,0 +1,34 @@
+{
+    "app_name": "Nexus-Ark",
+    "app_version_attr": null,
+    "binary_diff": null,
+    "encrypted_keys": [],
+    "expiration_days": {
+        "root": 365,
+        "snapshot": 365,
+        "targets": 365,
+        "timestamp": 365
+    },
+    "key_map": {
+        "root": [
+            "root"
+        ],
+        "snapshot": [
+            "snapshot"
+        ],
+        "targets": [
+            "targets"
+        ],
+        "timestamp": [
+            "timestamp"
+        ]
+    },
+    "keys_dir": "private/keys",
+    "repo_dir": ".",
+    "thresholds": {
+        "root": 1,
+        "snapshot": 1,
+        "targets": 1,
+        "timestamp": 1
+    }
+}

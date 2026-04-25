@@ -1,0 +1,574 @@
+{
+ "signatures": [
+  {
+   "keyid": "eb0c396d6f011da52a28cd5366f90b087f6afc1c758c7e493201c8ffc43a60d4",
+   "sig": "7da9ef0be27b244b77ccc0139903de80dcc38fc5d261d76216571d0b679e4a1146753d2a4719a6e58910e78c33ff82d8349b96063557b678d5c1cc18d6837f0f"
+  }
+ ],
+ "signed": {
+  "_type": "targets",
+  "expires": "2027-04-25T03:52:51Z",
+  "spec_version": "1.0.31",
+  "targets": {
+   "Nexus-Ark-0.2.2.11.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "af087e589cea7027ff8b8f7a2fbf053b567af9c22ddcd61a4b7005a278f27888"
+    },
+    "length": 7046294
+   },
+   "Nexus-Ark-0.2.2.12.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "74b74c973d8ebf818b9c0ba5fe1f0d4c3099d9f0d8883902274fb08be988f2d6",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9502720
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "0b430192f0d9e2eaad4d7fdd22fb0f833a467818f40c33d917e7fcf7d8900b7e"
+    },
+    "length": 471
+   },
+   "Nexus-Ark-0.2.2.12.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "763a9e659d8f383e9688839fa765356a456ca50220198d8910ead6a995fcd7e9"
+    },
+    "length": 7046339
+   },
+   "Nexus-Ark-0.2.2.13.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "41351b86953bdbf948488bde9dd6de76c6fa65556701eab3d47604fef2dded11",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9502720
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "7306f01f6a57892c21f219569bf74f233d6d7bfe98cd4f4a49437f51dd63cf4b"
+    },
+    "length": 485
+   },
+   "Nexus-Ark-0.2.2.13.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "bc011c363ab223b8a32466c9bd86d2fca0f66d01ca87cabc57eb4bd0204e508e"
+    },
+    "length": 7045712
+   },
+   "Nexus-Ark-0.2.2.14.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "60cfd79c787f609dc7b933ecefaf57e6c87b80b1db667301d3d438e0da3845e3",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9502720
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "fad3456f5fd1fce011d4a3e772b0e7412d6a1eaf775ba44ade6e3d5b0cdc2bab"
+    },
+    "length": 1280
+   },
+   "Nexus-Ark-0.2.2.14.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "9357615a156c0a2157a88c96b92626a431e9873606422e774403d2a413f06cbd"
+    },
+    "length": 7045799
+   },
+   "Nexus-Ark-0.2.2.15.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "978d089b6cd9cc2892e45285227c5d150c244ff25074963a93d8ec16d8583dae",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9502720
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "6c7b50441ded9490921b36283a581d48be26e1b184136c38bcb3dd6762192d9c"
+    },
+    "length": 376
+   },
+   "Nexus-Ark-0.2.2.15.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "a4298f57c8c7b3e832533683d790a249ae469402600ee90434a42cc9c035c0c8"
+    },
+    "length": 7045498
+   },
+   "Nexus-Ark-0.2.2.16.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "2207ea96aa11dc3976a13388d5c10b8dbdc2fc486dc0cfca3020f1583c39e6ba",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9502720
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "2e720efa35ac7c97bad2f983b0d89465f1f592a1a0717553e266cb9bdb1d8349"
+    },
+    "length": 4242
+   },
+   "Nexus-Ark-0.2.2.16.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "70ed4146f03b3148cebf49d3c0e36f0a14e2f19afd09c11d0cca8c46b3c45ff3"
+    },
+    "length": 7047240
+   },
+   "Nexus-Ark-0.2.2.17.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "f63015ca5ee0a9ffc72ab21d53d60aed1c8794390ef3a46eb38bef60de19f276",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9512960
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "003a7759c845faefc55b98aa5dc32833ae175949b349e228ab034a5af051baeb"
+    },
+    "length": 2686
+   },
+   "Nexus-Ark-0.2.2.17.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "2f1727625c889f77f9843f74b904d54af69c731c3f3af223ea80acdcb52b0d4e"
+    },
+    "length": 7048249
+   },
+   "Nexus-Ark-0.2.3.1.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "3d55a9dea764e2050d28b03765be09559e4c0bad2296af024c1c7d95747fc0cd",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9646080
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "c9f7f5a60cc5f60128ae660214e0e0cdbf571c1b1be129ae1e499e2dfb8b93f7"
+    },
+    "length": 37777
+   },
+   "Nexus-Ark-0.2.3.1.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "12e2f025c0df9fe4b3f4bec7fe4413e16d391f5f955755c31263157c5517b904"
+    },
+    "length": 7074492
+   },
+   "Nexus-Ark-0.2.3.2.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "ce0b510d5b582a3c0e8c2c9cceddbf6040f1ba3ba57063d2816b0f8c23a2d2d7",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9656320
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "7bb63e5fec988f69df0f52b41283fa1ce00ee4510bb868dd528ce69ba6b1404a"
+    },
+    "length": 984
+   },
+   "Nexus-Ark-0.2.3.2.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "89a9fcc86c20066f5ab5e7ab0e2ef0679a3f457f87d2784f37b532a831abcb95"
+    },
+    "length": 7074934
+   },
+   "Nexus-Ark-0.2.3.3.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "d8a21221c2721f791624da5fd3b33943a64be9cab700fe1280580461ed526db1",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9656320
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "f09483d72b27a95d21107eddafb7d24e904bab01cb962d0dde2d2599a3fb7368"
+    },
+    "length": 1056
+   },
+   "Nexus-Ark-0.2.3.3.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "e4a743cbf413add1111b5e5738f916e97e393c7519e55586b4dcf2b661d0a4d5"
+    },
+    "length": 7075428
+   },
+   "Nexus-Ark-0.2.3.4.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "14bc0d94b70eb30efda1562b15297cf9b1325915e45aff6471ea35eacc3b8166",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9646080
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "6ac05117db1010ed511a7b8565672e5fd64622de19c08b4745f4f246c2e1908b"
+    },
+    "length": 37813
+   },
+   "Nexus-Ark-0.2.3.4.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "80d97e52d4ca233723bb2d53e123c193351b6be936b098b3422318ed9ef1d3b0"
+    },
+    "length": 7074515
+   },
+   "Nexus-Ark-0.2.3.5.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "0aca3e245ef02c8cf945146b02dc7548691641e3024689835a5124bda17faf8a",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9646080
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "84b983e3745a7da0ff8923582e5aade142b0ba34b2d0140442b655713b3ab000"
+    },
+    "length": 3000
+   },
+   "Nexus-Ark-0.2.3.5.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "6e03f186c96deaf15b02c433f6a357c9a078e8e73f0cf11b998729f18d7b0498"
+    },
+    "length": 7073767
+   },
+   "Nexus-Ark-0.2.4.0.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "66c5a88d12f88cacad56d12aed1b1eba2f6ba7241fdd7b0016eb90750ca8ba0f",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9676800
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "2f5f67acf534556e0d8f580659be872ca4899bc0c21c8e0f20fa6e414f16241f"
+    },
+    "length": 10777
+   },
+   "Nexus-Ark-0.2.4.0.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "dc4b2cf25c6472afb1f16649eeeb1408b3829a666e1d2c0bbce19ec265c2ff91"
+    },
+    "length": 7080093
+   },
+   "Nexus-Ark-0.2.4.1.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "b4bf7c243febe8510786d3629d7ad06d36266c20931d4427b373455b2fa727aa",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9687040
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "fbe3cfe11d58e3c582fff8bac382076d79eca0a68c2dc7eefb9b9a6527c167a3"
+    },
+    "length": 5806
+   },
+   "Nexus-Ark-0.2.4.1.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "b5e0da1fe99b1b549cd604fff345e932b4635003340b90374af55859303f037b"
+    },
+    "length": 7082705
+   },
+   "Nexus-Ark-0.2.4.2.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "9fe04138f9359f7348aadc61fcdd0c02ce365782ef7737fed033043cb2334cd0",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9687040
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "0f567739a12438a996de64bdd531cf420e8c4d5c5f31747fb344dc11715d1c23"
+    },
+    "length": 321
+   },
+   "Nexus-Ark-0.2.4.2.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "f2457b07219f5b6a91bc46f2531ddc702d3a78aa54e4128335488c9bba7d111b"
+    },
+    "length": 7082723
+   },
+   "Nexus-Ark-0.2.4.3.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "462702f3b09d16e6e17e3384180b0c02a3032e3f788f9992236c160977b10f03",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9676800
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "14df4faa5a3b763e52a5517182527be45fedef4d1cb22900040aabd10e553562"
+    },
+    "length": 4289
+   },
+   "Nexus-Ark-0.2.4.3.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "3b8f25573670e4ff45cb3072442dc92f4a3912355310ec86024885ed0e9ab6b2"
+    },
+    "length": 7080823
+   },
+   "Nexus-Ark-0.2.5.0.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "3519c0592c5ddbe9f0615f785651329ddb0268ebaee6d12cb683075b440adb44",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9963520
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "ddbf4850d86608739b1bf7c88bf3efc0375efa0bb8caf42355ab3ff065eed30e"
+    },
+    "length": 89187
+   },
+   "Nexus-Ark-0.2.5.0.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "8ff0357aca945c495e6bf25529484cb00335ed4975bec1ed70bd2a2271b3c325"
+    },
+    "length": 7144487
+   },
+   "Nexus-Ark-0.2.5.1.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "2f1eba6368f14ae45a1bbeb8f064fd8e8a29e1291f149986690550086758e820",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9973760
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "3481532feeacccca9542877837a257772644b48eedd2e635056fd0b3ded6fe66"
+    },
+    "length": 3864
+   },
+   "Nexus-Ark-0.2.5.1.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "ec5284278f0ecf79d157b7d5db928b8490a185e49300dbfb35aa27a641e0541f"
+    },
+    "length": 7146915
+   },
+   "Nexus-Ark-0.2.5.2.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "9eb3b112f876f87a38b9e65145658a8d6b2d63b920e56787ea994843ec0ff772",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9973760
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "90ed6b30cb83439559013c6c31de1c0a274af72730ae7616cef11e0ba887af2f"
+    },
+    "length": 407
+   },
+   "Nexus-Ark-0.2.5.2.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "353f4609e951c3b8e234a6a03a6805f1cb334b94655282eb3af0c945cf2771ce"
+    },
+    "length": 7146918
+   },
+   "Nexus-Ark-0.2.5.3.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "abe2af5a56d005b333cc71af65dfb5180328639ff475dddf37aefca25abb863d",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9973760
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "8239c960f7c954bea55e82a3a3c6c0ca0a61364d6b41f93411dd661e418d7391"
+    },
+    "length": 604
+   },
+   "Nexus-Ark-0.2.5.3.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "ddc3328859c22c718a649e69691566de01ee63c2ec11eaa261590fbbc7f668a7"
+    },
+    "length": 7146980
+   },
+   "Nexus-Ark-0.2.5.4.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "c28e23c80081bb91d86a983402328a32168e7de9449f31dffcc41ff1c91124a1",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 9994240
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "be9e3f4ae5347a9e1a13713295e00a7dd8989884183186b628e92e5004107fa7"
+    },
+    "length": 9330
+   },
+   "Nexus-Ark-0.2.5.4.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "436e14c4536255acb2029372b4c2da8918e9b94516a87c1557ee9e9cb53c9256"
+    },
+    "length": 7152132
+   },
+   "Nexus-Ark-0.2.5.5.patch": {
+    "custom": {
+     "tufup": {
+      "tar_hash": "01c718ab52ba57edb119e2f330d436f29ad613ccde94c4543da1dddde1fbab55",
+      "tar_hash_algorithm": "sha256",
+      "tar_size": 10004480
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "ae9d9820cc1be8377991d3b969cbcd6cb6dd16316618a42917541ba8969d6d8f"
+    },
+    "length": 7951
+   },
+   "Nexus-Ark-0.2.5.5.tar.gz": {
+    "custom": {
+     "tufup": {
+      "required": false
+     },
+     "user": null
+    },
+    "hashes": {
+     "sha256": "210b4e892aeaf61df87848c5b7e1649cb2057deeee839e029ae2258c8b0f790e"
+    },
+    "length": 7155587
+   }
+  },
+  "version": 46
+ }
+}
