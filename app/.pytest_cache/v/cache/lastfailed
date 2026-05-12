@@ -1,0 +1,13 @@
+{
+  "tests/test_api_key_rotation.py": true,
+  "tests/test_ui_formatting.py::test_format_tool_result": true,
+  "tests/test_delete_output.py": true,
+  "tests/test_dreaming_list_fix.py": true,
+  "tests/test_fix_today_error.py": true,
+  "tests/test_notification_cleaning.py": true,
+  "tests/test_outing_logic.py": true,
+  "tests/test_rag_save_fix.py": true,
+  "tests/test_theme_save.py": true,
+  "tests/test_timer_persistence.py": true,
+  "scripts/test_rag_retry_logic.py::TestRAGRetry::test_search_retry_flow": true
+}

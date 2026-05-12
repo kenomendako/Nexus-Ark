@@ -1,0 +1,78 @@
+{
+    "active_provider": "google",
+    "active_openai_profile": "OpenRouter",
+    "openai_provider_settings": [
+        {
+            "name": "OpenRouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+            "default_model": "meta-llama/llama-3.3-70b-instruct:free",
+            "available_models": [
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "google/gemma-3-27b-it:free",
+                "deepseek/deepseek-r1-0528:free"
+            ]
+        },
+        {
+            "name": "Groq",
+            "base_url": "https://api.groq.com/openai/v1",
+            "api_key": "",
+            "default_model": "llama-3.3-70b-versatile",
+            "available_models": [
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant"
+            ]
+        },
+        {
+            "name": "Local Ollama",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "ollama",
+            "default_model": "qwen2.5:3b",
+            "tool_use_enabled": false,
+            "available_models": [
+                "qwen2.5:3b",
+                "gemma2:2b"
+            ]
+        }
+    ],
+    "gemini_api_keys": {},
+    "paid_api_key_names": [],
+    "available_models": [
+        "gemini-2.5-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash-lite",
+        "gemini-3-flash-preview"
+    ],
+    "default_model": "gemini-2.5-flash",
+    "image_generation_mode": "new",
+    "search_provider": "tavily",
+    "last_room": "Olivie",
+    "last_model": "gemini-2.5-flash",
+    "last_api_key_name": "",
+    "last_send_thoughts_to_api": true,
+    "last_api_history_limit_option": "today",
+    "alarm_api_history_turns": 10,
+    "notification_service": "pushover",
+    "notification_webhook_url": "",
+    "pushover_app_token": "",
+    "pushover_user_key": "",
+    "log_archive_threshold_mb": 10,
+    "log_keep_size_mb": 5,
+    "backup_rotation_count": 10,
+    "theme_settings": {
+        "active_theme": "nexus_modern",
+        "custom_themes": {}
+    },
+    "allow_external_connection": false,
+    "tavily_api_key": "",
+    "internal_model_settings": {
+        "provider": "google",
+        "processing_model": "gemini-2.5-flash-lite",
+        "summarization_model": "gemini-2.5-flash",
+        "supervisor_model": "gemini-2.5-flash-lite"
+    },
+    "zhipu_api_key": "",
+    "groq_api_key": "",
+    "moonshot_api_key": "",
+    "setup_completed": false
+}
