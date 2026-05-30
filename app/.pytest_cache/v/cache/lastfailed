@@ -1,0 +1,15 @@
+{
+  "tests/test_api_key_rotation.py": true,
+  "tests/test_delete_output.py": true,
+  "tests/test_fix_today_error.py": true,
+  "tests/test_outing_logic.py": true,
+  "tests/test_rag_save_fix.py": true,
+  "tests/test_theme_save.py": true,
+  "tests/test_timer_persistence.py": true,
+  "scripts/test_rag_retry_logic.py::TestRAGRetry::test_search_retry_flow": true,
+  "tests/test_auto_summary_verification.py": true,
+  "tests/test_custom_tool_metadata.py": true,
+  "tests/test_episodic_memory_api_key_resolution.py": true,
+  "tests/test_resolve.py": true,
+  "tests/test_entity_memory_hygiene.py::TestEntityMemoryHygiene": true
+}
