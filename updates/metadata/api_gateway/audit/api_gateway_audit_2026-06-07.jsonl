@@ -1,0 +1,5 @@
+{"timestamp": "2026-06-07T01:42:47.852465+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-07T01:42:47.856208+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-07T01:42:47.869830+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-07T01:42:47.878247+00:00", "event": "rate_limited", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "bucket=general retry_after=59"}
+{"timestamp": "2026-06-07T01:43:58.877855+00:00", "event": "management:location_set", "status": "success", "method": "POST", "path": "/api/v1/rooms/ルシアン/location", "client": "12ca17b49af2", "detail": "room=ルシアン"}

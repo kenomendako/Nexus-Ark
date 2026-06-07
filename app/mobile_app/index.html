@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#16413f" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0f1514" media="(prefers-color-scheme: dark)">
+    <title>Nexus Ark Lite</title>
+    <link rel="manifest" href="/lite/manifest.webmanifest">
+    <link rel="icon" href="/lite/icon.png">
+    <link rel="stylesheet" href="/lite/static/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-container">
+          <img class="app-logo" src="/lite/badge.png" alt="" aria-hidden="true">
+          <div>
+            <h1 class="app-title">Nexus Ark Lite</h1>
+            <p id="room-title" style="display: none;"></p>
+          </div>
+        </div>
+        <button class="icon-button" id="refresh-button" type="button" title="更新" aria-label="更新">↻</button>
+      </header>
+
+      <section class="chat-panel" aria-label="チャット">
+        <div class="persona-header">
+          <img class="persona-avatar" id="persona-avatar" alt="" hidden>
+          <div class="persona-selects">
+            <div class="select-row">
+              <select id="room-select" aria-label="ルーム"></select>
+            </div>
+            <div class="select-row">
+              <select id="location-select" aria-label="現在地"></select>
+            </div>
+          </div>
+        </div>
+        <div class="sync-row">
+          <span id="sync-status" aria-live="polite"></span>
+          <div class="sync-actions">
+            <select id="tts-mode-select" class="tts-mode-select" aria-label="音声再生方式">
+              <option value="trim">先頭再生</option>
+              <option value="split">分割再生</option>
+            </select>
+            <button class="secondary-button compact-button stop-audio-button" id="stop-audio-button" type="button" hidden>停止</button>
+          </div>
+        </div>
+        <div class="notice-panel" id="secure-origin-notice" hidden></div>
+        <div class="messages" id="messages" aria-live="polite"></div>
+        <form class="composer" id="chat-form">
+          <div class="composer-main">
+            <label class="attach-button" title="画像を添付">
+              ＋
+              <input id="image-input" type="file" accept="image/*">
+            </label>
+            <button class="voice-button" id="voice-button" type="button" title="音声入力">録音</button>
+            <textarea id="message-input" rows="3" placeholder="メッセージ"></textarea>
+            <span class="attachment-name" id="attachment-name"></span>
+          </div>
+          <button class="send-button" id="send-button" type="submit">送信</button>
+        </form>
+      </section>
+
+      <details class="menu-panel" id="menu-details">
+        <summary class="menu-summary">
+          <span>メニュー</span>
+          <span class="status-pill" id="connection-status">未接続</span>
+        </summary>
+        <div class="menu-content">
+          <details class="menu-section" id="connection-details" open>
+            <summary class="section-summary">
+              <span id="connection-summary-url">接続設定</span>
+            </summary>
+            <div class="connection-fields" aria-label="接続設定">
+              <label class="field">
+                <span>API URL</span>
+                <input id="api-base-input" type="url" autocomplete="url" placeholder="http://192.168.0.2:8000">
+              </label>
+              <label class="field">
+                <span>Token</span>
+                <input id="token-input" type="password" autocomplete="current-password" placeholder="接続用Token">
+              </label>
+              <div class="connection-actions">
+                <button class="primary-button" id="connect-button" type="button">接続</button>
+              </div>
+            </div>
+          </details>
+
+          <details class="menu-section" id="status-details">
+            <summary class="section-summary">
+              <span>状態</span>
+              <span id="location-value">-</span>
+            </summary>
+            <section class="status-grid" aria-label="状態">
+              <article class="status-card expression-card">
+                <span class="card-label">表情</span>
+                <strong id="expression-value">neutral</strong>
+              </article>
+              <article class="status-card">
+                <span class="card-label">反応度</span>
+                <strong id="arousal-value">0.50</strong>
+              </article>
+            </section>
+            <section class="drives-panel" aria-label="内的状態">
+              <div class="drive-row">
+                <span>退屈</span>
+                <meter id="drive-boredom" min="0" max="1" value="0"></meter>
+              </div>
+              <div class="drive-row">
+                <span>好奇心</span>
+                <meter id="drive-curiosity" min="0" max="1" value="0"></meter>
+              </div>
+              <div class="drive-row">
+                <span>目標</span>
+                <meter id="drive-goal" min="0" max="1" value="0"></meter>
+              </div>
+              <div class="drive-row">
+                <span>親密度</span>
+                <meter id="drive-related" min="0" max="1" value="0"></meter>
+              </div>
+            </section>
+          </details>
+
+          <details class="menu-section" id="theme-details">
+            <summary class="section-summary">
+              <span>テーマ設定</span>
+              <span class="status-pill" id="theme-summary-status">グリーン / 自動</span>
+            </summary>
+            <div class="connection-fields" aria-label="テーマ設定">
+              <label class="field">
+                <span>カラーテーマ</span>
+                <select id="theme-select">
+                  <option value="green">グリーン（既定）</option>
+                  <option value="blue">ブルー</option>
+                  <option value="red">レッド（ピンク）</option>
+                  <option value="purple">パープル</option>
+                  <option value="orange">オレンジ</option>
+                  <option value="yellow">イエロー</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>カラーモード</span>
+                <select id="color-scheme-select">
+                  <option value="auto">自動（OS設定追従）</option>
+                  <option value="light">ライト</option>
+                  <option value="dark">ダーク</option>
+                </select>
+              </label>
+            </div>
+          </details>
+
+          <details class="menu-section" id="redaction-details">
+            <summary class="section-summary">
+              <span>文字置き換え（マスク）</span>
+              <span class="status-pill" id="redaction-summary-status">オフ</span>
+            </summary>
+            <div class="connection-fields" aria-label="文字置き換え設定">
+              <label class="checkbox-label">
+                <input type="checkbox" id="redaction-enabled-checkbox">
+                <span>置き換え（マスク）を有効にする</span>
+              </label>
+              
+              <div class="rules-editor">
+                <div class="rule-input-row">
+                  <input type="text" id="rule-find-input" placeholder="元の文字列" class="compact-input">
+                  <input type="text" id="rule-replace-input" placeholder="置換後" class="compact-input">
+                  <input type="color" id="rule-color-input" value="#62827e" title="マスク背景色" class="color-picker-compact">
+                  <button type="button" class="secondary-button compact-button" id="add-rule-button">追加</button>
+                </div>
+                
+                <div class="rules-list-container">
+                  <ul id="rules-list" class="rules-list"></ul>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <details class="menu-section" id="management-details">
+            <summary class="section-summary">
+              <span>管理</span>
+              <span class="status-pill" id="management-summary-status">未読込</span>
+            </summary>
+            <div class="management-content">
+              <section class="management-section" aria-label="Twitter下書き">
+                <div class="management-heading">
+                  <h2>Twitter下書き</h2>
+                  <button class="secondary-button compact-button" id="draft-refresh-button" type="button">再取得</button>
+                </div>
+                <label class="field">
+                  <span>承認待ち</span>
+                  <select id="draft-select"></select>
+                </label>
+                <textarea id="draft-content" class="management-textarea" rows="4" placeholder="承認待ち下書きはありません"></textarea>
+                <div class="management-meta" id="draft-meta"></div>
+                <div class="management-actions">
+                  <button class="primary-button" id="draft-approve-button" type="button">承認して投稿</button>
+                  <button class="secondary-button" id="draft-reject-button" type="button">却下</button>
+                </div>
+              </section>
+
+              <section class="management-section" aria-label="自律行動">
+                <div class="management-heading">
+                  <h2>自律行動</h2>
+                  <span class="management-meta" id="autonomy-meta">-</span>
+                </div>
+                <div class="management-actions">
+                  <button class="secondary-button" id="autonomy-quiet-button" type="button">静かにする</button>
+                  <button class="secondary-button" id="autonomy-normal-button" type="button">通常に戻す</button>
+                </div>
+              </section>
+
+              <section class="management-section" aria-label="ノート">
+                <div class="management-heading">
+                  <h2>ノート</h2>
+                  <span class="management-meta" id="note-meta">未読込</span>
+                </div>
+                <div class="management-inline">
+                  <select id="note-type-select" aria-label="ノート種別">
+                    <option value="research">研究ノート</option>
+                    <option value="creative">創作ノート</option>
+                  </select>
+                  <button class="secondary-button" id="note-refresh-button" type="button">見出し取得</button>
+                </div>
+                <div class="management-inline">
+                  <select id="note-heading-select" aria-label="見出し" disabled>
+                    <option value="">（見出しを取得してください）</option>
+                  </select>
+                  <button class="secondary-button" id="note-show-section-button" type="button" disabled>表示</button>
+                </div>
+                <pre class="note-viewer" id="note-viewer">ノート種別を選んで「見出し取得」を押してください。</pre>
+              </section>
+
+              <section class="management-section" aria-label="通知">
+                <div class="management-heading">
+                  <h2>通知</h2>
+                  <span class="management-meta" id="notification-meta">未確認</span>
+                </div>
+                <div class="management-actions">
+                  <button class="secondary-button" id="notification-enable-button" type="button">通知を許可</button>
+                  <button class="secondary-button" id="notification-test-button" type="button">通知テスト</button>
+                  <button class="secondary-button" id="notification-unsubscribe-current-button" type="button">この端末を解除</button>
+                </div>
+                <div class="notification-settings">
+                  <label class="toggle-row">
+                    <input id="event-notification-enabled" type="checkbox">
+                    <span>外部イベント通知</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="response-preview-enabled" type="checkbox">
+                    <span>応答通知に本文プレビューを表示</span>
+                  </label>
+                  <label>
+                    <span>最低重要度</span>
+                    <select id="event-notification-minimum">
+                      <option value="high">high以上</option>
+                      <option value="critical">criticalのみ</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>既定クールダウン秒</span>
+                    <input id="event-notification-cooldown" type="number" min="0" max="86400" step="30">
+                  </label>
+                  <label>
+                    <span>送信元別の通知間隔（JSON・上級者向け）</span>
+                    <textarea id="event-notification-source-cooldowns" rows="3" spellcheck="false"></textarea>
+                  </label>
+                  <button class="secondary-button" id="event-notification-save-button" type="button">通知設定を保存</button>
+                </div>
+                <div class="management-detail" id="notification-detail" aria-live="polite">通知テスト結果はここに表示されます。</div>
+                <div class="push-device-list" id="push-device-list" aria-live="polite"></div>
+              </section>
+            </div>
+          </details>
+        </div>
+      </details>
+    </main>
+    <dialog class="image-dialog" id="image-dialog">
+      <button class="icon-button close-dialog-button" id="close-image-dialog" type="button" aria-label="閉じる">×</button>
+      <img id="image-dialog-img" alt="拡大画像">
+    </dialog>
+    <script src="/lite/static/app.js" type="module"></script>
+  </body>
+</html>

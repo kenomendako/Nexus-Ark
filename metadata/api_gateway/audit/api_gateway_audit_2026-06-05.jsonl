@@ -1,0 +1,20 @@
+{"timestamp": "2026-06-05T08:57:03.764765+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T08:58:22.780277+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T09:44:05.920832+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T09:44:31.686569+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T09:44:55.127499+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T09:49:46.377884+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T09:52:40.852822+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T09:53:39.885297+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T09:59:53.730145+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T10:01:36.011393+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-05T10:05:00.690392+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-05T10:47:24.526777+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms/ルシアン/chat/history", "client": "99d1d7e47440", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-05T10:47:25.434161+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "99d1d7e47440", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-05T10:47:28.355355+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "99d1d7e47440", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-05T10:51:14.801426+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "99d1d7e47440", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-05T10:51:19.359029+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "99d1d7e47440", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-05T10:51:21.220278+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "99d1d7e47440", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-05T15:37:02.246810+00:00", "event": "management:event_notification_settings", "status": "success", "method": "PUT", "path": "/api/v1/notifications/events/settings", "client": "99d1d7e47440"}
+{"timestamp": "2026-06-05T15:37:04.847069+00:00", "event": "management:event_notification_settings", "status": "success", "method": "PUT", "path": "/api/v1/notifications/events/settings", "client": "99d1d7e47440"}
+{"timestamp": "2026-06-05T15:38:53.584877+00:00", "event": "management:location_set", "status": "success", "method": "POST", "path": "/api/v1/rooms/ルシアン/location", "client": "99d1d7e47440", "detail": "room=ルシアン"}
