@@ -1,0 +1,29 @@
+{"timestamp": "2026-06-06T06:54:34.536317+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T06:54:34.540047+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T06:54:34.552762+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-06T06:54:34.560913+00:00", "event": "rate_limited", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "bucket=general retry_after=59"}
+{"timestamp": "2026-06-06T06:55:51.294322+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T06:55:51.298861+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T06:55:51.311368+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-06T06:55:51.318834+00:00", "event": "rate_limited", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "bucket=general retry_after=59"}
+{"timestamp": "2026-06-06T06:56:17.307115+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T06:56:17.311247+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T06:56:17.325750+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-06T06:56:17.334480+00:00", "event": "rate_limited", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "bucket=general retry_after=59"}
+{"timestamp": "2026-06-06T07:19:42.307481+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T07:19:42.311389+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T07:19:42.325377+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-06T07:19:42.333555+00:00", "event": "rate_limited", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "bucket=general retry_after=59"}
+{"timestamp": "2026-06-06T08:46:48.629374+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T08:46:48.633922+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c"}
+{"timestamp": "2026-06-06T08:46:48.646936+00:00", "event": "auth_public_without_token", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "host=0.0.0.0"}
+{"timestamp": "2026-06-06T08:46:48.655326+00:00", "event": "rate_limited", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "846488f1dc5c", "detail": "bucket=general retry_after=59"}
+{"timestamp": "2026-06-06T08:48:47.216491+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-06T08:49:15.592166+00:00", "event": "auth_invalid", "status": "blocked", "method": "GET", "path": "/api/v1/rooms", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-06T08:54:21.107840+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/assets", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-06T09:00:32.250738+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/assets", "client": "99d1d7e47440"}
+{"timestamp": "2026-06-06T09:04:53.627944+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/assets", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-06T09:05:32.989842+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/assets", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-06T09:07:58.063054+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/assets", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-06T09:08:58.958787+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/assets", "client": "12ca17b49af2"}
+{"timestamp": "2026-06-06T09:15:09.519317+00:00", "event": "auth_missing", "status": "blocked", "method": "GET", "path": "/api/v1/assets", "client": "99d1d7e47440"}

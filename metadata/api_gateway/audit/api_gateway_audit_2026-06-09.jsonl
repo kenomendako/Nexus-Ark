@@ -1,0 +1,2 @@
+{"timestamp": "2026-06-09T00:07:37.633189+00:00", "event": "management:twitter_draft_approve", "status": "success", "method": "POST", "path": "/api/v1/rooms/ルシアン/twitter/drafts/20260609060959303494/approve", "client": "99d1d7e47440", "detail": "room=ルシアン posted=True"}
+{"timestamp": "2026-06-09T03:32:58.151138+00:00", "event": "management:autonomy_preset", "status": "success", "method": "POST", "path": "/api/v1/rooms/ルシアン/autonomy/preset", "client": "99d1d7e47440", "detail": "room=ルシアン preset=quiet"}
