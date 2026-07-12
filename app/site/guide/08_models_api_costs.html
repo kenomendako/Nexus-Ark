@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- Generated from docs/user_guide/. Do not edit directly. -->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AIモデル・APIキー・コスト管理 | Nexus Ark ガイド</title>
+  <meta name="description" content="Nexus Ark ユーザーガイド: AIモデル・APIキー・コスト管理">
+  <link rel="icon" href="../assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="../assets/favicon-180.png">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="../index.html#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="../assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="../index.html#experience">体験</a>
+      <a href="../index.html#features">特徴</a>
+      <a href="index.html">ガイド</a>
+      <a href="../index.html#start">はじめかた</a>
+      <a href="../index.html#faq">FAQ</a>
+    </nav>
+  </header>
+  <main class="guide-layout">
+    <aside class="guide-sidebar" aria-label="ガイド目次">
+      <a class="guide-home" href="index.html">ガイド目次</a>
+      <ol>
+  <li><a href="00_getting_started.html">はじめに</a></li>
+  <li><a href="01_initial_settings.html">最初の設定ガイド</a></li>
+  <li><a href="02_ui_overview.html">画面構成と基本操作</a></li>
+  <li><a href="03_chat_and_logs.html">チャットとログ管理</a></li>
+  <li><a href="04_memory_notes_knowledge.html">記憶・ノート・知識</a></li>
+  <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
+  <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
+  <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
+  <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
+  <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
+  <li><a href="11_troubleshooting.html">トラブルシューティング</a></li>
+</ol>
+    </aside>
+    <article class="guide-article">
+      <h1>AIモデル・APIキー・コスト管理</h1>
+<p>Nexus Arkは複数のAIプロバイダに対応しています。 会話モデル、内部処理モデル、画像生成、TTS、検索、Embeddingは用途ごとに設定できます。 最初はGemini APIキーで始め、必要になったら他のプロバイダを追加するのが簡単です。</p>
+<h2>APIキー管理</h2>
+<p>左サイドバー「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」で、各種APIキーを登録します。 Gemini、OpenAI公式、Anthropic、Zhipu AI、Groq、Moonshot AI、Nvidia NIM、X.ai、ElevenLabs、Hugging Face、Pollinations.ai、Tavilyなどを管理できます。</p>
+<p>Geminiでは「有料プランのキーを選択」で有料キーを指定できます。 無料キーと有料キーを分けることで、普段は無料枠を優先し、必要な時だけ有料キーを使う運用にできます。</p>
+<h2>会話モデル</h2>
+<p>共通の会話モデルは、左サイドバー「⚙️ 設定」→「共通」→「⚡ AIモデルプロバイダ設定（デフォルト）」で設定します。 ルームごとの上書きは、「⚙️ 設定」→「個別」→「⚡ AIモデルプロバイダ設定（このルーム）」で設定します。</p>
+<p>ルーム側で「共通設定に従う」を選ぶと、共通設定のモデルが使われます。 特定のルームだけ別モデルや別APIキーを使いたい時は、個別設定でプロバイダを選びます。</p>
+<h2>内部処理モデル</h2>
+<p>左サイドバー「⚙️ 設定」→「共通」→「🔧 内部処理モデル設定」では、バックグラウンド処理用のモデルを分けられます。</p>
+<ul>
+<li>「🚀 処理モデル（軽量タスク）」: RAGクエリ生成、Intent分類、グループ会話の司会など。</li>
+<li>「📝 要約モデル（文章生成）」: 日次/週次要約、コアメモリ圧縮など。</li>
+<li>「🌐 思考ログ翻訳モデル」: THOUGHTの翻訳。</li>
+<li>「🧠 エンベディング（ベクトル化）」: 会話ログや知識ベースの索引。</li>
+</ul>
+<p>Embeddingモデルを変更したら、記憶や知識の索引を再構築してください。</p>
+<h2>画像生成</h2>
+<p>左サイドバー「⚙️ 設定」→「共通」→「🎨 画像生成設定」で、画像生成プロバイダを選びます。 Gemini、OpenAI互換、Pollinations.ai、Hugging Face、無効を選べます。</p>
+<p>チャット内のユーザー向け画像生成は、中央「チャット」→「💬 会話」→「🖼️ 画像生成 (ユーザー用)」から行います。 アイテム画像は、中央「クローゼット・アイテム」→「アイテム作成」内の「🎨 画像を生成」から作れます。</p>
+<h2>TTS</h2>
+<p>音声再生のルームごとの設定は、左サイドバー「⚙️ 設定」→「個別」→「🎤 音声設定」にあります。 Gemini、OpenAI公式、OpenAI互換、ElevenLabs、ローカルVOICEVOX互換エンジンなどを選べます。</p>
+<p>ローカルTTSでは話速、音高、抑揚、音量も調整できます。</p>
+<h2>Web検索</h2>
+<p>左サイドバー「⚙️ 設定」→「共通」→「🔍 検索プロバイダ設定」で、AIがWeb検索に使うサービスを選びます。 Googleの検索モデルを使う場合は、モデルリスト取得や検索テストで実際に使えるか確認できます。 Tavilyを使う場合は、APIキーを「🔑 APIキー / Webhook管理」→「Tavily (Web検索)」で登録します。</p>
+<h2>使用量の確認</h2>
+<p>左サイドバー「⚙️ 設定」→「共通」→「📊 API使用量の概算」で、最近のAPI使用量と概算金額を確認できます。 「🔄 最新の状態に更新」を押すと、サイドバーに今日・今週・今月の概算金額だけが表示されます。 詳しい内訳は「📊 詳細をポップアップで表示」を押して開きます。 ポップアップでは、各期間の用途別、モデル別、プロバイダ別の表を確認でき、「✕ 閉じる」で元の画面へ戻れます。 本処理、自律行動、内部処理、委任、画像生成が集計対象です。 有料キーの概算、キャッシュ等による節約額、無料キーを有料換算した参考額、呼び出し回数、入出力トークン数を表示します。 画像生成は、単価を登録したGemini系画像モデルとOpenAI画像モデルでは代表的な1枚単価で概算します。 単価未登録の画像モデルは金額を0として生成回数だけ記録します。音声合成（TTS）は集計に含みません。 価格は目安なので、最終的な請求は各プロバイダの画面で確認してください。</p>
+      <nav class="guide-page-nav" aria-label="前後のページ">
+        <a href="07_external_connections_lite.html">前へ</a>
+        <a href="index.html">目次へ</a>
+        <a href="09_notifications_time_calendar_weather.html">次へ</a>
+      </nav>
+    </article>
+  </main>
+</body>
+</html>

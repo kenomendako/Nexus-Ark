@@ -1,0 +1,85 @@
+<!doctype html>
+<!-- Generated from docs/user_guide/. Do not edit directly. -->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>チャットとログ管理 | Nexus Ark ガイド</title>
+  <meta name="description" content="Nexus Ark ユーザーガイド: チャットとログ管理">
+  <link rel="icon" href="../assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="../assets/favicon-180.png">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="../index.html#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="../assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="../index.html#experience">体験</a>
+      <a href="../index.html#features">特徴</a>
+      <a href="index.html">ガイド</a>
+      <a href="../index.html#start">はじめかた</a>
+      <a href="../index.html#faq">FAQ</a>
+    </nav>
+  </header>
+  <main class="guide-layout">
+    <aside class="guide-sidebar" aria-label="ガイド目次">
+      <a class="guide-home" href="index.html">ガイド目次</a>
+      <ol>
+  <li><a href="00_getting_started.html">はじめに</a></li>
+  <li><a href="01_initial_settings.html">最初の設定ガイド</a></li>
+  <li><a href="02_ui_overview.html">画面構成と基本操作</a></li>
+  <li><a href="03_chat_and_logs.html">チャットとログ管理</a></li>
+  <li><a href="04_memory_notes_knowledge.html">記憶・ノート・知識</a></li>
+  <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
+  <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
+  <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
+  <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
+  <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
+  <li><a href="11_troubleshooting.html">トラブルシューティング</a></li>
+</ol>
+    </aside>
+    <article class="guide-article">
+      <h1>チャットとログ管理</h1>
+<p>チャットはNexus Arkの中心です。 会話はルームごとに保存され、必要に応じて検索、編集、バックアップ、復元できます。 添付ファイル、音声入力、画像生成、書き置きも「チャット」タブから扱います。</p>
+<h2>会話する</h2>
+<p>中央「チャット」→「💬 会話」でメッセージを送ります。 入力欄はファイル添付に対応しており、画像、音声、動画、テキスト、PDF、Markdown、コードなどを添付できます。 送信は通常Enter、改行はShift+Enterです。</p>
+<p>AIの発言を選択すると、再生成、音声再生、翻訳、削除などの操作ボタンが表示されます。 音声の声やTTSプロバイダは、左サイドバー「⚙️ 設定」→「個別」→「🎤 音声設定」で調整します。</p>
+<p>「📝 ログ管理」のRAWエディタでは、選択した月の会話ログを直接編集できます。内容をすべて消して「💾 編集内容を保存」を押すと、その月のログを空にできます。保存前にはバックアップが作成されます。</p>
+<h2>音声入力</h2>
+<p>中央「チャット」→「💬 会話」→「🎙️ 音声入力（Beta）」で録音できます。 録音停止後に文字起こしし、確認してから送信するか、自動送信するかを選べます。</p>
+<p>スマホのブラウザでマイクを使う場合はHTTPSが必要になることがあります。 Tailscale HTTPSや安全な共有URLで開き、ブラウザのマイク権限を許可してください。</p>
+<h2>画像生成</h2>
+<p>中央「チャット」→「💬 会話」→「🖼️ 画像生成 (ユーザー用)」で画像を生成できます。 プロバイダ、モデル、プロンプト、参照画像を指定できます。 「現在の情景画像を参照に使う」をONにすると、右サイドバーの現在の情景画像を参照に含めます。</p>
+<p>生成した画像は「📎 チャットに添付」で会話に渡せます。 画像生成プロバイダの既定値は、左サイドバー「⚙️ 設定」→「共通」→「🎨 画像生成設定」で管理します。</p>
+<h2>書き置き</h2>
+<p>中央「チャット」→「💬 会話」→「📝 書き置き（自律行動時に伝える）」に書いた内容は、次回の自律行動時にAIペルソナへ渡されます。 送信後は自動でクリアされます。 自律行動にだけ伝えたい短い指示や、次に気にしてほしいことに向いています。</p>
+<h2>手紙箱</h2>
+<p>AIペルソナは、通知には収まらない長文のメッセージをあなた宛の「手紙」として残せます。 中央「チャット」→「💬 会話」→「📮 手紙箱」→「📮 手紙箱を開く」で一覧を確認できます。 「読む手紙」で選ぶと本文が表示され、既読になります。未読の手紙があることはペルソナ自身も把握しています。</p>
+<p>読み終えた手紙は、本文の下の「🗑️ 選択中の手紙を削除」で整理できます（削除は元に戻せません）。 手紙は自動では消えませんが、一覧に表示されるのは最新100通までです。</p>
+<p>手紙はNexus Ark Lite（スマホ）のメニュー「📮 手紙箱」からも読めます（<a href="07_external_connections_lite.html">外部接続とLite</a>）。</p>
+<h2>ログ管理</h2>
+<p>中央「チャット」→「📝 ログ管理」で、会話ログを月ごとに閲覧、検索、編集できます。 「📄 RAWエディタ」はログファイルを直接編集します。 書式を壊すとチャット表示に影響するため、保存前に内容を確認してください。</p>
+<p>「💬 チャット形式プレビュー」では、RAWログをチャット表示に近い形で確認できます。 「💾 バックアップ &amp; 復元」では、手動バックアップと復元を行えます。</p>
+<h2>コンテキスト管理</h2>
+<p>中央「チャット」→「📌 コンテキスト管理」では、現在の会話へ直接影響する一時情報を扱います。</p>
+<ul>
+<li>「📎 添付ファイルの管理」: 過去に添付したファイルを確認し、アクティブ添付を管理します。</li>
+<li>「🧠 ワーキングメモリ (動的コンテキスト)」: 現在の話題、計画、状態を保持します。</li>
+<li>「📝 共有メモ帳（ホワイトボード）」: ユーザーとAIペルソナが共有する短期メモです。</li>
+<li>「⚙️ Action Memory (直近のツール行動ログ)」: 直近のツール行動を確認します。</li>
+</ul>
+<h2>スクリーンショット用の会話非表示</h2>
+<p>中央「チャット」→「💬 会話」の「会話を隠す」は、画面表示を一時的に隠すための機能です。 元のログファイルは変更されません。 より細かい文字置換は、左サイドバー「🗨️ チャットルーム管理」内のスクリーンショット用置換機能を使います。</p>
+      <nav class="guide-page-nav" aria-label="前後のページ">
+        <a href="02_ui_overview.html">前へ</a>
+        <a href="index.html">目次へ</a>
+        <a href="04_memory_notes_knowledge.html">次へ</a>
+      </nav>
+    </article>
+  </main>
+</body>
+</html>

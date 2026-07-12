@@ -1,0 +1,72 @@
+<!doctype html>
+<!-- Generated from docs/user_guide/. Do not edit directly. -->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>通知・時間管理・カレンダー・天気 | Nexus Ark ガイド</title>
+  <meta name="description" content="Nexus Ark ユーザーガイド: 通知・時間管理・カレンダー・天気">
+  <link rel="icon" href="../assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="../assets/favicon-180.png">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="../index.html#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="../assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="../index.html#experience">体験</a>
+      <a href="../index.html#features">特徴</a>
+      <a href="index.html">ガイド</a>
+      <a href="../index.html#start">はじめかた</a>
+      <a href="../index.html#faq">FAQ</a>
+    </nav>
+  </header>
+  <main class="guide-layout">
+    <aside class="guide-sidebar" aria-label="ガイド目次">
+      <a class="guide-home" href="index.html">ガイド目次</a>
+      <ol>
+  <li><a href="00_getting_started.html">はじめに</a></li>
+  <li><a href="01_initial_settings.html">最初の設定ガイド</a></li>
+  <li><a href="02_ui_overview.html">画面構成と基本操作</a></li>
+  <li><a href="03_chat_and_logs.html">チャットとログ管理</a></li>
+  <li><a href="04_memory_notes_knowledge.html">記憶・ノート・知識</a></li>
+  <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
+  <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
+  <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
+  <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
+  <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
+  <li><a href="11_troubleshooting.html">トラブルシューティング</a></li>
+</ol>
+    </aside>
+    <article class="guide-article">
+      <h1>通知・時間管理・カレンダー・天気</h1>
+<p>Nexus Arkは、アラーム、タイマー、通知禁止時間帯、Googleカレンダー、天気を扱えます。 予定や天気は、AIペルソナの状況認識や情景描写にも反映できます。 外部通知を使う場合は、DiscordやPushoverの設定も必要です。</p>
+<h2>アラーム</h2>
+<p>左サイドバー「⏰ 時間管理」→「アラーム」で設定します。 時刻、曜日、ルーム、内容、緊急通知を指定できます。 指定時刻になると、対象ルームのAIペルソナが内容に沿って応答し、通知サービスやPC通知で知らせます。</p>
+<h2>タイマー</h2>
+<p>左サイドバー「⏰ 時間管理」→「タイマー」で設定します。 通常タイマーとポモドーロタイマーを選べます。 通知ルームを指定すると、終了時にそのルームのAIペルソナが知らせます。</p>
+<h2>通知サービス</h2>
+<p>左サイドバー「⚙️ 設定」→「共通」→「📢 通知サービス設定」で、アラーム用と通常通知用のサービスを選びます。 DiscordまたはPushoverを選択できます。</p>
+<p>WebhookやPushoverのキーは、左サイドバー「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」で登録します。</p>
+<h2>通知禁止時間帯</h2>
+<p>中央「自律行動」→「自律行動（このルーム）」→「✨ 自律行動設定（このルーム）」→「🌙 通知禁止時間帯（このルーム）」で設定します。 この時間帯にAIペルソナが行動しても、DiscordやPushover通知は送信されません。 また、この時間帯は睡眠時間とみなされ、夢日記の作成と睡眠時記憶整理のきっかけになります。</p>
+<h2>Googleカレンダー</h2>
+<p>共通のGoogleカレンダー連携は、左サイドバー「⚙️ 設定」→「共通」→「🗓️ Googleカレンダー連携設定」にあります。 OAuth認証、同期対象カレンダー、同期間隔、除外キーワード、非公開予定の扱い、リマインダー同期を設定します。</p>
+<p>ルームごとの見せ方は、左サイドバー「⚙️ 設定」→「個別」→「🗓️ カレンダー連携（このルーム）」で設定します。 「このルームに本日の予定サマリーを見せる」をONにすると、予定がペルソナの状況認識に入ります。この項目はデフォルトではOFFです。 「ペルソナ専用の書き込み先カレンダー」を指定すると、ペルソナがその専用カレンダーへ予定を追加・編集できます。</p>
+<p>普段使いのメインカレンダーを直接書き込み先にするのは避け、ペルソナ専用カレンダーを作ることを推奨します。</p>
+<h2>天気・環境連携</h2>
+<p>左サイドバー「⚙️ 設定」→「共通」→「🌤️ 天気・環境連携設定」で、都市名を検索し、緯度経度を保存します。 「ペルソナの会話へ反映」をONにすると、天気や気温が会話文脈へ入ります。 「情景描写にリアル天気を反映」をONにすると、右サイドバーの情景描写にも天気が反映されます。</p>
+<p>天気APIが不調な時でも、キャッシュとタイムアウトにより起動や会話が長く止まりにくい設計です。</p>
+      <nav class="guide-page-nav" aria-label="前後のページ">
+        <a href="08_models_api_costs.html">前へ</a>
+        <a href="index.html">目次へ</a>
+        <a href="10_outing_import_export.html">次へ</a>
+      </nav>
+    </article>
+  </main>
+</body>
+</html>

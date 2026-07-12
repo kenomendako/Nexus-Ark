@@ -1,0 +1,98 @@
+<!doctype html>
+<!-- Generated from docs/user_guide/. Do not edit directly. -->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>記憶・ノート・知識 | Nexus Ark ガイド</title>
+  <meta name="description" content="Nexus Ark ユーザーガイド: 記憶・ノート・知識">
+  <link rel="icon" href="../assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="../assets/favicon-180.png">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="../index.html#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="../assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="../index.html#experience">体験</a>
+      <a href="../index.html#features">特徴</a>
+      <a href="index.html">ガイド</a>
+      <a href="../index.html#start">はじめかた</a>
+      <a href="../index.html#faq">FAQ</a>
+    </nav>
+  </header>
+  <main class="guide-layout">
+    <aside class="guide-sidebar" aria-label="ガイド目次">
+      <a class="guide-home" href="index.html">ガイド目次</a>
+      <ol>
+  <li><a href="00_getting_started.html">はじめに</a></li>
+  <li><a href="01_initial_settings.html">最初の設定ガイド</a></li>
+  <li><a href="02_ui_overview.html">画面構成と基本操作</a></li>
+  <li><a href="03_chat_and_logs.html">チャットとログ管理</a></li>
+  <li><a href="04_memory_notes_knowledge.html">記憶・ノート・知識</a></li>
+  <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
+  <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
+  <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
+  <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
+  <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
+  <li><a href="11_troubleshooting.html">トラブルシューティング</a></li>
+</ol>
+    </aside>
+    <article class="guide-article">
+      <h1>記憶・ノート・知識</h1>
+<p>Nexus Arkの記憶は、短期の会話ログだけでなく、日記、エピソード記憶、夢日記、知識ベースに分かれています。 長く暮らすほど、記憶の整理と索引の更新が重要になります。 このページでは、ユーザーが直接確認・編集できる場所をまとめます。</p>
+<h2>知識ベース (RAG)</h2>
+<p>中央「知識」→「📚 知識ファイル」で、ルームのAIペルソナが参照する <code>.txt</code> / <code>.md</code> ファイルを管理します。 「ファイルをアップロード」で追加し、「索引を作成 / 更新」で検索用インデックスを作成します。 AIペルソナは必要に応じて <code>search_knowledge_base</code> ツールで検索します。</p>
+<p>Embeddingモデルを変更しただけでは既存索引は変換されません。変更後は必ず「索引を作成 / 更新」または索引の完全再構築を実行してください。変更前のモデルで一度検索したこと自体が、その後の検索を恒久的に汚染するわけではありません。 Embedding設定は、左サイドバー「⚙️ 設定」→「共通」→「🔧 内部処理モデル設定」→「🧠 エンベディング（ベクトル化）」にあります。</p>
+<p>既存環境のオリヴェは、アップデート後の起動時に最新の公式ガイドが同期されます。個人ナレッジを追加していない標準構成では同梱索引も更新されます。個人ナレッジがある場合はファイルを保護するため、表示される案内に従って知識索引を再構築してください。</p>
+<h2>Skills / 手順記憶</h2>
+<p>中央「知識」→「🧩 Skills / 手順記憶」では、AIペルソナが再利用する手順知を管理します。 人格や関係性に依存する手順はルーム専用にし、APIの使い方のような汎用手順は共有にするのが基本です。</p>
+<h2>記憶タブ</h2>
+<p>中央「記憶・ノート」→「記憶」には、ルームの根幹となる記憶があります。</p>
+<ul>
+<li>「📜 システムプロンプト (ペルソナ設定)」: AIペルソナの人格や口調の核。</li>
+<li>「💎 コアメモリ (自己同一性の核)」: 長く維持したい自己認識。</li>
+<li>「🎯 Purpose Profile (目的意識)」: 長期関心、現在の関心、避けたい行動、変更提案。</li>
+<li>「🪪 永続記憶・属性 (Identity)」: 基本属性、ユーザー情報、世界観の不変設定。</li>
+<li>「📝 主観的記憶（日記）」: ペルソナの主観的な記録。</li>
+<li>「📚 エピソード記憶（中期記憶）の管理」: 日ごとの会話体験の要約。</li>
+<li>「🌙 夢日記 (Dream Journal)」: 睡眠時記憶整理で作られる夢と洞察。</li>
+<li>「📌 エンティティ記憶 (Entity Memory)」: 人物、場所、概念などの詳細記録。</li>
+</ul>
+<p>これらは直接編集できますが、保存前に内容をよく確認してください。</p>
+<h2>睡眠時記憶整理</h2>
+<p>中央「記憶・ノート」→「記憶」→「💫 睡眠時記憶整理 (Sleep Consolidation)」で、睡眠時に行う処理を選びます。 エピソード記憶、記憶索引、現行ログ索引、エンティティ記憶、古い記憶の圧縮、未解決の問い抽出を設定できます。</p>
+<p>通知禁止時間帯に自律行動が有効なルームでは、睡眠時記憶整理が自動実行されます。 すぐ実行したい場合は、同じ「記憶」タブ内の「🛠️ 記憶のメンテナンス (手動実行)」→「睡眠時記憶整理を今すぐ実行」を使います。</p>
+<h2>記憶のメンテナンス</h2>
+<p>中央「記憶・ノート」→「記憶」→「🛠️ 記憶のメンテナンス (手動実行)」では、大きな更新を手動で実行できます。</p>
+<ul>
+<li>睡眠時記憶整理の一括実行。</li>
+<li>エピソード記憶の更新。</li>
+<li>エンティティ記憶の更新。</li>
+<li>記憶索引 (RAG) の再構築。</li>
+<li>現行ログの索引更新。</li>
+<li>古い記憶の圧縮。</li>
+<li>内部状態のリセット。</li>
+</ul>
+<p>索引再構築や現行ログ索引更新は時間がかかることがあります。 APIキーやEmbeddingモデルの制限にも注意してください。</p>
+<h2>創作・分析ノート</h2>
+<p>中央「記憶・ノート」→「創作・分析ノート」には、AIペルソナが自律的に使うノートがあります。</p>
+<ul>
+<li>「🎨 創作ノート」: 詩、物語、アイデア、構想。</li>
+<li>「🔬 研究・分析ノート」: 調査結果や洞察。</li>
+<li>「🧵 Research Threads（継続研究スレッド）」: 継続中の調査テーマ。</li>
+</ul>
+<p>Nexus Ark Liteからも、研究ノートと創作ノートを閲覧・編集できます。</p>
+      <nav class="guide-page-nav" aria-label="前後のページ">
+        <a href="03_chat_and_logs.html">前へ</a>
+        <a href="index.html">目次へ</a>
+        <a href="05_autonomy_delegation_atelier.html">次へ</a>
+      </nav>
+    </article>
+  </main>
+</body>
+</html>
