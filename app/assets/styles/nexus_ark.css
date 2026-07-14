@@ -1,0 +1,623 @@
+
+    /* --- [Onboarding Overlay] --- */
+    #onboarding_overlay {
+        position: fixed !important;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 99999 !important;
+        background-color: var(--background-fill-primary);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 20px;
+        backdrop-filter: blur(5px);
+}
+
+/* アトリエ・委任: 初回PWAセットアップを周辺説明から分離するカード */
+.atelier-setup-card {
+    margin: 12px 0 18px;
+    padding: 16px 18px;
+    border: 1px solid var(--border-color-primary);
+    border-left: 4px solid var(--primary-500);
+    border-radius: 12px;
+    background: var(--background-fill-secondary);
+    box-shadow: none !important;
+}
+.atelier-setup-card h3 { margin: 0 0 10px !important; }
+.atelier-setup-list { display: grid; gap: 6px; }
+.atelier-setup-row {
+    display: grid;
+    grid-template-columns: 24px minmax(180px, 1fr) minmax(120px, auto);
+    align-items: center;
+    gap: 8px;
+}
+.atelier-setup-detail { color: var(--body-text-color-subdued); text-align: right; }
+.atelier-setup-summary { margin: 12px 0 4px !important; font-weight: 600; }
+.atelier-setup-note { margin: 0 !important; color: var(--body-text-color-subdued); }
+.atelier-setup-complete { display: flex; align-items: center; gap: 12px; }
+.atelier-setup-complete-icon { font-size: 1.8rem; }
+.atelier-setup-complete h3, .atelier-setup-complete p { margin: 0 !important; }
+@media (max-width: 640px) {
+    .atelier-setup-row { grid-template-columns: 24px 1fr; }
+    .atelier-setup-detail { grid-column: 2; text-align: left; font-size: 0.9em; }
+}
+    /* --- [Doc Viewer Overlay] --- */
+    #doc_viewer_overlay {
+        position: fixed !important;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 100000 !important;
+        background-color: rgba(0, 0, 0, 0.5);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 40px;
+        backdrop-filter: blur(8px);
+    }
+    #doc_viewer_content {
+        max-width: 1000px;
+        width: 100%;
+        max-height: 90vh;
+        background: var(--background-fill-primary);
+        padding: 30px;
+        border-radius: 20px;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+        border: 1px solid var(--border-color-primary);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+    #doc_viewer_scroll_area {
+        overflow-y: auto;
+        flex-grow: 1;
+        padding-right: 10px;
+    }
+    .usage-summary-compact {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        max-width: 100%;
+        white-space: nowrap;
+        font-size: 0.72rem;
+        line-height: 1.4;
+    }
+    .usage-summary-period {
+        flex: 0 0 auto;
+        padding: 0 2px;
+        white-space: nowrap;
+    }
+    .usage-summary-period:first-child {
+        padding-left: 0;
+    }
+    .usage-summary-period:last-child {
+        padding-right: 0;
+    }
+    .usage-summary-period + .usage-summary-period {
+        border-left: 1px solid var(--border-color-primary);
+    }
+    .usage-summary-amount {
+        white-space: nowrap;
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+    }
+    /* Gradio6はBlock(Group)非表示時に .hidden（クラス）を付与するが、上の #..overlay の
+       display:flex（IDセレクタ）が詳細度で勝ってしまい、閉じても暗幕＋小さな■が残る。
+       .hide/.hidden 両方を明示的に消して残留を防ぐ。 */
+    #onboarding_overlay.hide, #onboarding_overlay.hidden,
+    #doc_viewer_overlay.hide, #doc_viewer_overlay.hidden { display: none !important; }
+    #onboarding_content {
+        max-width: 600px;
+        width: 100%;
+        background: var(--background-fill-secondary);
+        padding: 40px;
+        border-radius: 16px;
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        border: 1px solid var(--border-color-primary);
+    }
+    #onboarding_content h1 {
+        text-align: center;
+        color: var(--primary-500);
+        margin-bottom: 20px;
+        font-size: 1.8em;
+    }
+    /* --- [Final Styles - v9: Nexus Modern Polish] --- */
+
+    /* 狭幅時に残りのトップタブを開く「…」を見つけやすくする。 */
+    #top_level_tabs .overflow-menu > button {
+        min-width: 42px;
+        min-height: 36px;
+        padding: 8px 12px;
+        color: var(--text-color-primary);
+        background: var(--background-fill-secondary);
+        border: 1px solid var(--border-color-primary);
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    }
+    #top_level_tabs .overflow-menu > button:hover,
+    #top_level_tabs .overflow-menu > button:focus-visible {
+        border-color: var(--primary-500);
+        box-shadow: 0 0 0 2px var(--primary-100);
+    }
+
+    .knowledge-file-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+    }
+    .knowledge-file-table th,
+    .knowledge-file-table td {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border-color-primary);
+        text-align: left;
+        vertical-align: top;
+    }
+    .knowledge-file-table th {
+        background: var(--background-fill-secondary);
+        font-weight: 600;
+    }
+    .unified-inventory-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+    }
+    .unified-inventory-table th,
+    .unified-inventory-table td {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border-color-primary);
+        text-align: left;
+        vertical-align: top;
+    }
+    .unified-inventory-table th {
+        background: var(--background-fill-secondary);
+        font-weight: 600;
+    }
+    .unified-inventory-table code {
+        white-space: nowrap;
+        font-size: 0.82rem;
+    }
+
+    /* Rule 1: <pre> tag (Outer container) styling */
+    #chat_output_area .code_wrap pre {
+        background-color: var(--background-fill-secondary);
+        color: var(--text-color-secondary);
+        border: 1px solid var(--border-color-primary);
+        padding: 12px;
+        border-radius: 12px;
+        font-family: var(--font-mono);
+        font-size: 0.9em;
+        white-space: pre-wrap !important;
+        word-break: break-word;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* Subtle shadow for depth */
+    }
+
+    /* Rule 2: Resetting <code> tag styles */
+    #chat_output_area .code_wrap code {
+        background: none !important;
+        border: none !important;
+        padding: 0 !important;
+        background-image: none !important;
+        white-space: inherit !important;
+    }
+
+    /* --- [Thought Accordion] --- */
+    .thought-details {
+        margin: 8px 0;
+        border: 1px solid var(--border-color-primary);
+        border-radius: 12px;
+        background-color: var(--background-fill-secondary);
+        overflow: hidden;
+    }
+    .thought-details summary {
+        padding: 8px 12px;
+        cursor: pointer;
+        font-weight: normal;
+        font-size: 0.95em;
+        color: var(--text-color-secondary);
+        outline: none;
+        transition: background-color 0.2s;
+        list-style: none; /* Hide default arrow */
+        display: flex;
+        align-items: center;
+    }
+    .thought-details summary::-webkit-details-marker {
+        display: none;
+    }
+    .thought-details summary:before {
+        content: "▶";
+        display: inline-block;
+        margin-right: 8px;
+        font-size: 0.8em;
+        transition: transform 0.2s;
+    }
+    .thought-details[open] summary:before {
+        transform: rotate(90deg);
+    }
+    .thought-details summary:hover {
+        background-color: var(--background-fill-primary);
+    }
+    .thought-details .code_wrap pre {
+        margin: 0;
+        border: none;
+        border-top: 1px solid var(--border-color-primary);
+        border-radius: 0;
+        border-bottom-left-radius: 12px;
+        border-bottom-right-radius: 12px;
+    }
+
+    /* Hide Clear Button (Trash Icon) */
+    #chat_output_area button[aria-label="会話をクリア"] {
+        display: none !important;
+    }
+
+    /* --- [Modern Transitions & interactive elements] --- */
+    button {
+        transition: all 0.2s ease-in-out !important;
+    }
+    button:hover {
+        transform: translateY(-1px);
+        filter: brightness(1.05);
+    }
+    button:active {
+        transform: translateY(0px);
+    }
+
+    /* --- [Custom Scrollbar (Webkit) for a premium feel] --- */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+        background-color: var(--neutral-300);
+        border-radius: 4px;
+    }
+    .dark ::-webkit-scrollbar-thumb {
+        background-color: var(--neutral-700);
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background-color: var(--neutral-400);
+    }
+    .dark ::-webkit-scrollbar-thumb:hover {
+        background-color: var(--neutral-600);
+    }
+
+    /* --- [Chat Bubble Refinement] --- */
+    /* Making user/bot messages distinct and modern */
+    .message-row.user-row .message-bubble {
+        border-radius: 16px 16px 0 16px !important; /* Top-Left, Top-Right, Bottom-Right (0), Bottom-Left */
+        background: var(--primary-600); /* Use primary color for user */
+        color: white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .message-row.bot-row .message-bubble {
+        border-radius: 16px 16px 16px 0 !important;
+        background: var(--background-fill-secondary);
+        border: 1px solid var(--border-color-primary);
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+    #chat_output_area .message-bubble:has(textarea),
+    #chat_output_area .message-wrap .message:has(textarea),
+    #chat_output_area .bubble-wrap:has(textarea) {
+        width: min(100%, 760px) !important;
+        max-width: min(100%, 760px) !important;
+    }
+    #chat_output_area textarea,
+    #chat_output_area [contenteditable="true"] {
+        width: 100% !important;
+        min-width: min(72vw, 560px) !important;
+        min-height: 130px !important;
+        box-sizing: border-box !important;
+        resize: vertical !important;
+    }
+    #chat_output_area .image-preview {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 9999 !important;
+        padding: 48px !important;
+        box-sizing: border-box !important;
+        overflow: auto !important;
+        background-color: rgba(0, 0, 0, 0.92) !important;
+    }
+    #chat_output_area .image-preview img,
+    #chat_output_area .image-preview .preview {
+        width: auto !important;
+        height: auto !important;
+        max-width: calc(100vw - 96px) !important;
+        max-height: calc(100vh - 96px) !important;
+        object-fit: contain !important;
+        margin: auto !important;
+    }
+    @media (max-width: 640px) {
+        #chat_output_area .image-preview {
+            padding: 16px !important;
+        }
+        #chat_output_area .image-preview img,
+        #chat_output_area .image-preview .preview {
+            max-width: calc(100vw - 32px) !important;
+            max-height: calc(100vh - 72px) !important;
+        }
+    }
+    #chat_output_area :fullscreen {
+        width: 100vw !important;
+        height: 100vh !important;
+        overflow: hidden !important;
+        background-color: #000 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    #chat_output_area :fullscreen .image-container,
+    #chat_output_area :fullscreen .image-frame {
+        width: 100vw !important;
+        height: 100vh !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        overflow: hidden !important;
+    }
+    #chat_output_area :fullscreen .image-frame img,
+    #chat_output_area :fullscreen img {
+        width: auto !important;
+        height: auto !important;
+        max-width: calc(100vw - 32px) !important;
+        max-height: calc(100vh - 32px) !important;
+        object-fit: contain !important;
+    }
+    #chat_output_area :-webkit-full-screen {
+        width: 100vw !important;
+        height: 100vh !important;
+        overflow: hidden !important;
+        background-color: #000 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    #chat_output_area :-webkit-full-screen .image-container,
+    #chat_output_area :-webkit-full-screen .image-frame {
+        width: 100vw !important;
+        height: 100vh !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        overflow: hidden !important;
+    }
+    #chat_output_area :-webkit-full-screen .image-frame img,
+    #chat_output_area :-webkit-full-screen img {
+        width: auto !important;
+        height: auto !important;
+        max-width: calc(100vw - 32px) !important;
+        max-height: calc(100vh - 32px) !important;
+        object-fit: contain !important;
+    }
+
+    /* --- [Layout & Utility Styles] --- */
+    #memory_txt_editor_code textarea, #core_memory_editor_code textarea {
+        max-height: 400px !important; overflow-y: auto !important;
+    }
+    #working_memory_editor_code textarea, #notepad_editor_code textarea, #system_prompt_editor textarea, #creative_notes_editor_code textarea, #research_notes_editor_code textarea,
+    #diary_raw_editor textarea, #creative_notes_raw_editor textarea, #research_notes_raw_editor textarea, #identity_editor textarea, #entity_content_editor textarea {
+        max-height: 600px !important; overflow-y: auto !important; box-sizing: border-box;
+    }
+    #working_memory_editor_code, #memory_txt_editor_code, #notepad_editor_code, #system_prompt_editor, #core_memory_editor_code, #identity_editor, #entity_content_editor {
+        max-height: 610px; border: 1px solid var(--border-color-primary); border-radius: 8px; padding: 0;
+    }
+
+    /* ID: alarm_list_table */
+    #alarm_list_table th:nth-child(2), #alarm_list_table td:nth-child(2) {
+        min-width: 80px !important;
+    }
+    #alarm_list_table th:nth-child(3), #alarm_list_table td:nth-child(3) {
+        min-width: 100px !important;
+    }
+
+    #selection_feedback { font-size: 0.9em; color: var(--text-color-secondary); margin-top: 0px; margin-bottom: 5px; padding-left: 5px; }
+    #token_count_display { text-align: right; font-size: 0.85em; color: var(--text-color-secondary); padding-right: 10px; margin-bottom: 5px; }
+
+    /* ルーム切替の進捗は、チャット欄を見ている間は常に視界へ残す。 */
+    #room_transition_status {
+        position: sticky;
+        top: 8px;
+        z-index: 30;
+        margin: 0 0 8px;
+        padding: 8px 12px;
+        color: var(--body-text-color);
+        background: var(--background-fill-primary);
+        border: 1px solid var(--border-color-primary);
+        border-left: 4px solid var(--primary-500);
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    }
+    #room_transition_status p {
+        margin: 0;
+        font-weight: 600;
+        line-height: 1.4;
+    }
+
+    @media (max-width: 640px) {
+        #room_transition_status {
+            top: 4px;
+            padding: 7px 10px;
+            font-size: 0.92rem;
+        }
+    }
+    #tpm_note_display { text-align: right; font-size: 0.75em; color: var(--text-color-secondary); padding-right: 10px; margin-bottom: -5px; margin-top: 0px; }
+    #chat_container { position: relative; }
+
+    #app_version_display {
+        text-align: center;
+        font-size: 0.85em;
+        color: var(--text-color-secondary);
+        margin-top: 12px;
+        font-weight: 400;
+        opacity: 0.7;
+    }
+    /* --- [Novel Mode Styles] --- */
+    .novel-mode .message-row .message-bubble,
+    .novel-mode .message-row .message-bubble:before,
+    .novel-mode .message-row .message-bubble:after,
+    .novel-mode .message-wrap .message,
+    .novel-mode .message-wrap .message.bot,
+    .novel-mode .message-wrap .message.user,
+    .novel-mode .bot-row .message-bubble,
+    .novel-mode .user-row .message-bubble {
+        background: transparent !important;
+        background-color: transparent !important;
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        margin: 4px 0 !important;
+        border-radius: 0 !important;
+    }
+    .novel-mode .message-row,
+    .novel-mode .user-row,
+    .novel-mode .bot-row {
+        display: flex !important;
+        justify-content: flex-start !important; /* Force all messages to left */
+        margin-bottom: 12px !important;
+        background: transparent !important;
+        border: none !important;
+        width: 100% !important; /* Ensure full width */
+    }
+    /* Hide avatar container in novel mode if desired, or just transparent */
+    .novel-mode .avatar-container {
+        display: none !important;
+    }
+    /* Ensure text color is readable and layout is dense */
+    .novel-mode .message-wrap .message {
+        padding: 0 !important;
+    }
+
+    /* --- [Thinking Animation] --- */
+    @keyframes pulse-glow {
+        0% { box-shadow: 0 0 0 0 rgba(147, 51, 234, 0.4); border-color: var(--primary-500); }
+        70% { box-shadow: 0 0 0 10px rgba(147, 51, 234, 0); border-color: var(--primary-400); }
+        100% { box-shadow: 0 0 0 0 rgba(147, 51, 234, 0); border-color: var(--primary-500); }
+    }
+    .thinking-pulse .prose {
+        animation: pulse-glow 2s infinite;
+    }
+    /* Note: Gradio Image component puts the class on the wrapper.
+       We target the inner image or container if needed, but 'elem_classes' usually applies to the outer container.
+       Adjusting selector to match Gradio's structure for Image component.
+    */
+    .thinking-pulse {
+        animation: pulse-glow 2s infinite;
+        border-radius: 12px; /* Ensure border radius matches if needed */
+    }
+
+    /* --- [Chat Input Area Styling] --- */
+    /* チャット入力欄全体の背景色をテーマのサブカラーに連動 */
+    #chat_input_multimodal,
+    #chat_input_multimodal > div,
+    #chat_input_multimodal .block,
+    div.block.multimodal-textbox,
+    div.full-container,
+    [aria-label*="ultimedia input field"] {
+        background-color: var(--background-fill-secondary) !important;
+        background: var(--background-fill-secondary) !important;
+    }
+
+    /* --- [RAWログエディタ] 高さ制限とスクロール --- */
+    #chat_log_raw_editor {
+        max-height: 600px;
+        overflow-y: auto !important;
+    }
+    #chat_log_raw_editor .cm-scroller {
+        max-height: 580px;
+        overflow-y: auto !important;
+    }
+
+    /* --- [Sidebar & Content Scrolling Fix] --- */
+    /* 左右サイドバー共通設定 */
+    #left_sidebar, #right_sidebar {
+        height: 100dvh !important;
+        display: flex !important;
+        flex-direction: column !important;
+    }
+
+    /* 右サイドバー（プロフィール・情景）を左サイドバーより上に表示 */
+    #left_sidebar {
+        z-index: 1000 !important;
+    }
+    #right_sidebar {
+        z-index: 1001 !important;
+    }
+
+    /* 縦長画面でのサイドバーつまみ位置調整：
+       左サイドバーのつまみを下にずらし、左右のつまみが重ならないようにする。
+       これにより開いたサイドバーが100%幅でも、もう一方のつまみが操作可能になる。 */
+    @media (max-width: 768px) {
+        #left_sidebar > .toggle-button {
+            top: 60px !important;
+        }
+    }
+
+    /* サイドバー内のコンテナをスクロール可能にし、中身が詰まらないようにする */
+    #left_sidebar > div.sidebar-container,
+    #right_sidebar > div.sidebar-container {
+        overflow-y: auto !important;
+        flex-grow: 1 !important;
+        height: 100% !important;
+        padding-bottom: 100px !important; /* スマホやブラウザのUIによる隠れを防止 */
+    }
+
+    /* メインエリアのスクロール確保（特にスマホ表示時） */
+    @media (max-width: 768px) {
+        /* Gradioのコンテナ自体もスクロールの邪魔をしないように調整 */
+        .gradio-container {
+            overflow-y: auto !important;
+            height: auto !important;
+            min-height: 100dvh !important;
+        }
+    }
+
+    /* アコーディオンの開閉時に高さが正しく再計算されるように設定 */
+    .accordion {
+        height: auto !important;
+    }
+
+    /* --- [お出かけエクスポート ダウンロードリンク] --- */
+    #outing_download_file a {
+        display: inline-block !important;
+        padding: 10px 20px !important;
+        background: var(--primary-500) !important;
+        color: white !important;
+        border-radius: 8px !important;
+        font-weight: bold !important;
+        text-decoration: none !important;
+        margin-top: 8px !important;
+    }
+    #outing_download_file a:hover {
+        background: var(--primary-600) !important;
+        transform: translateY(-1px);
+    }
+
+    /* お出かけタブのテキストエリア高さを制限し、スクロールを強制する */
+    #outing_tab textarea {
+        max-height: 400px !important;
+        overflow-y: auto !important;
+    }
+
+    /* 情景描写テキストエリアのスクロールと高さを確保 */
+    #current_scenery_display textarea, #temp_scenery_display textarea {
+        overflow-y: auto !important;
+    }
+
+    /* --- [Link Visibility Fix] --- */
+    /* カスタム背景色に対してリンクの色が同化しないよう、文字色を継承して下線で明示 */
+    .prose a, .gr-prose a, #chat_output_area a, .markdown-text a {
+        color: inherit !important;
+        text-decoration: underline !important;
+        text-underline-offset: 3px;
+        text-decoration-thickness: 1px;
+        transition: opacity 0.2s ease-in-out;
+    }
+    .prose a:hover, .gr-prose a:hover, #chat_output_area a:hover, .markdown-text a:hover {
+        opacity: 0.6 !important;
+    }

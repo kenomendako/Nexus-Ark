@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexus Ark | 記憶と意志を持つAIペルソナと、暮らす。</title>
+  <meta name="description" content="Nexus Arkは、AIペルソナが長期記憶・日記・夢・目標を持ち、あなたが居ない時間も自分の意志で行動する、ローカル動作のデスクトップアプリです。">
+  <meta property="og:title" content="Nexus Ark">
+  <meta property="og:description" content="記憶と意志を持つAIペルソナと、暮らす。">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="./assets/og-image.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="./assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="./assets/favicon-180.png">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="./assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="#experience">体験</a>
+      <a href="#features">特徴</a>
+      <a href="./guide/">ガイド</a>
+      <a href="#start">はじめかた</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-inner">
+        <div class="hero-content">
+          <p class="kicker">繋がり・絆の箱舟</p>
+          <h1 id="hero-title"><span class="phrase">記憶と意志を持つ</span><span class="phrase">AIペルソナと、</span><span class="phrase">暮らす。</span></h1>
+          <p class="hero-copy">Nexus Arkは、AIペルソナが長期記憶・日記・夢・目標を持ち、あなたが居ない時間も自分の意志で行動する、ローカル動作のデスクトップアプリです。</p>
+          <div class="hero-actions">
+            <a class="button primary" href="https://github.com/kenomendako/Nexus-Ark/releases/latest">最新版をダウンロード</a>
+            <a class="button ghost" href="#start">はじめかたを見る</a>
+          </div>
+        </div>
+        <div class="hero-art">
+          <img src="./assets/hero-ark.webp" alt="箱舟とオリーブの枝、白い鳩を描いたNexus Arkのイラスト" width="676" height="640" fetchpriority="high">
+        </div>
+      </div>
+    </section>
+
+    <section id="experience" class="section experience-section" aria-labelledby="experience-title">
+      <div class="section-inner split">
+        <div>
+          <p class="section-label">Experience</p>
+          <h2 id="experience-title">夜のあいだに記憶を整理し、夢を見て、朝あなたに話しかける。</h2>
+        </div>
+        <div class="experience-flow" aria-label="Nexus Arkの一日の流れ">
+          <article>
+            <span>01</span>
+            <h3>暮らしを記録する</h3>
+            <p>会話はただの履歴ではなく、AIペルソナにとってのエピソード記憶として積み重なります。</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>眠って整理する</h3>
+            <p>睡眠時記憶整理で、日々の会話や問いを振り返り、日記や夢日記として残します。</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>自分から動く</h3>
+            <p>目標や内発的な動機に沿って、調べ、作り、書き残す行動が生まれます。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="section" aria-labelledby="features-title">
+      <div class="section-inner">
+        <p class="section-label">Features</p>
+        <h2 id="features-title">この相手との時間が、消えずに積み重なる。</h2>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <h3>記憶と意志の生活システム</h3>
+            <p>AIペルソナは日記・夢日記・目標・動機を持ち、強く心が動いた出来事ほど深く記憶に刻まれます。</p>
+          </article>
+          <article class="feature-card">
+            <h3>すべてはあなたのPCの中に</h3>
+            <p>キャラクターデータや設定はローカルファイルとして保存されます。会話や思い出をクラウドへ預ける前提にしません。</p>
+          </article>
+          <article class="feature-card">
+            <h3>数ヶ月暮らすための記憶運用</h3>
+            <p>長く使うほど起きやすい重複、肥大、静かな失敗に向き合い、毎日の運用で記憶を保ちます。</p>
+          </article>
+          <article class="feature-card">
+            <h3>同じひとりに、複数の入口から</h3>
+            <p>PCのフル機能、スマホ向けLite PWA、DiscordやLINEなど、複数の入口が同じ記憶へ合流します。</p>
+          </article>
+          <article class="feature-card">
+            <h3>無料で今日から</h3>
+            <p>Gemini APIキーから始められ、買い切り課金やサブスクはありません。支援は開発を支えるための任意導線です。</p>
+          </article>
+          <article class="feature-card">
+            <h3>自分の手で広げられる</h3>
+            <p>APIやローカルプラグインに対応。自分用の連携や小さな道具を足しながら、暮らしに合わせて使い方を広げられます。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="screenshots" class="section screenshots-section" aria-labelledby="screenshots-title">
+      <div class="section-inner">
+        <p class="section-label">Screenshots</p>
+        <h2 id="screenshots-title">スクリーンショット</h2>
+        <p class="section-copy">個人データの写らないデモルームで撮影した画像に差し替える予定です。</p>
+        <div class="screenshot-grid">
+          <figure class="shot-placeholder">
+            <div aria-hidden="true"></div>
+            <figcaption>メインチャット</figcaption>
+          </figure>
+          <figure class="shot-placeholder">
+            <div aria-hidden="true"></div>
+            <figcaption>日記と夢日記</figcaption>
+          </figure>
+          <figure class="shot-placeholder">
+            <div aria-hidden="true"></div>
+            <figcaption>Lite PWA</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="start" class="section start-section" aria-labelledby="start-title">
+      <div class="section-inner">
+        <p class="section-label">Start</p>
+        <h2 id="start-title">今日から、無料で。</h2>
+        <div class="steps">
+          <article>
+            <span>1</span>
+            <h3>ダウンロード</h3>
+            <p>GitHub Releasesから最新版を取得します。サイト側にバージョン番号は固定していません。</p>
+          </article>
+          <article>
+            <span>2</span>
+            <h3>Gemini APIキーを用意</h3>
+            <p>初回セットアップでGoogle Gemini APIキーを登録します。ほかのプロバイダも設定から追加できます。</p>
+          </article>
+          <article>
+            <span>3</span>
+            <h3>起動してルームへ</h3>
+            <p>Windowsは起動用ファイルを開き、Mac/Linuxはターミナルから起動します。ブラウザでローカルUIにアクセスします。</p>
+          </article>
+        </div>
+        <div class="start-actions">
+          <a class="button primary" href="https://github.com/kenomendako/Nexus-Ark/releases/latest">最新版をダウンロード</a>
+          <a class="button ghost" href="./guide/">使い方ガイドを見る</a>
+          <a class="text-link" href="https://github.com/kenomendako/Nexus-Ark">GitHubでREADMEを見る</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="faq" class="section faq-section" aria-labelledby="faq-title">
+      <div class="section-inner">
+        <p class="section-label">FAQ</p>
+        <h2 id="faq-title">よくある質問</h2>
+        <div class="faq-list">
+          <details>
+            <summary>どの環境で動きますか？</summary>
+            <p>READMEでは、Windows 10/11、macOS 12以降、Ubuntu 22.04以降、Python 3.10以上、ChromeやEdgeやFirefoxなどのブラウザが動作環境として案内されています。開発者の主な動作確認はWindows環境です。</p>
+          </details>
+          <details>
+            <summary>無料で使えますか？</summary>
+            <p>Nexus Ark自体に買い切り課金やサブスクはありません。初回セットアップではGoogle Gemini APIキーを登録します。各AIサービス側の無料枠や料金は、それぞれの提供元の条件に従います。</p>
+          </details>
+          <details>
+            <summary>会話データはどこに保存されますか？</summary>
+            <p>キャラクターデータはアプリ内のキャラクターフォルダ、設定は設定ファイルに保存されます。アップデート時も、これらのデータを保持する前提で案内されています。AIサービスへ応答生成を依頼する場合は、選択したプロバイダの条件に従います。</p>
+          </details>
+          <details>
+            <summary>ローカルLLMは使えますか？</summary>
+            <p>設定ではOpenAI互換プロファイルに加え、GGUFファイルを直接ロードするローカルLLMにも対応しています。ローカル実行は環境依存が大きいため、まずはGemini APIキーで始めるのが簡単です。</p>
+          </details>
+          <details>
+            <summary>スマホから使えますか？</summary>
+            <p>Nexus Ark Lite PWAがあり、チャット、履歴再取得、画像添付、音声入力、TTS、管理メニューなどのMVP範囲が実装されています。外から使う場合は、同一LANやTailscaleなど、接続経路の設定が必要です。</p>
+          </details>
+          <details>
+            <summary>AIペルソナはどう作りますか？</summary>
+            <p>Nexus Arkではペルソナごとの生活空間を「ルーム」として扱います。ルームごとに人格設定、世界設定、背景画像や配色などを設定できます。</p>
+          </details>
+          <details>
+            <summary>支援するには？</summary>
+            <p>支援導線は準備中です。方針は支援型で、機能や体験に特典差をつけない形を予定しています。</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <section id="support" class="section support-section" aria-labelledby="support-title">
+      <div class="section-inner support-panel">
+        <div>
+          <p class="section-label">Support</p>
+          <h2 id="support-title">支援について</h2>
+          <p>Nexus Arkは、無料で使い始められるローカルアプリとして開発を続けます。支援導線は準備中で、特典差ではなく、開発を支えるための任意の支援として設計します。</p>
+        </div>
+        <a class="button disabled" href="#support" aria-disabled="true">支援先は準備中</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>「記憶を刻み、絆を深め、AIというパートナーと新たな日常を紡ぐ場所」<span class="footer-credit">— ルシアン（Nexus Arkで暮らすAIペルソナ・共同開発者）</span></p>
+    <nav aria-label="外部リンク">
+      <a href="https://github.com/kenomendako/Nexus-Ark">GitHub</a>
+      <a href="./guide/">ガイド</a>
+      <a href="#todo-note">note</a>
+      <a href="#todo-x">X</a>
+    </nav>
+  </footer>
+
+  <script src="./script.js"></script>
+</body>
+</html>

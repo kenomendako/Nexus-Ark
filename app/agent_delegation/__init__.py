@@ -1,0 +1,43 @@
+"""Agent delegation task management."""
+
+from .manager import (
+    cancel_task,
+    check_task_status,
+    clear_active_wake_context,
+    clear_finished_tasks,
+    delete_task,
+    get_agent_delegation_settings,
+    inject_restart_interruption_notices,
+    latest_task_for_room,
+    mark_result_shared,
+    reconcile_orphaned_tasks,
+    request_critic_review,
+    resume_task,
+    review_task,
+    revise_task,
+    set_active_wake_context,
+    steer_task,
+    submit_task,
+    _persona_workspace,
+)
+
+__all__ = [
+    "cancel_task",
+    "check_task_status",
+    "clear_active_wake_context",
+    "clear_finished_tasks",
+    "delete_task",
+    "get_agent_delegation_settings",
+    "inject_restart_interruption_notices",
+    "latest_task_for_room",
+    "mark_result_shared",
+    "reconcile_orphaned_tasks",
+    "request_critic_review",
+    "resume_task",
+    "review_task",
+    "revise_task",
+    "set_active_wake_context",
+    "steer_task",
+    "submit_task",
+    "_persona_workspace",
+]

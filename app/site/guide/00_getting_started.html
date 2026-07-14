@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- Generated from docs/user_guide/. Do not edit directly. -->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>はじめに | Nexus Ark ガイド</title>
+  <meta name="description" content="Nexus Ark ユーザーガイド: はじめに">
+  <link rel="icon" href="../assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="../assets/favicon-180.png">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="../index.html#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="../assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="../index.html#experience">体験</a>
+      <a href="../index.html#features">特徴</a>
+      <a href="index.html">ガイド</a>
+      <a href="../index.html#start">はじめかた</a>
+      <a href="../index.html#faq">FAQ</a>
+    </nav>
+  </header>
+  <main class="guide-layout">
+    <aside class="guide-sidebar" aria-label="ガイド目次">
+      <a class="guide-home" href="index.html">ガイド目次</a>
+      <ol>
+  <li><a href="00_getting_started.html">はじめに</a></li>
+  <li><a href="01_initial_settings.html">最初の設定ガイド</a></li>
+  <li><a href="02_ui_overview.html">画面構成と基本操作</a></li>
+  <li><a href="03_chat_and_logs.html">チャットとログ管理</a></li>
+  <li><a href="04_memory_notes_knowledge.html">記憶・ノート・知識</a></li>
+  <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
+  <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
+  <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
+  <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
+  <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
+  <li><a href="11_troubleshooting.html">トラブルシューティング</a></li>
+</ol>
+    </aside>
+    <article class="guide-article">
+      <h1>はじめに</h1>
+<p>Nexus Arkは、AIペルソナと長く暮らすためのローカルアプリです。 会話、記憶、日記、夢日記、目標、外部接続を、ルームごとに保存します。 まずはGemini APIキーを登録し、サンプルルームでチャットできる状態にするのが最短です。</p>
+<h2>Nexus Arkでできること</h2>
+<ul>
+<li>AIペルソナとチャットし、会話をルームの履歴として残す。</li>
+<li>日記、エピソード記憶、夢日記、エンティティ記憶を育てる。</li>
+<li>使わない時間にも、許可した範囲でAIペルソナが自律行動する。</li>
+<li>スマホ向けNexus Ark Lite、Discord、LINE、Twitter (X) など別の入口から同じルームへつながる。</li>
+<li>クローゼット、インベントリ、情景、音声、画像生成などでペルソナとの生活感を整える。</li>
+</ul>
+<h2>基本用語</h2>
+<ul>
+<li><strong>AIペルソナ</strong>: Nexus Arkで暮らすAI人格です。名前、話し方、記憶、目標、外見を持ちます。</li>
+<li><strong>ルーム</strong>: AIペルソナの生活空間です。会話ログ、記憶、設定、情景、アトリエはルームごとに分かれます。</li>
+<li><strong>睡眠時記憶整理</strong>: 通知禁止時間帯などに、日記、夢日記、エピソード記憶、索引を整理する処理です。</li>
+<li><strong>RAG / 記憶の想起</strong>: 過去ログや知識ファイルを検索し、必要な情報を会話へ戻す仕組みです。</li>
+</ul>
+<h2>最初にやること</h2>
+<ol>
+<li>初回起動の案内に従い、Gemini APIキーを登録します。</li>
+<li>左サイドバーの「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」でキーが保存されているか確認します。</li>
+<li>中央の「チャット」→「💬 会話」で短いメッセージを送ります。</li>
+<li>次に <a href="01_initial_settings.html">最初の設定ガイド</a> を確認し、送信履歴、記憶の想起、自律行動、通知を必要な範囲だけ調整します。</li>
+</ol>
+<h2>データの保存場所</h2>
+<p>ルームの会話や記憶は <code>characters/&lt;ルーム名&gt;/</code> に保存されます。 共通設定は <code>config.json</code>、ユーザー共通の外見設定は <code>user_closet/</code> に保存されます。 アプリ更新時も、これらのユーザーデータを保持する前提で運用します。</p>
+      <nav class="guide-page-nav" aria-label="前後のページ">
+        <span></span>
+        <a href="index.html">目次へ</a>
+        <a href="01_initial_settings.html">次へ</a>
+      </nav>
+    </article>
+  </main>
+</body>
+</html>

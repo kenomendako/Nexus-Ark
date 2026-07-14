@@ -1,0 +1,93 @@
+<!doctype html>
+<!-- Generated from docs/user_guide/. Do not edit directly. -->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>外部接続とNexus Ark Lite | Nexus Ark ガイド</title>
+  <meta name="description" content="Nexus Ark ユーザーガイド: 外部接続とNexus Ark Lite">
+  <link rel="icon" href="../assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="../assets/favicon-180.png">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="../index.html#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="../assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="../index.html#experience">体験</a>
+      <a href="../index.html#features">特徴</a>
+      <a href="index.html">ガイド</a>
+      <a href="../index.html#start">はじめかた</a>
+      <a href="../index.html#faq">FAQ</a>
+    </nav>
+  </header>
+  <main class="guide-layout">
+    <aside class="guide-sidebar" aria-label="ガイド目次">
+      <a class="guide-home" href="index.html">ガイド目次</a>
+      <ol>
+  <li><a href="00_getting_started.html">はじめに</a></li>
+  <li><a href="01_initial_settings.html">最初の設定ガイド</a></li>
+  <li><a href="02_ui_overview.html">画面構成と基本操作</a></li>
+  <li><a href="03_chat_and_logs.html">チャットとログ管理</a></li>
+  <li><a href="04_memory_notes_knowledge.html">記憶・ノート・知識</a></li>
+  <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
+  <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
+  <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
+  <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
+  <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
+  <li><a href="11_troubleshooting.html">トラブルシューティング</a></li>
+</ol>
+    </aside>
+    <article class="guide-article">
+      <h1>外部接続とNexus Ark Lite</h1>
+<p>外部接続は、Nexus Arkをスマホ、SNS、Bot、自作ツールへ広げるための設定です。 中央「外部接続」タブにまとまっています。</p>
+<h2>Twitter (X)</h2>
+<p>中央「外部接続」→「Twitter (X)」で、Twitter投稿の下書き、承認、投稿履歴を扱います。 投稿は下書きキューに入り、人間が承認するまで外部へ投稿されません。 画像生成付き下書きや、投稿履歴の確認にも対応します。</p>
+<p>DiscordからTwitter下書きを承認する場合は、Discord側の許可ユーザーID設定が必要です。</p>
+<h2>Discord / LINE</h2>
+<p>中央「外部接続」→「Discord / LINE」で、Discord BotとLINE Botを設定します。</p>
+<p>Discord Botでは、ルームごとのBot割り当て、スラッシュコマンド、ルーム切替、再生成、Twitter下書き承認などを扱います。 LINE Botでは、LINEからペルソナと会話できます。 外部からアクセスする場合は、Cloudflare Tunnel、Tailscale Funnel、ngrokなどのHTTPS URLが必要になることがあります。</p>
+<h2>拡張ツール</h2>
+<p>中央「外部接続」→「拡張ツール」では、ローカルプラグインとMCPを管理します。</p>
+<ul>
+<li>「ローカルプラグイン」: Pythonファイルとして自作ツールを追加します。</li>
+<li>「MCP」: stdio、sse、streamable_http、simple_httpの接続を登録できます。</li>
+</ul>
+<p>拡張ツールは便利ですが、外部コマンドや外部サービスへつながる場合があります。 有効化するプラグインやMCPサーバは、内容を理解してから使ってください。</p>
+<h2>API Gateway / Lite</h2>
+<p>中央「外部接続」→「API Gateway / Lite」で、REST APIとスマホ向けNexus Ark Liteを設定します。 「個人用の使い方」に概要が表示されます。</p>
+<p>基本手順は次の通りです。</p>
+<ol>
+<li>「API設定」を開き、「API Gatewayを有効化」をONにする。</li>
+<li>「Token認証」をONにし、「Token生成」で接続用Tokenを作る。</li>
+<li>「API設定を保存」を押す。</li>
+<li>「接続情報を更新」を押し、「Nexus Ark Lite 接続情報」を確認する。</li>
+<li>表示されたURLをスマホで開く。</li>
+</ol>
+<p>Nexus Ark Liteは下部の「チャット」「記録」「管理」「設定」で画面を切り替えます。長いメニューを探し回らず、会話、ノート類、外部連携、接続設定へ直接移動できます。</p>
+<p>チャットでは送信時刻と使用モデルを確認でき、最新の応答を再生成できます。起動時や応答受信時に入力欄へ勝手にフォーカスせず、過去の会話を読んでいる間は新着ボタンで続きを知らせます。「過去」から古い履歴を追加表示でき、入力途中の文はルームごとに端末へ下書き保存されます。</p>
+<p>「記録」では研究ノート・創作ノートの閲覧と編集に加え、日記・メモ帳を読み取り専用で確認できます。手紙箱で手紙を開くと本文が表示され、本体側と同期して既読になります。</p>
+<p>チャット入力欄の「🎁」から、所持品をペルソナへ贈る、ユーザーが使う、場所へ配置する、拾う、場所のアイテムを使う操作ができます。実行前に変化内容を確認し、実行後はその出来事をチャットへ伝えられます。</p>
+<p>「管理」のTwitter下書き一覧では、添付画像の有無だけでなく画像そのものを確認してから承認・却下できます。画像添付、音声入力、TTS再生、現在地移動、自律行動設定も引き続き利用できます。</p>
+<h2>安全診断</h2>
+<p>「API Gateway / Lite」→「安全診断」では、Host、Port、Token認証、レート制限、監査ログ、Tailscale HTTPS候補などを確認できます。 公開HostでToken認証なしにする設定は安全側で拒否されます。</p>
+<p>インターネットへ直接公開する運用は推奨しません。 同一LANやTailscaleなど、本人が管理できる範囲で使ってください。</p>
+<h2>外部イベント</h2>
+<p>「API Gateway / Lite」→「外部イベントテスター」では、外部イベントを現在のルームへ記録できます。 自作アプリや通知システムから、状態変化やイベントをペルソナへ渡したい場合の確認に使います。</p>
+<h2>API能力一覧</h2>
+<p>「API Gateway / Lite」→「利用可能なAPI一覧・外部連携リファレンス」には、現在実装されている全APIと利用条件が自動表示されます。「安全」はアトリエアプリから追加承認なし、「要承認」は表示された権限をアプリごとに許可した後、「所有者Token限定」は本人の接続用Tokenだけで利用できます。</p>
+<p>一覧の <code>{room_id}</code> は、APIを使う際に対象ルーム名へ置き換えるためのテンプレート表記です。正本カタログは全ルーム共通なので、UI上では特定のルーム名に固定せず <code>{room_id}</code> のまま表示します。</p>
+<p>自作アプリからは <code>GET /api/v1/rooms/{room_id}/capabilities</code> を呼ぶと、同じ一覧をJSONで取得できます。ペルソナがアプリ案を考える際の能力確認にもこの一覧が表示されるため、実装済みAPIを確認してからアプリへ組み込めます。</p>
+      <nav class="guide-page-nav" aria-label="前後のページ">
+        <a href="06_closet_items.html">前へ</a>
+        <a href="index.html">目次へ</a>
+        <a href="08_models_api_costs.html">次へ</a>
+      </nav>
+    </article>
+  </main>
+</body>
+</html>

@@ -1,0 +1,125 @@
+<!doctype html>
+<!-- Generated from docs/user_guide/. Do not edit directly. -->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>最初の設定ガイド | Nexus Ark ガイド</title>
+  <meta name="description" content="Nexus Ark ユーザーガイド: 最初の設定ガイド">
+  <link rel="icon" href="../assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="../assets/favicon-180.png">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="../index.html#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="../assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="../index.html#experience">体験</a>
+      <a href="../index.html#features">特徴</a>
+      <a href="index.html">ガイド</a>
+      <a href="../index.html#start">はじめかた</a>
+      <a href="../index.html#faq">FAQ</a>
+    </nav>
+  </header>
+  <main class="guide-layout">
+    <aside class="guide-sidebar" aria-label="ガイド目次">
+      <a class="guide-home" href="index.html">ガイド目次</a>
+      <ol>
+  <li><a href="00_getting_started.html">はじめに</a></li>
+  <li><a href="01_initial_settings.html">最初の設定ガイド</a></li>
+  <li><a href="02_ui_overview.html">画面構成と基本操作</a></li>
+  <li><a href="03_chat_and_logs.html">チャットとログ管理</a></li>
+  <li><a href="04_memory_notes_knowledge.html">記憶・ノート・知識</a></li>
+  <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
+  <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
+  <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
+  <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
+  <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
+  <li><a href="11_troubleshooting.html">トラブルシューティング</a></li>
+</ol>
+    </aside>
+    <article class="guide-article">
+      <h1>最初の設定ガイド</h1>
+<p>初回起動後に確認するとよい設定を、優先順にまとめます。 迷った場合は「まずこれだけ」の値で始め、会話量やAPIコストを見ながら調整してください。</p>
+<h2>まずこれだけ</h2>
+<table>
+<thead><tr>
+<th>項目</th>
+<th>場所</th>
+<th>推奨</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>Gemini APIキー</td>
+<td>左サイドバー「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」→「Gemini APIキー」</td>
+<td>1本以上登録</td>
+</tr>
+<tr>
+<td>有料キー区分</td>
+<td>同じ場所の「有料プランのキーを選択」</td>
+<td>有料キーだけチェック</td>
+</tr>
+<tr>
+<td>会話モデル</td>
+<td>「⚙️ 設定」→「共通」→「⚡ AIモデルプロバイダ設定（デフォルト）」</td>
+<td>まずGoogle (Gemini Native)</td>
+</tr>
+<tr>
+<td>送信する履歴</td>
+<td>「⚙️ 設定」→「個別」→「📡 送信コンテキスト設定」→「APIへの履歴送信（短期記憶の長さ）」</td>
+<td>短めから開始</td>
+</tr>
+<tr>
+<td>記憶の想起</td>
+<td>同じ場所の「記憶の想起（長期記憶）を有効化」</td>
+<td>ON</td>
+</tr>
+<tr>
+<td>自律行動</td>
+<td>中央「自律行動」→「自律行動（このルーム）」→「✨ 自律行動設定（このルーム）」</td>
+<td>最初はOFFでもよい</td>
+</tr>
+<tr>
+<td>通知禁止時間帯</td>
+<td>同じ場所の「🌙 通知禁止時間帯（このルーム）」</td>
+<td>00:00〜07:00</td>
+</tr>
+<tr>
+<td>通知サービス</td>
+<td>「⚙️ 設定」→「共通」→「📢 通知サービス設定」</td>
+<td>使う人だけ設定</td>
+</tr>
+</tbody>
+</table>
+<h2>APIキー</h2>
+<p>Gemini APIキーは、左サイドバーの「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」→「Gemini APIキー」で追加します。 キー名は管理用の名前です。APIキーの値は端末内の <code>config.json</code> に保存されます。</p>
+<p>有料プランのキーを登録した場合は、同じアコーディオン内の「有料プランのキーを選択」でチェックします。 無料キーと有料キーを混ぜる場合、無料キーの制限に達した時だけ有料キーを使う運用にできます。</p>
+<h2>送信するログの量</h2>
+<p>ルームごとの設定は、左サイドバーの「⚙️ 設定」→「個別」→「📡 送信コンテキスト設定」にあります。 「APIへの履歴送信（短期記憶の長さ）」は、直近の会話をどれくらいAIへ送るかの設定です。 長くすると文脈は増えますが、APIコストと待ち時間も増えます。</p>
+<p>新しく作成したルームでは、履歴送信は「本日分」、「本日分が長くなったら自動で要約する」はONで始まります。 その日の会話をまるごと覚えたまま話せて、長くなった分は自動要約で送信量が抑えられる設定です。 APIコストを細かく管理したい場合は、「最新 N件」への変更や自動要約のOFFもここでできます。 （以前から使っているルームの設定は変わりません。）</p>
+<h2>記憶の想起</h2>
+<p>「記憶の想起（長期記憶）を有効化」をONにすると、AIペルソナが記憶や過去ログから関連情報を検索します。 長く使うルームではON推奨です。</p>
+<p>別チャットサービスから引き継いだ思い出や、会話中に参照してほしい情報をナレッジへ保存している場合は、同じ場所の「ナレッジも自動想起に含める（関連時のみ）」もONにします。この設定はルームごとに保存され、初期値はOFFです。ONにしてもナレッジ全文を毎回送るのではなく、会話に関連する部分だけを最大3件検索します。手動でナレッジを検索する機能には影響しません。 ただし索引作成や検索にはEmbeddingモデルの設定と計算時間が関わるため、初期設定直後に重い処理が走る場合があります。</p>
+<p>Embeddingモデルは「⚙️ 設定」→「共通」→「🔧 内部処理モデル設定」→「🧠 エンベディング（ベクトル化）」で設定します。 モデルを変更した時は、中央「記憶・ノート」→「記憶」→「🛠️ 記憶のメンテナンス (手動実行)」で索引を再構築してください。</p>
+<h2>自律行動</h2>
+<p>自律行動は、ユーザーが入力していない間にAIペルソナが考えたり、記憶を整理したり、検索やノート更新を行う機能です。 最初はOFFで始め、会話や記憶の動きに慣れてからONにしても問題ありません。</p>
+<p>ONにする場合は、中央「自律行動」→「自律行動（このルーム）」→「✨ 自律行動設定（このルーム）」を開きます。 「自律行動モードを有効化」をONにし、「無操作判定時間（分）」と「自律行動タイマーの最小間隔・クールダウン（分）」を長めに設定すると、API呼び出しが増えすぎにくくなります。無操作判定時間は最低待機時間で、経過後もAIペルソナの動機が十分な場合だけ行動します。止める場合は時間を延ばすのではなく、自律行動モードをOFFにしてください。</p>
+<h2>通知</h2>
+<p>通知は、アラームやAIペルソナからの声かけをPCや外部サービスへ出す機能です。 左サイドバーの「⚙️ 設定」→「共通」→「📢 通知サービス設定」で、アラーム用と通常通知用のサービスを選びます。 PushoverやDiscord Webhookのキーは「🔑 APIキー / Webhook管理」で登録します。</p>
+<p>通知を控えたい時間帯は、中央「自律行動」→「自律行動（このルーム）」→「✨ 自律行動設定（このルーム）」→「🌙 通知禁止時間帯（このルーム）」で設定します。 この時間帯は睡眠時間として扱われ、睡眠時記憶整理のきっかけにもなります。</p>
+<h2>スマホ利用</h2>
+<p>スマホから使う場合は、中央「外部接続」→「API Gateway / Lite」を開きます。 「API設定」でAPI Gatewayを有効化し、Tokenを生成して保存します。 「Nexus Ark Lite 接続情報」に表示されるURLをスマホで開きます。</p>
+<p>スマホの録音やPWA通知にはHTTPSが必要になることがあります。 同一LAN、Tailscale HTTPS、Tailscale Funnelなど、本人が管理できる接続経路で使ってください。</p>
+      <nav class="guide-page-nav" aria-label="前後のページ">
+        <a href="00_getting_started.html">前へ</a>
+        <a href="index.html">目次へ</a>
+        <a href="02_ui_overview.html">次へ</a>
+      </nav>
+    </article>
+  </main>
+</body>
+</html>
