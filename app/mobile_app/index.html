@@ -8,7 +8,7 @@
     <title>Nexus Ark Lite</title>
     <link rel="manifest" href="/lite/manifest.webmanifest">
     <link rel="icon" href="/lite/icon.png">
-    <link rel="stylesheet" href="/lite/static/styles.css">
+    <link rel="stylesheet" href="/lite/static/styles.css?v=116">
   </head>
   <body data-active-page="chat">
     <main class="app-shell">
@@ -20,47 +20,168 @@
             <p id="room-title" style="display: none;"></p>
           </div>
         </div>
-        <button class="icon-button" id="refresh-button" type="button" title="更新" aria-label="更新">↻</button>
+        <button class="icon-button" id="refresh-button" type="button" title="更新" aria-label="履歴を更新">↻</button>
       </header>
 
-      <section class="chat-panel" aria-label="チャット">
-        <div class="persona-header">
-          <img class="persona-avatar" id="persona-avatar" alt="" hidden>
-          <div class="persona-selects">
-            <div class="select-row">
-              <select id="room-select" aria-label="ルーム"></select>
-            </div>
-            <div class="select-row">
-              <select id="location-select" aria-label="現在地"></select>
-            </div>
-          </div>
+      <section class="notice-panel lite-update-banner" id="lite-update-banner" role="status" aria-live="polite" hidden>
+        <div class="lite-update-copy">
+          <strong id="lite-update-title">画面を更新できます</strong>
+          <span id="lite-update-message">新しい画面を利用できます。</span>
         </div>
+        <button class="primary-button compact-button" id="lite-update-button" type="button">画面を更新</button>
+      </section>
+
+
+
+      <button class="connection-compact" id="connection-compact-button" type="button" aria-label="接続状態の詳細を設定で開く">
+        <span class="connection-compact-indicator" id="connection-compact-indicator" aria-hidden="true">◌</span>
+        <strong id="connection-compact-text">接続状態を確認しています</strong>
+        <span class="connection-compact-action">設定 ›</span>
+      </button>
+
+
+
+      <section class="chat-panel" aria-label="チャット">
+        <div class="chat-context" id="chat-context" data-connection="home">
+          <details class="chat-context-details" id="chat-context-details">
+            <summary title="ルーム・現在地などの詳細を開閉">
+              <strong id="chat-room-name">ルームを選択</strong>
+              <span id="chat-location-name" aria-label="現在地" hidden></span>
+            </summary>
+            <div class="chat-context-content">
+              <p class="management-meta" id="chat-location-detail" hidden aria-live="polite"></p>
+              <div class="persona-header">
+                <img class="persona-avatar" id="persona-avatar" alt="" hidden>
+                <div class="persona-selects">
+                  <div class="select-row">
+                    <select id="room-select" aria-label="ルーム"></select>
+                  </div>
+                  <div class="select-row">
+                    <select id="location-select" aria-label="現在地"></select>
+                  </div>
+                </div>
+              </div>
+              <div class="chat-context-actions">
+                <button class="secondary-button compact-button" id="load-more-button" type="button">過去</button>
+                <select id="tts-mode-select" class="tts-mode-select" aria-label="音声再生方式">
+                  <option value="trim">先頭再生</option>
+                  <option value="split">分割再生</option>
+                </select>
+              </div>
+            </div>
+          </details>
+          <button class="chat-connection-button" id="chat-connection-button" type="button" aria-label="本体への接続状態と利用できる操作を開く" aria-controls="chat-connection-panel" aria-expanded="false" hidden>本体へ再接続中…</button>
+          <span class="chat-mode-badge" id="chat-mode-badge" hidden>独立モード</span>
+        </div>
+        <section class="chat-connection-panel" id="chat-connection-panel" aria-label="本体への接続" hidden>
+          <p id="chat-connection-message" aria-live="polite"></p>
+          <div class="chat-connection-actions">
+            <button class="secondary-button compact-button" id="chat-retry-button" type="button">再試行</button>
+            <button class="primary-button compact-button" id="chat-travel-button" type="button" hidden>独立モードを開く</button>
+            <button class="secondary-button compact-button" id="chat-settings-button" type="button">独立モードの準備を確認</button>
+          </div>
+          <details hidden><summary>接続の詳細</summary><pre id="chat-connection-detail"></pre></details>
+        </section>
         <div class="sync-row">
           <span id="sync-status" aria-live="polite"></span>
           <div class="sync-actions">
-            <button class="secondary-button compact-button" id="load-more-button" type="button">過去</button>
-            <select id="tts-mode-select" class="tts-mode-select" aria-label="音声再生方式">
-              <option value="trim">先頭再生</option>
-              <option value="split">分割再生</option>
-            </select>
             <button class="secondary-button compact-button stop-audio-button" id="stop-audio-button" type="button" hidden>停止</button>
           </div>
         </div>
+        <details class="travel-route-panel" id="travel-route-panel">
+          <summary>
+            <span class="travel-route-summary-heading">
+              <span>AI・予備キーの切替</span>
+            </span>
+            <strong id="travel-current-route">現在のAIを確認しています</strong>
+          </summary>
+          <div class="travel-route-content">
+            <div class="travel-route-grid">
+              <label class="field">
+                <span>AIサービス／接続</span>
+                <select id="travel-profile-select"></select>
+              </label>
+              <label class="field">
+                <span>モデル</span>
+                <select id="travel-model-select"></select>
+              </label>
+            </div>
+            <p class="management-meta" id="travel-model-status" aria-live="polite"></p>
+            <div class="travel-route-actions">
+              <button class="secondary-button compact-button" id="travel-model-refresh-button" type="button">モデル一覧を更新</button>
+              <button class="primary-button compact-button" id="travel-route-apply-button" type="button">このAIへ変更</button>
+            </div>
+            <p class="management-meta" id="travel-route-status" aria-live="polite"></p>
+            <div class="travel-usage-summary" aria-label="選択中ペルソナの利用額">
+              <span id="travel-usage-known">利用額: 確認中</span>
+              <span id="travel-usage-budget"></span>
+              <strong id="travel-usage-warning"></strong>
+            </div>
+          </div>
+        </details>
+        <div id="travel-budget-access" hidden>
+          <button class="secondary-button compact-button" id="travel-budget-open" type="button">予算を確認・変更</button>
+          <span class="management-meta" id="travel-budget-notice" aria-live="polite"></span>
+        </div>
         <div class="notice-panel" id="secure-origin-notice" hidden></div>
+        <details class="notice-panel" id="travel-send-failure" hidden>
+          <summary>前回の送信エラー（詳細）</summary>
+          <p id="travel-send-failure-detail"></p>
+          <p class="management-meta">この文章は自動で再送しません。確認コードを添えて状況を伝えられます。</p>
+        </details>
+        <details class="travel-pending-panel" id="travel-pending-panel" aria-labelledby="travel-pending-title" hidden>
+          <summary id="travel-pending-title">前回の送信を確認</summary>
+          <p id="travel-pending-status" role="status"></p>
+          <p class="management-meta" id="travel-pending-context"></p>
+          <div class="travel-pending-actions">
+            <button class="secondary-button compact-button" id="travel-pending-check" type="button">送信結果を再確認</button>
+            <button class="secondary-button compact-button" id="travel-pending-restore" type="button" hidden>元の接続先へ戻す</button>
+            <button class="secondary-button compact-button" id="travel-pending-settings" type="button" hidden>接続設定を開く</button>
+          </div>
+          <div id="travel-pending-unknown-actions" hidden>
+            <label class="toggle-row">
+              <input id="travel-pending-unknown-confirm" type="checkbox">
+              <span>応答や料金は不明のまま記録に残し、この文章を再送せず続けることを確認しました</span>
+            </label>
+            <button class="secondary-button" id="travel-pending-acknowledge" type="button" disabled>結果不明の記録を保管して続ける</button>
+          </div>
+          <details id="travel-pending-manual">
+            <summary>本体で復旧したあと</summary>
+            <p class="management-meta">通常の帰宅ができない場合は、PC本体の帰宅画面で対象を確認し、必要に応じて「緊急帰還して本体を再開」を使います。完了後に下の操作で、この端末の待機を解除できます。クラウドの処理停止や料金の確定は行いません。</p>
+            <label class="toggle-row">
+              <input id="travel-pending-home-confirm" type="checkbox">
+              <span>本体で、対象のペルソナのお出かけを終了したことを確認しました</span>
+            </label>
+            <button class="secondary-button" id="travel-pending-home-recovered" type="button" disabled>記録を保管して待機を解除</button>
+          </details>
+          <details id="travel-pending-history" hidden>
+            <summary id="travel-pending-history-title">保管した送信記録</summary>
+            <ul id="travel-pending-history-list"></ul>
+          </details>
+          <details>
+            <summary>確認用の記録</summary>
+            <p class="management-meta">接続先と送信の確認情報を、この端末へ保存できます。送信本文や認証キーは含めません。</p>
+            <button class="secondary-button compact-button" id="travel-pending-export" type="button">確認用の記録を保存</button>
+          </details>
+        </details>
         <div class="messages" id="messages" aria-live="polite"></div>
         <button class="new-message-button" id="new-message-button" type="button" hidden>新しい応答 ↓</button>
         <form class="composer" id="chat-form">
           <div class="composer-main">
+            <textarea id="message-input" rows="2" placeholder="メッセージ" aria-label="メッセージ"></textarea>
+            <div class="composer-toolbar">
             <label class="attach-button" title="画像を添付">
               ＋
-              <input id="image-input" type="file" accept="image/*">
+              <input id="image-input" type="file" accept="image/*" multiple aria-label="画像を添付">
             </label>
             <button class="item-button" id="item-button" type="button" title="アイテムを使う" aria-label="アイテムを使う">🎁</button>
             <button class="voice-button" id="voice-button" type="button" title="音声入力">録音</button>
-            <textarea id="message-input" rows="3" placeholder="メッセージ"></textarea>
-            <span class="attachment-name" id="attachment-name"></span>
+            <button class="secondary-button compact-button" id="redaction-shortcut-button" type="button" aria-haspopup="dialog">マスク</button>
+            <button class="secondary-button compact-button home-feature" id="stop-response-button" type="button" hidden>応答停止</button>
+            <button class="send-button" id="send-button" type="submit">送信</button>
+            </div>
+            <div class="attachment-name" id="attachment-name" aria-label="送信前の添付画像" hidden></div>
           </div>
-          <button class="send-button" id="send-button" type="submit">送信</button>
         </form>
       </section>
 
@@ -71,15 +192,71 @@
         </summary>
         <div class="page-heading"><h2 id="page-title">記録</h2></div>
         <div class="menu-content">
-          <details class="menu-section" id="connection-details" data-page="settings" open>
+          <details class="menu-section page-menu-section connection-wizard" id="connection-wizard-details" data-page="settings" aria-labelledby="connection-wizard-title">
+            <summary class="section-summary"><span id="connection-wizard-title">独立モードの接続・準備状況</span></summary>
+            <div class="page-menu-content connection-wizard-content">
+              <p class="management-meta">本体・Lite用クラウド・端末・お出かけ前データを確認します。モードの切替もここから行えます。</p>
+              <section class="lite-mode-bar" aria-label="接続モード">
+                <button class="lite-mode-summary" id="standby-shortcut-button" type="button" aria-label="お出かけ前データの設定を開く">
+                  <strong id="lite-mode-label">🏠 本体接続</strong>
+                  <span id="snapshot-freshness" data-mode="checking">お出かけ前データを確認中</span>
+                </button>
+                <span id="travel-readiness">独立モードを確認中</span>
+                <div class="lite-mode-actions">
+                  <button class="secondary-button compact-button" id="home-mode-button" type="button">本体</button>
+                  <button class="secondary-button compact-button" id="travel-mode-button" type="button">独立モード</button>
+                  <button class="secondary-button compact-button" id="return-home-button" type="button" hidden>本体へ戻る</button>
+                </div>
+                <p class="notice-panel" id="travel-return-status" role="status" aria-live="polite" hidden></p>
+              </section>
+              <div class="connection-wizard-heading">
+                <div>
+                  <p id="storage-context">この画面の保存領域を確認中です。</p>
+                </div>
+                <button class="secondary-button compact-button" id="connection-check-button" type="button">状態を再確認</button>
+              </div>
+              <div class="connection-step-grid">
+                <article class="connection-step" id="home-connection-step" data-mode="checking">
+                  <span>1. 本体</span>
+                  <strong id="home-connection-state">確認中</strong>
+                  <small id="home-connection-next">次の操作を確認しています。</small>
+                </article>
+                <article class="connection-step" id="worker-connection-step" data-mode="checking">
+                  <span>2. Lite用クラウド</span>
+                  <strong id="worker-connection-state">確認中</strong>
+                  <small id="worker-connection-next">次の操作を確認しています。</small>
+                </article>
+                <article class="connection-step" id="device-connection-step" data-mode="checking">
+                  <span>3. 端末</span>
+                  <strong id="device-connection-state">確認中</strong>
+                  <small id="device-connection-next">次の操作を確認しています。</small>
+                </article>
+                <article class="connection-step" id="standby-connection-step" data-mode="checking">
+                  <span>4. お出かけ前のデータ</span>
+                  <strong id="standby-connection-state">確認中</strong>
+                  <small id="standby-connection-next">次の操作を確認しています。</small>
+                </article>
+              </div>
+              <div class="connection-wizard-next" aria-live="polite">
+                <span id="connection-wizard-next-text">接続状態を確認しています。</span>
+                <button class="primary-button compact-button" id="connection-next-button" type="button" hidden></button>
+              </div>
+            </div>
+          </details>
+
+          <details class="menu-section page-menu-section" id="connection-details" data-page="settings">
             <summary class="section-summary">
-              <span id="connection-summary-url">接続設定</span>
+              <span>本体への接続</span>
+              <span class="status-pill" id="connection-summary-url">本体接続（未設定）</span>
             </summary>
-            <div class="connection-fields" aria-label="接続設定">
+            <div class="connection-fields page-menu-content" aria-label="本体への接続">
+              <p class="management-meta">本体との会話と、スマホからの帰宅に使う接続先です。ブラウザとホーム画面のLiteで設定が共有されない場合があるため、実際に使うこのLiteで設定してください。</p>
               <label class="field">
                 <span>API URL</span>
                 <input id="api-base-input" type="url" autocomplete="url" placeholder="http://192.168.0.2:8000">
               </label>
+              <p class="management-meta">本体の接続情報にある「API URL」を入力します。例: https://PC名.…ts.net（末尾の /lite は画面を開くためのもので、この欄には不要です）。</p>
+              <p class="management-meta" id="home-api-url-correction" role="status" hidden></p>
               <label class="field">
                 <span>Token</span>
                 <input id="token-input" type="password" autocomplete="current-password" placeholder="接続用Token">
@@ -90,42 +267,100 @@
             </div>
           </details>
 
-          <details class="menu-section" id="status-details" data-page="management">
-            <summary class="section-summary">
-              <span>状態</span>
-              <span id="location-value">-</span>
-            </summary>
-            <section class="status-grid" aria-label="状態">
-              <article class="status-card expression-card">
-                <span class="card-label">表情</span>
-                <strong id="expression-value">neutral</strong>
-              </article>
-              <article class="status-card">
-                <span class="card-label">反応度</span>
-                <strong id="arousal-value">0.50</strong>
-              </article>
-            </section>
-            <section class="drives-panel" aria-label="内的状態">
-              <div class="drive-row">
-                <span>退屈</span>
-                <meter id="drive-boredom" min="0" max="1" value="0"></meter>
+          <details class="menu-section page-menu-section" id="travel-preparation-details" data-page="settings">
+            <summary class="section-summary"><span>独立モードの準備</span></summary>
+            <div class="connection-fields page-menu-content" aria-label="独立モードの準備">
+              <p class="management-meta">本体を離れて使うためのインストール・クラウド接続・ペアリング・お出かけ前データを準備します。</p>
+              <section class="install-card" id="install-card" aria-labelledby="install-card-title">
+                <div>
+                  <strong id="install-card-title">この端末へLiteをインストール</strong>
+                  <p class="management-meta" id="install-status">インストール状態を確認しています。</p>
+                </div>
+                <button class="secondary-button" id="install-app-button" type="button">インストール方法を表示</button>
+              </section>
+              <p class="management-meta pairing-handoff-notice" id="pairing-handoff-notice" hidden></p>
+              <label class="field">
+                <span>Lite用クラウド URL（Worker URL）</span>
+                <input id="travel-worker-url" type="url" autocomplete="url" placeholder="https://...workers.dev">
+              </label>
+              <div class="management-inline pairing-fields">
+                <input id="travel-device-name" type="text" maxlength="100" placeholder="端末名">
+                <input id="travel-pairing-code" type="text" maxlength="200" placeholder="ペアリングコード">
+                <button class="secondary-button" id="travel-pair-button" type="button">ペアリング</button>
               </div>
-              <div class="drive-row">
-                <span>好奇心</span>
-                <meter id="drive-curiosity" min="0" max="1" value="0"></meter>
-              </div>
-              <div class="drive-row">
-                <span>目標</span>
-                <meter id="drive-goal" min="0" max="1" value="0"></meter>
-              </div>
-              <div class="drive-row">
-                <span>親密度</span>
-                <meter id="drive-related" min="0" max="1" value="0"></meter>
-              </div>
-            </section>
+              <label class="toggle-row browser-pairing-confirmation" id="browser-pairing-confirmation" hidden>
+                <input id="browser-pairing-confirmation-checkbox" type="checkbox">
+                <span>このブラウザ画面を持ち出しに使うことを確認しました</span>
+              </label>
+              <p class="management-meta">通常ブラウザとインストール済みPWAは、端末によって保存領域が分かれます。実際に持ち出すPWAを開き、その画面内でペアリングしてください。</p>
+              <p class="management-meta"><strong>この端末からの更新:</strong> 現在選んでいるペルソナ1人の「お出かけ前データ」を更新します。複数のペルソナを連れて行く準備と出発はPCで行います。</p>
+              <label class="field">
+                <span>持ち出す量</span>
+                <select id="standby-data-preset">
+                  <option value="recommended">おすすめ</option>
+                  <option value="minimal">最小限（人格設定のみ）</option>
+                  <option value="custom">自分で選ぶ</option>
+                </select>
+              </label>
+              <p class="management-meta" id="standby-data-preset-status">おすすめ: 人柄や最近の出来事、直近の会話をバランスよく持ち出します。</p>
+              <details class="standby-data-custom" id="standby-data-custom-details">
+                <summary>内容を確認・細かく調整</summary>
+                <label class="toggle-row">
+                  <input id="standby-include-core-memory-checkbox" type="checkbox" checked disabled>
+                  <span>大切な記憶を含める</span>
+                </label>
+                <label class="toggle-row">
+                  <input id="standby-include-episodic-memory-checkbox" type="checkbox" checked disabled>
+                  <span>最近の出来事の要約を含める</span>
+                </label>
+                <label class="field">
+                  <span>最近の出来事を含める日数（今日を除く・0〜30日）</span>
+                  <input id="standby-episodic-memory-days" type="number" min="0" max="30" step="1" value="2" disabled>
+                </label>
+                <label class="field">
+                  <span>直近の会話を含める件数（0〜40件）</span>
+                  <input id="standby-recent-message-limit" type="number" min="0" max="40" step="5" value="40" disabled>
+                </label>
+              </details>
+              <button class="secondary-button" id="standby-refresh-button" type="button">現在のペルソナのデータを更新</button>
+              <label class="toggle-row">
+                <input id="standby-auto-refresh-checkbox" type="checkbox">
+                <span>本体接続中は自動で最新状態を保存（可視中に定期確認・最短6時間・内容変更時のみ）</span>
+              </label>
+              <p class="management-meta" id="standby-status" tabindex="-1">お出かけ前のデータ: 未確認</p>
+              <details class="external-ai-export" id="external-ai-export-details">
+                <summary>別のAIチャットアプリへ持ち出す</summary>
+                <p class="management-meta">
+                  PCが使えない時も、準備済みデータから外部AI用の文面を作れます。
+                  独立モード中は開始時点の内容を使います。外部AIでの会話はNexus Arkへ自動帰宅しません。
+                </p>
+                <label class="field">
+                  <span>持ち出すペルソナ</span>
+                  <select id="external-ai-persona-select"></select>
+                </label>
+                <label class="toggle-row disclosure-confirmation">
+                  <input id="external-ai-disclosure-checkbox" type="checkbox">
+                  <span>人格設定・記憶・直近会話が外部AIと端末のクリップボードへ渡ることを確認しました</span>
+                </label>
+                <button class="secondary-button" id="external-ai-show-button" type="button">外部AI用の文面を表示</button>
+                <p class="management-meta" id="external-ai-export-status">準備済みデータを確認してください。</p>
+                <div id="external-ai-export-result" hidden>
+                  <label class="field">
+                    <span>内容を確認・必要なら編集</span>
+                    <textarea id="external-ai-export-text" rows="12" spellcheck="false"></textarea>
+                  </label>
+                  <div class="connection-actions">
+                    <button class="primary-button" id="external-ai-copy-button" type="button">文面をコピー</button>
+                    <button class="secondary-button" id="external-ai-clear-button" type="button">画面から消す</button>
+                  </div>
+                </div>
+              </details>
+            </div>
           </details>
 
-          <details class="menu-section" id="theme-details" data-page="settings">
+
+
+          <details class="menu-section page-menu-section" id="theme-details" data-page="settings">
             <summary class="section-summary">
               <span>テーマ設定</span>
               <span class="status-pill" id="theme-summary-status">グリーン / 自動</span>
@@ -153,29 +388,61 @@
             </div>
           </details>
 
-          <details class="menu-section" id="redaction-details" data-page="settings">
+          <details class="menu-section management-section page-menu-section home-feature" id="home-key-details" data-page="settings">
+            <summary class="section-summary"><span>このルームの応答設定（Gemini）</span></summary>
+            <p class="management-meta">本体に登録済みのキー・モデルを選び、このルームの応答に適用します。</p>
+            <button class="secondary-button" id="home-key-refresh" type="button">現在の設定を取得</button>
+            <p class="management-meta" id="home-response-effective" aria-live="polite">未読込</p>
+            <label class="field"><span>設定の適用範囲</span><select id="home-response-scope" disabled><option value="common">共通設定に従う</option><option value="room">このルームの個別設定</option></select></label>
+            <div id="home-response-fields" hidden>
+              <label class="field"><span>Geminiキー</span><select id="home-key-select" aria-label="本体のAPIキー" disabled></select></label>
+              <label class="field"><span>応答モデル</span><select id="home-response-model" disabled></select></label>
+              <label class="field"><span>キーローテーション</span><select id="home-response-rotation" disabled><option value="common">共通設定に従う</option><option value="on">オン</option><option value="off">オフ（選んだキーを使う）</option></select></label>
+            </div>
+            <p class="management-meta" id="home-response-common"></p>
+            <button class="secondary-button" id="home-key-apply" type="button" disabled>このルームへ適用</button>
+            <p class="management-meta" id="home-key-status" aria-live="polite">未読込</p>
+          </details>
+
+          <details class="menu-section management-section page-menu-section" id="notification-section" data-page="settings" aria-label="通知">
             <summary class="section-summary">
-              <span>文字置き換え（マスク）</span>
-              <span class="status-pill" id="redaction-summary-status">オフ</span>
+              <span>通知</span>
+              <span class="management-meta" id="notification-meta">未確認</span>
             </summary>
-            <div class="connection-fields" aria-label="文字置き換え設定">
-              <label class="checkbox-label">
-                <input type="checkbox" id="redaction-enabled-checkbox">
-                <span>置き換え（マスク）を有効にする</span>
-              </label>
-              
-              <div class="rules-editor">
-                <div class="rule-input-row">
-                  <input type="text" id="rule-find-input" placeholder="元の文字列" class="compact-input">
-                  <input type="text" id="rule-replace-input" placeholder="置換後" class="compact-input">
-                  <input type="color" id="rule-color-input" value="#62827e" title="マスク背景色" class="color-picker-compact">
-                  <button type="button" class="secondary-button compact-button" id="add-rule-button">追加</button>
-                </div>
-                
-                <div class="rules-list-container">
-                  <ul id="rules-list" class="rules-list"></ul>
-                </div>
+            <div class="notification-content">
+              <div class="management-actions">
+                <button class="secondary-button" id="notification-enable-button" type="button">通知を許可</button>
+                <button class="secondary-button" id="notification-test-button" type="button">通知テスト</button>
+                <button class="secondary-button" id="notification-unsubscribe-current-button" type="button">この端末を解除</button>
               </div>
+              <div class="notification-settings">
+                <label class="toggle-row">
+                  <input id="event-notification-enabled" type="checkbox">
+                  <span>外部イベント通知</span>
+                </label>
+                <label class="toggle-row">
+                  <input id="response-preview-enabled" type="checkbox">
+                  <span>応答通知に本文プレビューを表示</span>
+                </label>
+                <label>
+                  <span>最低重要度</span>
+                  <select id="event-notification-minimum">
+                    <option value="high">high以上</option>
+                    <option value="critical">criticalのみ</option>
+                  </select>
+                </label>
+                <label>
+                  <span>既定クールダウン秒</span>
+                  <input id="event-notification-cooldown" type="number" min="0" max="86400" step="30">
+                </label>
+                <label>
+                  <span>送信元別の通知間隔（JSON・上級者向け）</span>
+                  <textarea id="event-notification-source-cooldowns" rows="3" spellcheck="false"></textarea>
+                </label>
+                <button class="secondary-button" id="event-notification-save-button" type="button">通知設定を保存</button>
+              </div>
+              <div class="management-detail" id="notification-detail" aria-live="polite">通知テスト結果はここに表示されます。</div>
+              <div class="push-device-list" id="push-device-list" aria-live="polite"></div>
             </div>
           </details>
 
@@ -185,9 +452,60 @@
               <span class="status-pill" id="management-summary-status">未読込</span>
             </summary>
             <div class="management-content">
-              <section class="management-section" id="twitter-section" data-page="management" aria-label="Twitter下書き">
-                <div class="management-heading">
-                  <h2>Twitter下書き</h2>
+              <details class="management-section page-menu-section" id="status-details" data-page="management">
+                <summary class="section-summary">
+                  <span>状態</span>
+                  <span class="status-pill" id="location-value">-</span>
+                </summary>
+                <div class="management-actions">
+                  <button class="secondary-button compact-button" id="status-refresh-button" type="button">状態を更新</button>
+                </div>
+                <p class="field-info" id="status-data-meta" role="status">本体へ接続して状態を取得してください。</p>
+                <section class="status-grid" aria-label="状態">
+                  <article class="status-card expression-card">
+                    <span class="card-label">表情</span>
+                    <strong id="expression-value">—</strong>
+                  </article>
+                </section>
+                <section class="drives-panel" aria-label="内的状態">
+                  <div class="drive-row">
+                    <span>退屈</span>
+                    <meter id="drive-boredom" min="0" max="1" value="0"></meter>
+                  </div>
+                  <div class="drive-row">
+                    <span>好奇心</span>
+                    <meter id="drive-curiosity" min="0" max="1" value="0"></meter>
+                  </div>
+                  <div class="drive-row">
+                    <span>目標</span>
+                    <meter id="drive-goal" min="0" max="1" value="0"></meter>
+                  </div>
+                  <div class="drive-row">
+                    <span>親密度</span>
+                    <meter id="drive-related" min="0" max="1" value="0"></meter>
+                  </div>
+                </section>
+                <section class="persistent-emotions-panel" aria-label="持続感情（本人の申告）">
+                  <h3>持続感情（本人の申告）</h3>
+                  <p class="field-info">ペルソナが自発的に残した、気分の余韻の記録です。</p>
+                  <details class="status-explanation" id="persistent-emotions-help">
+                    <summary>詳しく</summary>
+                    <ul class="field-info">
+                      <li>申告値：本人が記録した強さ（0〜1）です。</li>
+                      <li>取得時の参考値：申告値を時間経過に応じて減衰させた目安です。</li>
+                      <li>未申告：申告の記録がない状態です。感情の有無とは別に扱います。</li>
+                      <li>提示期間終了：会話の参考に使う期間が過ぎた状態です。本人による終了は「本人が終了」で示します。</li>
+                    </ul>
+                    <p class="field-info">この一覧は閲覧専用です。</p>
+                  </details>
+                  <p class="field-info" id="persistent-emotions-status" role="status">未読込</p>
+                  <div id="persistent-emotions-list" role="list"></div>
+                </section>
+              </details>
+              <details class="management-section page-menu-section" id="twitter-section" data-page="management" aria-label="Twitter下書き">
+                <summary class="section-summary"><span>Twitter下書き</span></summary>
+                <div class="page-menu-content">
+                <div class="management-actions">
                   <button class="secondary-button compact-button" id="draft-refresh-button" type="button">再取得</button>
                 </div>
                 <label class="field">
@@ -201,18 +519,86 @@
                   <button class="primary-button" id="draft-approve-button" type="button">承認して投稿</button>
                   <button class="secondary-button" id="draft-reject-button" type="button">却下</button>
                 </div>
-              </section>
-
-              <section class="management-section" id="autonomy-section" data-page="management" aria-label="自律行動">
-                <div class="management-heading">
-                  <h2>自律行動</h2>
-                  <span class="management-meta" id="autonomy-meta">-</span>
                 </div>
+              </details>
+
+              <details class="management-section page-menu-section" id="autonomy-section" data-page="management" aria-label="自律行動">
+                <summary class="section-summary">
+                  <span>自律行動</span>
+                  <span class="status-pill" id="autonomy-meta">-</span>
+                </summary>
+                <div class="page-menu-content">
                 <div class="management-actions">
                   <button class="secondary-button" id="autonomy-quiet-button" type="button">静かにする</button>
                   <button class="secondary-button" id="autonomy-normal-button" type="button">通常に戻す</button>
                 </div>
-              </section>
+                <div class="management-inline home-feature">
+                  <label class="field"><span>自律行動の間隔（分）</span><input id="autonomy-minutes" type="number" min="1" max="10080" step="1"></label>
+                  <button class="secondary-button" id="autonomy-span-button" type="button">間隔を保存</button>
+                </div>
+                </div>
+              </details>
+
+
+              <details class="management-section page-menu-section home-feature" id="temporary-location-details" data-page="management">
+                <summary class="section-summary"><span>一時的現在地</span></summary>
+                <p class="management-meta">名前・情景・写真を下書きして、内容を確認してからこのルームへ共有します。仮想の現在地は保持します。</p>
+                <p class="management-meta" id="temporary-location-status" aria-live="polite">未読込</p>
+                <details class="temporary-location-subsection" id="temporary-location-edit-details">
+                  <summary>編集・生成</summary>
+                  <div class="temporary-location-fields">
+                    <button class="secondary-button" id="temporary-location-refresh" type="button">現在の内容を取得</button>
+                    <label class="field"><span>場所名（保存・共有する名前）</span><input id="temporary-location-name" type="text" maxlength="120" autocomplete="off" aria-label="一時的現在地の場所名" placeholder="例: 海辺のカフェ"></label>
+                    <textarea id="temporary-location-text" rows="4" maxlength="4000" aria-label="いまいる場所の情景" placeholder="お店の雰囲気、目の前の景色など"></textarea>
+                    <label class="field"><span>AI補足（任意・編集できます）</span><textarea id="temporary-location-source-description" rows="3" maxlength="500" aria-label="一時的現在地のAI補足" placeholder="写真から生成した説明や、補足したいこと"></textarea></label>
+                    <label class="field"><span>この場所の写真（任意）</span><input id="temporary-location-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+                    <div class="item-generated-image" id="temporary-location-image-preview" hidden></div>
+                    <button class="secondary-button" id="temporary-location-image-remove" type="button" hidden>写真を外す（適用時に保存）</button>
+                    <label class="field"><span>AI生成への補足（任意）</span><textarea id="temporary-location-ai-hint" rows="2" maxlength="500" aria-label="一時的現在地のAI生成補足" placeholder="例: 雨上がりで静かな雰囲気"></textarea></label>
+                    <p class="management-meta">写真から情景文を生成する時は、写真と補足がAIへ送られます。利用中のAI設定により費用が発生する場合と、元の写真を共有することを確認してから実行してください。PNG・JPEG・WebP・GIF、8MBまで。</p>
+                    <div class="management-actions">
+                      <button class="secondary-button" id="temporary-location-generate" type="button">写真からAIで情景文を生成</button>
+                    </div>
+                    <p class="management-meta" id="temporary-location-generation-status" aria-live="polite"></p>
+                  </div>
+                </details>
+                <details class="temporary-location-subsection" id="temporary-location-library-details">
+                  <summary>保存・ロード</summary>
+                  <div class="temporary-location-fields">
+                    <section class="temporary-location-library" aria-label="保存した現在地">
+                      <div class="management-heading">
+                        <h3>保存した場所</h3>
+                        <span class="management-meta">呼び出して編集し、適用するまで現在地は変わりません。</span>
+                      </div>
+                      <div class="management-inline">
+                        <select id="temporary-location-saved-select" aria-label="保存した場所" disabled><option value="">一覧を取得してください</option></select>
+                        <button class="secondary-button" id="temporary-location-saved-refresh" type="button">一覧を取得</button>
+                        <button class="secondary-button" id="temporary-location-saved-load" type="button">下書きへ呼出</button>
+                      </div>
+                      <p class="management-meta" id="temporary-location-saved-status" aria-live="polite">未読込</p>
+                    </section>
+                    <button class="secondary-button" id="temporary-location-save" type="button">この内容を保存</button>
+                  </div>
+                </details>
+                <div class="management-actions">
+                  <button class="secondary-button" id="temporary-location-apply" type="button">情景と写真を適用</button>
+                  <button class="secondary-button" id="temporary-location-disable" type="button">仮想現在地へ戻す</button>
+                </div>
+              </details>
+              <details class="management-section page-menu-section home-feature" id="leave-message-details" data-page="management">
+                <summary class="section-summary"><span>置き手紙</span></summary>
+                <button class="secondary-button" id="leave-message-refresh" type="button">現在の内容を取得</button>
+                <textarea id="leave-message-text" rows="4" maxlength="4000" aria-label="置き手紙" placeholder="いま伝えておきたいこと"></textarea>
+                <button class="secondary-button" id="leave-message-save" type="button">置き手紙を保存</button>
+                <p class="management-meta" id="leave-message-status" aria-live="polite">保存で即時のAI応答は要求しません。</p>
+              </details>
+              <details class="management-section page-menu-section home-feature" id="request-control-details" data-page="management">
+                <summary class="section-summary"><span>応答要請の停止</span></summary>
+                <p class="management-meta">選択中のルームの本体接続チャットを停止します。送信済みの外部要求は完了待ちになる場合があります。</p>
+                <button class="secondary-button" id="request-control-refresh" type="button">進行中の要請を確認</button>
+                <div id="request-control-list"></div>
+                <p class="management-meta" id="request-control-status" aria-live="polite">未読込</p>
+              </details>
 
               <section class="management-section" id="notes-section" data-page="records" aria-label="ノート">
                 <div class="management-heading">
@@ -225,14 +611,16 @@
                     <option value="notepad">メモ帳</option>
                     <option value="research">研究ノート</option>
                     <option value="creative">創作ノート</option>
+                    <option value="dream">夢日記</option>
+                    <option value="episodic">エピソード記憶</option>
                   </select>
                   <button class="secondary-button" id="note-refresh-button" type="button">見出し取得</button>
+                  <button class="secondary-button" id="note-latest-button" type="button">最新</button>
                 </div>
                 <div class="management-inline">
                   <select id="note-heading-select" aria-label="見出し" disabled>
                     <option value="">（見出しを取得してください）</option>
                   </select>
-                  <button class="secondary-button" id="note-show-section-button" type="button" disabled>表示</button>
                 </div>
                 <pre class="note-viewer" id="note-viewer">ノート種別を選んで「見出し取得」を押してください。</pre>
                 <textarea class="note-editor" id="note-editor" aria-label="ノート本文" hidden></textarea>
@@ -259,45 +647,7 @@
                 </article>
               </section>
 
-              <section class="management-section" id="notification-section" data-page="settings" aria-label="通知">
-                <div class="management-heading">
-                  <h2>通知</h2>
-                  <span class="management-meta" id="notification-meta">未確認</span>
-                </div>
-                <div class="management-actions">
-                  <button class="secondary-button" id="notification-enable-button" type="button">通知を許可</button>
-                  <button class="secondary-button" id="notification-test-button" type="button">通知テスト</button>
-                  <button class="secondary-button" id="notification-unsubscribe-current-button" type="button">この端末を解除</button>
-                </div>
-                <div class="notification-settings">
-                  <label class="toggle-row">
-                    <input id="event-notification-enabled" type="checkbox">
-                    <span>外部イベント通知</span>
-                  </label>
-                  <label class="toggle-row">
-                    <input id="response-preview-enabled" type="checkbox">
-                    <span>応答通知に本文プレビューを表示</span>
-                  </label>
-                  <label>
-                    <span>最低重要度</span>
-                    <select id="event-notification-minimum">
-                      <option value="high">high以上</option>
-                      <option value="critical">criticalのみ</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>既定クールダウン秒</span>
-                    <input id="event-notification-cooldown" type="number" min="0" max="86400" step="30">
-                  </label>
-                  <label>
-                    <span>送信元別の通知間隔（JSON・上級者向け）</span>
-                    <textarea id="event-notification-source-cooldowns" rows="3" spellcheck="false"></textarea>
-                  </label>
-                  <button class="secondary-button" id="event-notification-save-button" type="button">通知設定を保存</button>
-                </div>
-                <div class="management-detail" id="notification-detail" aria-live="polite">通知テスト結果はここに表示されます。</div>
-                <div class="push-device-list" id="push-device-list" aria-live="polite"></div>
-              </section>
+
             </div>
           </details>
         </div>
@@ -310,42 +660,131 @@
       <button class="nav-button" type="button" data-nav-page="settings"><span>⚙️</span>設定</button>
     </nav>
     <dialog class="item-dialog" id="item-dialog">
-      <form method="dialog" class="item-sheet">
-        <div class="dialog-heading">
-          <h2>アイテムを使う</h2>
-          <button class="icon-button" id="close-item-dialog" type="button" aria-label="閉じる">×</button>
+      <div class="item-sheet">
+        <div class="item-form">
+          <div class="dialog-heading">
+            <h2>アイテムを使う・作成</h2>
+            <button class="icon-button" id="close-item-dialog" type="button" aria-label="閉じる">×</button>
+          </div>
+          <details class="home-feature" id="item-create-details">
+            <summary>✨ アイテムを作成</summary>
+            <div class="item-generation-fields">
+              <p class="management-meta">手入力と写真だけでも作成できます。AIによる説明の補完・画像生成は任意です。内容を確認してから保存してください。</p>
+              <label class="field"><span>種類</span><select id="item-gen-kind"><option value="food">食べ物</option><option value="standard">一般アイテム</option></select></label>
+              <label class="field"><span>名前</span><input id="item-gen-name" maxlength="120" placeholder="例: 手作りクッキー"></label>
+              <div class="management-inline">
+                <label class="field"><span>分類</span><input id="item-gen-category" maxlength="80" value="food"></label>
+                <label class="field"><span>数量</span><input id="item-gen-amount" type="number" min="1" max="99" value="1"></label>
+              </div>
+              <label class="field"><span>説明・特徴</span><textarea id="item-gen-description" rows="3" maxlength="4000" placeholder="材料、見た目、用途、食べた時の様子など"></textarea></label>
+              <label class="field"><span id="item-create-sensory-label">味・香り・食感（任意）</span><textarea id="item-create-sensory" rows="2" maxlength="2000" placeholder="実際に感じたことを書けます"></textarea></label>
+              <label class="field"><span>写真・画像を添付（任意）</span><input id="item-create-image-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif"></label>
+              <div class="item-generated-image" id="item-photo-preview" hidden></div>
+              <button class="secondary-button" id="item-create-image-remove" type="button" hidden>添付写真を外す</button>
+              <p class="management-meta">写真は見た目の参考になります。味・香り・食感は感じた内容を入力してください。PNG・JPEG・WebP・GIF、8MBまで。</p>
+              <label class="field" id="item-gen-image-source-field" hidden><span>保存・説明の補完に使う画像</span><select id="item-gen-image-source"><option value="photo">添付した写真</option><option value="generated">生成した画像</option></select></label>
+              <button class="secondary-button" id="item-gen-profile-button" type="button">AIで説明を補完</button>
+              <pre class="note-viewer" id="item-gen-profile-preview" hidden></pre>
+              <label class="field"><span>画像の希望（任意）</span><textarea id="item-gen-image-prompt" rows="2" maxlength="4000" placeholder="空欄なら名前と特徴を使います"></textarea></label>
+              <label class="checkbox-label" id="item-photo-reference-field" hidden><input id="item-photo-reference" type="checkbox"><span>新しい画像を生成するときに添付写真を参考にする（任意）</span></label>
+              <button class="secondary-button" id="item-gen-image-button" type="button">画像を生成</button>
+              <div class="item-generated-image" id="item-gen-image-preview" hidden></div>
+              <p class="management-meta" id="item-share-image-status" aria-live="polite">アイテムと一緒に共有する画像：なし</p>
+              <div class="management-actions">
+                <button class="primary-button" id="item-gen-save-button" type="button">所持品へ保存</button>
+                <button class="secondary-button" id="item-gen-share-button" type="button">保存して入力欄へ追加</button>
+              </div>
+              <p class="management-meta" id="item-gen-status" aria-live="polite">手入力で保存するか、AIで説明を補完してください。入力欄へ追加しても自動送信されません。</p>
+            </div>
+          </details>
+          <details class="home-feature" id="item-use-details">
+            <summary>🎁 アイテムを使用</summary>
+            <div class="item-generation-fields">
+          <label class="field">
+            <span>対象</span>
+            <select id="item-target-select">
+              <option value="user">自分の所持品</option>
+              <option value="location">現在地にある物</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>アイテム</span>
+            <select id="item-select"></select>
+          </label>
+          <div class="item-preview" id="item-preview"></div>
+          <div class="management-inline">
+            <label class="field"><span>操作</span><select id="item-action-select"></select></label>
+            <label class="field"><span>数量</span><input id="item-amount-input" type="number" min="1" max="99" value="1"></label>
+          </div>
+          <label class="field" id="item-furniture-field" hidden>
+            <span>置く場所の詳細</span>
+            <input id="item-furniture-input" type="text" placeholder="例: テーブルの上">
+          </label>
+          <div class="management-detail" id="item-detail">一覧を読み込んでいます。</div>
+          <p class="management-meta" id="item-action-help"></p>
+          <div class="management-actions">
+            <button class="secondary-button" id="item-refresh-button" type="button">再取得</button>
+            <button class="primary-button" id="item-execute-button" type="button">実行</button>
+          </div>
+            </div>
+          </details>
         </div>
-        <label class="field">
-          <span>対象</span>
-          <select id="item-target-select">
-            <option value="user">自分の所持品</option>
-            <option value="location">現在地にある物</option>
-          </select>
-        </label>
-        <label class="field">
-          <span>アイテム</span>
-          <select id="item-select"></select>
-        </label>
-        <div class="item-preview" id="item-preview"></div>
-        <div class="management-inline">
-          <label class="field"><span>操作</span><select id="item-action-select"></select></label>
-          <label class="field"><span>数量</span><input id="item-amount-input" type="number" min="1" max="99" value="1"></label>
+      </div>
+    </dialog>
+    <dialog class="redaction-dialog" id="redaction-dialog" aria-labelledby="redaction-dialog-title">
+      <div class="dialog-heading">
+        <h2 id="redaction-dialog-title">文字置き換え（マスク）</h2>
+        <button class="icon-button" id="close-redaction-dialog" type="button" aria-label="閉じる">×</button>
+      </div>
+      <details class="menu-section" id="redaction-details" open>
+        <summary class="section-summary">
+          <span>置き換え設定</span>
+          <span class="status-pill" id="redaction-summary-status">オフ</span>
+        </summary>
+        <div class="connection-fields" aria-label="文字置き換え設定">
+          <label class="checkbox-label">
+            <input type="checkbox" id="redaction-enabled-checkbox">
+            <span>置き換え（マスク）を有効にする</span>
+          </label>
+          <div class="rules-editor">
+            <div class="rule-input-row">
+              <input type="text" id="rule-find-input" placeholder="元の文字列" class="compact-input">
+              <input type="text" id="rule-replace-input" placeholder="置換後" class="compact-input">
+              <input type="color" id="rule-color-input" value="#62827e" title="マスク背景色" class="color-picker-compact">
+              <button type="button" class="secondary-button compact-button" id="add-rule-button">追加</button>
+            </div>
+            <div class="rules-list-container">
+              <ul id="rules-list" class="rules-list"></ul>
+            </div>
+          </div>
         </div>
-        <label class="field" id="item-furniture-field" hidden>
-          <span>置く場所の詳細</span>
-          <input id="item-furniture-input" type="text" placeholder="例: テーブルの上">
-        </label>
-        <div class="management-detail" id="item-detail">一覧を読み込んでいます。</div>
-        <div class="management-actions">
-          <button class="secondary-button" id="item-refresh-button" type="button">再取得</button>
-          <button class="primary-button" id="item-execute-button" type="button">実行して話す</button>
-        </div>
-      </form>
+      </details>
+    </dialog>
+    <dialog id="travel-budget-dialog" class="travel-budget-dialog">
+      <h2>今回のお出かけの予算</h2>
+      <p class="management-meta">無料設定でも有料換算の参考額で判定します。実際の請求額や無料枠の残量ではありません。次の回答の最大見込み額も先に確保します。</p>
+      <p id="travel-budget-totals"></p>
+      <p id="travel-budget-quote"></p>
+      <label class="field"><span>変更する範囲</span><select id="travel-budget-scope"><option value="session">お出かけ全体（全ペルソナ共通）</option><option value="persona">選択中のペルソナ</option></select></label>
+      <p id="travel-budget-current"></p>
+      <div class="travel-route-grid">
+        <label class="field"><span>新しい1日の上限（USD）</span><input id="travel-budget-daily" type="number" min="0" step="any" inputmode="decimal"></label>
+        <label class="field"><span>新しいお出かけ全体の上限（USD）</span><input id="travel-budget-session" type="number" min="0" step="any" inputmode="decimal"></label>
+      </div>
+      <label><input id="travel-budget-confirm" type="checkbox"> 費用が発生する場合があることを理解し、今回の上限を増額します。</label>
+      <p class="management-meta">全体とペルソナの両方の上限が適用されます。今回だけの変更で、次回の初期設定は変わりません。未確定の料金・保留記録は残ります。</p>
+      <p id="travel-budget-result" role="status" aria-live="polite"></p>
+      <div class="travel-route-actions">
+        <button id="travel-budget-refresh" class="secondary-button" type="button">状態を再確認</button>
+        <button id="travel-budget-save" class="primary-button" type="button">確認して上限を変更</button>
+        <button id="travel-budget-close" class="secondary-button" type="button">閉じる</button>
+      </div>
+      <p class="management-meta">変更後も文章を自動再送しません。画面へ戻って確認してから「送信」を押してください。</p>
     </dialog>
     <dialog class="image-dialog" id="image-dialog">
       <button class="icon-button close-dialog-button" id="close-image-dialog" type="button" aria-label="閉じる">×</button>
       <img id="image-dialog-img" alt="拡大画像">
     </dialog>
-    <script src="/lite/static/app.js" type="module"></script>
+    <script src="/lite/static/app.js?v=116" type="module"></script>
   </body>
 </html>

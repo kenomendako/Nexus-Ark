@@ -10,7 +10,8 @@ import playwright_utils
 from atelier_serve import server as atelier_server
 
 try:
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import sync_playwright as _playwright_available
+    from playwright_utils import sync_playwright
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False

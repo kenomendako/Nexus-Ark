@@ -40,7 +40,9 @@
 | アイテム使用・移動 | POST | `/api/v1/rooms/{room_id}/items/actions` |
 | ルーム画像取得 | GET | `/api/v1/rooms/{room_id}/assets?path=...` |
 
-`note_type` は `research` / `creative` / `diary` / `notepad` です。日記・メモ帳は読み取り専用です。履歴の各メッセージには `message_id`、`timestamp`、応答側には可能な範囲で `model` が含まれます。
+`note_type` は `research` / `creative` / `diary` / `notepad` / `dream` / `episodic` です。更新できるのは研究・創作だけで、ほかは読み取り専用です。`headings_only` / `heading` / `latest`で取得範囲を選べます。履歴の各メッセージには `message_id`、`timestamp`、応答側には可能な範囲で `model` が含まれます。音楽カード・通知・ツール案内は`system`行の`content`、添付パスは`attachments`に入ります。
+
+取得情報からAPIを探す説明と返却例の正本は`docs/user_guide/07b_api_data_reference.md`です。本体のAPIリファレンス画面では、この接続レシピと一緒に表示します。全APIの利用条件は末尾の正本カタログを参照してください。
 
 ## アトリエアプリ用の追加権限
 

@@ -412,7 +412,7 @@ class ResearchThreadManager:
         """Purpose Profileの関心キーワードを収集する。"""
         try:
             from purpose_profile_manager import PurposeProfileManager
-            profile = PurposeProfileManager(self.room_name).load_profile()
+            profile = PurposeProfileManager(self.room_name).get_current_profile()
         except Exception:
             return []
         terms = []

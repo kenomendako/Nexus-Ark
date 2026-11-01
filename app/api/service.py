@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -22,9 +23,15 @@ import config_manager
 import constants
 import gemini_api
 import letterbox_manager
+import lite_travel
 import note_storage
 import room_manager
 import utils
+from agent.scenery_image_context import (
+    SceneryImageContext,
+    commit_scenery_image_context,
+    get_scenery_image_context,
+)
 from api import capabilities as api_capabilities
 from file_lock_utils import safe_json_read, safe_json_write, safe_text_read
 from api.schemas import (
@@ -66,6 +73,7 @@ from api.schemas import (
     PushSubscriptionRequest,
     PushSubscriptionResponse,
     PushTestRequest,
+    PersistentEmotionStatus,
     RoomStatus,
     RoomSummary,
     TranscriptionResponse,
@@ -592,61 +600,237 @@ def list_rooms() -> List[RoomSummary]:
     return rooms
 
 
-def get_room_status(room_id: str) -> RoomStatus:
-    _require_room(room_id)
-    config = room_manager.get_room_config(room_id) or {}
-    snapshot: Dict[str, Any] = {}
-    internal_state: Dict[str, Any] = {}
+def _status_unit_float(value: Any) -> Optional[float]:
+    """状態APIへ出す0〜1の有限値だけを許可する。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) and 0.0 <= value <= 1.0 else None
+
+
+def _status_drive_float(value: Any) -> float:
+    """壊れた内部値で状態GET全体を失敗させず、従来の0.0へ戻す。"""
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def _read_status_json_dict(path: Path) -> Dict[str, Any]:
+    """状態表示用のJSONを修復せず読み取る。"""
+    try:
+        value = safe_json_read(str(path), default={})
+    except Exception as exc:
+        logger.warning("Failed to read status JSON %s: %s", path, exc)
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _read_room_config_for_status(room_id: str) -> Dict[str, Any]:
+    """ルーム設定を自己修復なしで読み取る。"""
+    config_path = Path(constants.ROOMS_DIR) / room_id / "room_config.json"
+    return _read_status_json_dict(config_path) if config_path.exists() else {}
+
+
+def _read_motivation_status_snapshot(room_id: str) -> tuple[Dict[str, Any], float]:
+    """内部状態を読み取り専用でスナップショット化する。"""
+    from motivation_manager import MotivationManager
+
+    state_path = Path(constants.ROOMS_DIR) / room_id / "memory" / "internal_state.json"
+    state = _read_status_json_dict(state_path)
+    drives = state.get("drives", {})
+    drives = drives if isinstance(drives, dict) else {}
+    relatedness = drives.get("relatedness", {})
+    relatedness = relatedness if isinstance(relatedness, dict) else {}
+    intentions = relatedness.get("intentions", [])
+    relatedness_level = MotivationManager._relationship_level(intentions)
+    return (
+        {
+            "boredom": _status_drive_float((drives.get("boredom") or {}).get("level", 0.0)
+                                            if isinstance(drives.get("boredom"), dict) else 0.0),
+            "curiosity": _status_drive_float((drives.get("curiosity") or {}).get("level", 0.0)
+                                              if isinstance(drives.get("curiosity"), dict) else 0.0),
+            "goal_achievement": _status_drive_float(
+                (drives.get("goal_achievement") or {}).get("level", 0.0)
+                if isinstance(drives.get("goal_achievement"), dict) else 0.0
+            ),
+            "persona_emotion": relatedness.get("persona_emotion", "neutral"),
+        },
+        relatedness_level,
+    )
+
+
+def _read_active_plan_status(room_id: str) -> int:
+    """行動計画を作成せず、既存ファイルだけを読む。"""
+    plan_path = Path(constants.ROOMS_DIR) / room_id / "memory" / "action_plan.json"
+    plan = _read_status_json_dict(plan_path)
+    return 1 if plan.get("status") == "scheduled" else 0
+
+
+def _persistent_emotion_presentation_status(entry: Dict[str, Any], status: str) -> str:
+    """内部カタログの詳細をLite向けの表示状態へ要約する。"""
+    if status == "unsupported":
+        return "unsupported"
+    if status == "invalid" or entry.get("definition_valid") is False:
+        return "invalid"
+    if entry.get("enabled") is not True:
+        return "disabled"
+    if status == "unreported":
+        return "unreported"
+    if status == "settled":
+        return "settled"
+    if status != "active":
+        return "invalid"
+
+    current = _status_unit_float(entry.get("current_intensity"))
+    elapsed = entry.get("elapsed_hours")
+    if current is None or isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)):
+        return "invalid"
+    try:
+        elapsed = float(elapsed)
+    except (TypeError, ValueError, OverflowError):
+        return "invalid"
+    if not math.isfinite(elapsed) or elapsed < 0:
+        return "invalid"
+
+    policy = entry.get("decay_policy")
+    max_age = policy.get("max_age_hours") if isinstance(policy, dict) else None
+    if isinstance(max_age, bool) or not isinstance(max_age, (int, float)):
+        return "invalid"
+    try:
+        max_age = float(max_age)
+    except (TypeError, ValueError, OverflowError):
+        return "invalid"
+    if not math.isfinite(max_age) or max_age <= 0:
+        return "invalid"
+    if elapsed >= max_age:
+        return "expired"
+    from motivation_manager import MotivationManager
+
+    if current < MotivationManager.EMOTION_MIN_CONTEXT_INTENSITY:
+        return "below_threshold"
+    return "active"
+
+
+def _persistent_emotion_status_from_catalog(entry: Dict[str, Any]) -> PersistentEmotionStatus:
+    category = entry.get("category")
+    category = category if isinstance(category, str) else ""
+    status = entry.get("status")
+    if status not in {"active", "settled", "unreported", "invalid", "unsupported"}:
+        status = "invalid"
+    name = entry.get("name")
+    name = name if isinstance(name, str) and name else category
+    enabled = entry.get("enabled") is True
+    started_at = entry.get("started_at")
+    started_at = started_at if isinstance(started_at, str) and started_at else None
+    return PersistentEmotionStatus(
+        category=category,
+        name=name,
+        enabled=enabled,
+        status=status,
+        presentation_status=_persistent_emotion_presentation_status(entry, status),
+        intensity=_status_unit_float(entry.get("intensity")),
+        started_at=started_at,
+        current_intensity=_status_unit_float(entry.get("current_intensity")),
+    )
+
+
+def _read_persistent_emotion_status(room_id: str) -> tuple[bool, List[PersistentEmotionStatus]]:
+    """感情カタログを自動修復なしで読み、公開項目だけに整形する。"""
     try:
         from motivation_manager import MotivationManager
 
-        motivation_manager = MotivationManager(room_id)
-        snapshot = motivation_manager.get_state_snapshot()
-        internal_state = motivation_manager.get_internal_state()
-    except Exception as e:
-        logger.warning("Failed to read motivation snapshot for %s: %s", room_id, e)
-    drives_state = internal_state.get("drives", {}) if isinstance(internal_state, dict) else {}
-    relatedness_level = (
-        drives_state.get("relatedness", {}).get("level")
-        if isinstance(drives_state.get("relatedness"), dict)
-        else None
-    )
+        state_path = Path(constants.ROOMS_DIR) / room_id / "memory" / "internal_state.json"
+        if state_path.exists():
+            if not state_path.is_file() or state_path.stat().st_size == 0:
+                return False, []
+            state = safe_json_read(str(state_path), default={})
+            if not isinstance(state, dict):
+                return False, []
+            drives = state.get("drives")
+            if "drives" in state and not isinstance(drives, dict):
+                return False, []
+            if isinstance(drives, dict):
+                relatedness = drives.get("relatedness")
+                if "relatedness" in drives and not isinstance(relatedness, dict):
+                    return False, []
 
-    active_goals_count = 0
+        catalog = MotivationManager(room_id, initialize=False).get_emotion_catalog()
+        if not isinstance(catalog, list) or any(not isinstance(row, dict) for row in catalog):
+            return False, []
+        return True, [_persistent_emotion_status_from_catalog(row) for row in catalog]
+    except Exception as exc:
+        logger.warning("Failed to read persistent emotions for %s: %s", room_id, exc)
+        return False, []
+
+
+def get_room_status(room_id: str) -> RoomStatus:
+    _require_room(room_id)
+    config = _read_room_config_for_status(room_id)
     try:
-        from action_plan_manager import ActionPlanManager
+        snapshot, relatedness_level = _read_motivation_status_snapshot(room_id)
+    except Exception as exc:
+        logger.warning("Failed to read motivation snapshot for %s: %s", room_id, exc)
+        snapshot, relatedness_level = {}, 0.0
 
-        active_goals_count = 1 if ActionPlanManager(room_id).get_active_plan() else 0
-    except Exception:
+    try:
+        active_goals_count = _read_active_plan_status(room_id)
+    except Exception as exc:
+        logger.warning("Failed to read action plan for %s: %s", room_id, exc)
         active_goals_count = 0
 
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    arousal_sample_count: Optional[int] = None
+    arousal_date: Optional[str] = None
+    arousal = 0.5
     try:
         import session_arousal_manager
 
-        arousal = session_arousal_manager.get_daily_average(room_id)
-    except Exception:
-        arousal = 0.5
+        summary = session_arousal_manager.get_daily_summary(room_id, date_str=today)
+        if isinstance(summary, dict):
+            candidate = _status_unit_float(summary.get("average"))
+            if candidate is not None:
+                arousal = candidate
+            count = summary.get("sample_count")
+            if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                arousal_sample_count = count
+            date_value = summary.get("date")
+            if isinstance(date_value, str):
+                arousal_date = date_value
+    except Exception as exc:
+        logger.warning("Failed to read arousal summary for %s: %s", room_id, exc)
+
+    persistent_emotions_available, persistent_emotions = _read_persistent_emotion_status(room_id)
 
     profile_image_path = None
-    try:
-        paths = room_manager.get_room_files_paths(room_id)
-        if paths and paths[2]:
-            profile_image_path = str(paths[2])
-    except Exception:
-        pass
+    candidate = Path(constants.ROOMS_DIR) / room_id / constants.PROFILE_IMAGE_FILENAME
+    if candidate.is_file():
+        profile_image_path = str(candidate)
+
+    display_name = config.get("room_name") or room_id
 
     return RoomStatus(
         room_id=room_id,
-        display_name=config.get("room_name") or room_manager.get_character_name(room_id),
+        display_name=display_name,
         current_location=utils.get_current_location(room_id) or "",
         drives={
-            "boredom": float(snapshot.get("boredom", 0.0)),
-            "curiosity": float(snapshot.get("curiosity", 0.0)),
-            "goal_drive": float(snapshot.get("goal_achievement", 0.0)),
-            "relatedness": float(relatedness_level if relatedness_level is not None else snapshot.get("devotion", 0.0)),
+            "boredom": _status_drive_float(snapshot.get("boredom", 0.0)),
+            "curiosity": _status_drive_float(snapshot.get("curiosity", 0.0)),
+            "goal_drive": _status_drive_float(snapshot.get("goal_achievement", 0.0)),
+            "relatedness": float(relatedness_level),
         },
         current_expression=str(snapshot.get("persona_emotion", "neutral") or "neutral"),
         arousal=float(arousal),
+        persistent_emotions_available=persistent_emotions_available,
+        persistent_emotions=persistent_emotions,
+        arousal_sample_count=arousal_sample_count,
+        arousal_date=arousal_date,
         active_goals_count=active_goals_count,
         profile_image_path=profile_image_path,
         updated_at=datetime.datetime.now(datetime.timezone.utc),
@@ -704,6 +888,21 @@ def _message_content_for_client(content: str, role: str) -> str:
     return text.strip()
 
 
+def _message_thoughts_for_client(content: str, role: str, *, include_thoughts: bool) -> str:
+    """Return only persisted, textual thought blocks for an authorized history opt-in."""
+    if not include_thoughts or role != "agent":
+        return ""
+
+    text = utils.remove_ai_timestamp(content or "")
+    text = re.sub(r"\[(?:Generated Image|ファイル添付|VIEW_IMAGE):\s*[^\]]+?\]", "", text, flags=re.DOTALL)
+    thoughts = utils.extract_thoughts_from_text(text)
+    if not thoughts:
+        return ""
+    # Keep the existing persona/tag scrubber, but do not remove the extracted thought
+    # content itself a second time.
+    return utils.clean_persona_text(thoughts, remove_thoughts=False).strip()
+
+
 def _client_message_id_for_client(content: str) -> Optional[str]:
     match = re.search(r"\|\s*client_message_id=([A-Za-z0-9_.:-]+)", content or "")
     return match.group(1) if match else None
@@ -716,6 +915,15 @@ def _message_attachments_for_client(content: str) -> List[str]:
         if path and path not in paths:
             paths.append(path)
     return paths
+
+
+def _merge_attachment_paths(*groups: List[str]) -> List[str]:
+    merged: List[str] = []
+    for group in groups:
+        for path in group:
+            if path and path not in merged:
+                merged.append(path)
+    return merged
 
 
 def _find_chat_response_by_client_message_id(room_id: str, log_file: str, client_message_id: str) -> Optional[ChatResponse]:
@@ -768,11 +976,27 @@ def _find_chat_response_by_client_message_id(room_id: str, log_file: str, client
     )
 
 
-def get_recent_chat_history(room_id: str, limit: int = 12) -> ChatHistoryResponse:
+def get_recent_chat_history(
+    room_id: str,
+    limit: int = 12,
+    *,
+    include_thoughts: bool = False,
+) -> ChatHistoryResponse:
     _require_room(room_id)
     log_file, _, _, _, _, _, _ = room_manager.get_room_files_paths(room_id)
     if not log_file:
         raise ValueError(f"Room log path is not available: {room_id}")
+
+    # The default history contract stays thought-free.  Even an explicit client
+    # opt-in is bounded by the room's existing display policy so the API cannot
+    # bypass the desktop setting.
+    thoughts_enabled = False
+    if include_thoughts is True:
+        try:
+            effective_settings = config_manager.get_effective_settings(room_id)
+            thoughts_enabled = effective_settings.get("display_thoughts", True) is True
+        except Exception as exc:
+            logger.warning("Failed to read thought display setting for %s: %s", room_id, exc)
 
     try:
         log_dir = os.path.dirname(log_file)
@@ -782,48 +1006,102 @@ def get_recent_chat_history(room_id: str, limit: int = 12) -> ChatHistoryRespons
         raw_messages = utils.load_chat_log(log_file)[-(limit * 2):]
 
     client_messages: List[ChatHistoryMessage] = []
+    pending_tool_attachments: List[str] = []
     for msg in raw_messages:
         raw_role = str(msg.get("role", "")).upper()
         responder = str(msg.get("responder", ""))
         role = _message_role_for_client(raw_role, responder)
         raw_content = str(msg.get("content", ""))
-        content = _message_content_for_client(raw_content, role)
-        if not content:
+        is_tool_result = role == "system" and (responder == "tool_result" or responder.startswith("tool_result:"))
+        raw_marker = re.search(r"\[/?RAW_RESULT\b", raw_content)
+        display_content = raw_content
+        if role == "system" and raw_marker:
+            # PC会話・自律行動は表示文と内部結果を同じエントリに保存する。
+            # 内部結果以降は返さず、壊れた開きタグや孤立した閉じタグも保守的に扱う。
+            if is_tool_result and not raw_marker.group().startswith("[/"):
+                display_content = raw_content[:raw_marker.start()].strip()
+            else:
+                display_content = ""
+        if is_tool_result:
+            display_content = utils.clean_persona_text(display_content)
+            if raw_marker and not re.match(
+                r"^(?:🛠️|⚠️|#{1,6}\s*音楽推薦カード|新しい画像を生成しました。)(?:\s|$)",
+                display_content,
+            ):
+                # 表示整形済みの案内だけを復元し、内部文が前置きされたログは除外。
+                display_content = ""
+        content = _message_content_for_client(display_content, role)
+        thoughts = _message_thoughts_for_client(
+            raw_content,
+            role,
+            include_thoughts=thoughts_enabled,
+        )
+        attachments = _message_attachments_for_client(raw_content)
+        if is_tool_result and attachments:
+            pending_tool_attachments = _merge_attachment_paths(pending_tool_attachments, attachments)
+            # 案内文の行にも添付すると次のペルソナ応答と画像が二重になる。
+            attachments = []
+        if role == "system" and raw_marker and not display_content:
             continue
-        if role == "system" and "[RAW_RESULT]" in content:
+        if role == "user":
+            pending_tool_attachments = []
+        elif role == "agent" and pending_tool_attachments:
+            attachments = _merge_attachment_paths(pending_tool_attachments, attachments)
+            pending_tool_attachments = []
+        if not content and not attachments and not thoughts:
             continue
         client_messages.append(
             ChatHistoryMessage(
                 role=role,
                 speaker=responder if role != "user" else "user",
                 content=content,
+                thoughts=thoughts,
                 message_id=_message_id_for_client(raw_role, responder, raw_content),
                 timestamp=_message_metadata_for_client(raw_content, role)[0],
                 model=_message_metadata_for_client(raw_content, role)[1],
                 client_message_id=_client_message_id_for_client(raw_content) if role == "user" else None,
-                attachments=_message_attachments_for_client(raw_content),
+                attachments=attachments,
+            )
+        )
+
+    if pending_tool_attachments:
+        attachment_payload = "\n".join(pending_tool_attachments)
+        client_messages.append(
+            ChatHistoryMessage(
+                role="system",
+                speaker="tool_result",
+                content="",
+                message_id=_message_id_for_client("SYSTEM", "tool_result", attachment_payload),
+                attachments=pending_tool_attachments,
             )
         )
 
     return ChatHistoryResponse(room_id=room_id, messages=client_messages[-limit:])
 
 
-def _build_agent_args(
+def _build_agent_args_with_scenery_context(
     room_id: str,
     request: ChatRequest,
     log_file: str,
     *,
     skip_tool_execution: bool = False,
-) -> Dict[str, Any]:
+) -> tuple[Dict[str, Any], SceneryImageContext]:
     effective_settings = config_manager.get_effective_settings(room_id)
     season_en, time_of_day_en = utils._get_current_time_context(room_id)
-    return {
+    scenery_context = get_scenery_image_context(
+        room_id,
+        settings=effective_settings,
+        season_en=season_en,
+        time_of_day_en=time_of_day_en,
+        include_virtual=False,
+    )
+    args = {
         "room_to_respond": room_id,
         "api_key_name": effective_settings.get("api_key_name") or config_manager.initial_api_key_name_global,
         "api_history_limit": effective_settings.get("api_history_limit") or constants.DEFAULT_API_HISTORY_LIMIT_OPTION,
         "debug_mode": False,
         "history_log_path": log_file,
-        "user_prompt_parts": [request.message],
+        "user_prompt_parts": [*scenery_context.parts, request.message],
         "soul_vessel_room": room_id,
         "active_participants": [],
         "active_attachments": request.attachments,
@@ -835,23 +1113,63 @@ def _build_agent_args(
         "skip_tool_execution": skip_tool_execution,
         "enable_supervisor": False,
     }
+    return args, scenery_context
 
 
-def _visible_tool_result_for_client(msg: Any) -> Optional[str]:
+def _build_agent_args(
+    room_id: str,
+    request: ChatRequest,
+    log_file: str,
+    *,
+    skip_tool_execution: bool = False,
+) -> Dict[str, Any]:
+    """Build provider arguments without exposing scenery bookkeeping to it."""
+
+    args, _ = _build_agent_args_with_scenery_context(
+        room_id,
+        request,
+        log_file,
+        skip_tool_execution=skip_tool_execution,
+    )
+    return args
+
+
+def _scenery_response_succeeded(
+    results: List[Any],
+    response_text: str,
+    response_attachments: List[str],
+) -> bool:
+    """Return whether the stream produced a completed, non-error response."""
+
+    if not results:
+        return False
+    normalized = (response_text or "").strip()
+    if normalized.startswith("[エラー") or normalized.startswith("[ERROR"):
+        return False
+    # A provider can complete with an attachment and no visible text.  Require
+    # at least one streamed result so an empty/interrupted iterator is not
+    # treated as delivery success.
+    return bool(normalized or response_attachments)
+
+
+def _visible_tool_result_for_client(msg: Any) -> Optional[tuple[str, str]]:
     if not isinstance(msg, ToolMessage):
         return None
     tool_name = getattr(msg, "name", "") or ""
-    if tool_name != "recommend_music":
+    if not tool_name:
         return None
     formatted = utils.format_tool_result_for_ui(tool_name, str(getattr(msg, "content", "") or ""))
-    return formatted.strip() if formatted else None
+    if not formatted:
+        return None
+    header = f"## SYSTEM:tool_result:{tool_name}:{msg.tool_call_id or 'api'}"
+    return header, formatted.strip()
 
 
-def _extract_final_ai_response(results: List[Any]) -> tuple[str, Optional[str], List[str], List[str]]:
+def _extract_final_ai_response(results: List[Any]) -> tuple[str, Optional[str], List[str], List[tuple[str, str]]]:
     final_text = ""
     captured_model_name = None
     attachments: List[str] = []
-    visible_tool_results: List[str] = []
+    visible_tool_results: Dict[str, str] = {}
     for mode, payload in results:
         if mode != "values" or not isinstance(payload, dict):
             continue
@@ -871,15 +1189,17 @@ def _extract_final_ai_response(results: List[Any]) -> tuple[str, Optional[str], 
             except Exception:
                 continue
             visible_tool_result = _visible_tool_result_for_client(msg)
-            if visible_tool_result and visible_tool_result not in visible_tool_results:
-                visible_tool_results.append(visible_tool_result)
+            if visible_tool_result:
+                header, content = visible_tool_result
+                # checkpointで繰り返される同じcallは1件にし、別callは同文でも残す。
+                visible_tool_results[header] = content
         ai_messages = [
             msg for msg in messages
             if isinstance(msg, AIMessage) and utils.get_content_as_string(msg).strip()
         ]
         if ai_messages:
             final_text = utils.get_content_as_string(ai_messages[-1])
-    return final_text, captured_model_name, attachments, visible_tool_results
+    return final_text, captured_model_name, attachments, list(visible_tool_results.items())
 
 
 def _reflect_response_metadata(room_id: str, response_text: str) -> None:
@@ -909,9 +1229,25 @@ def _reflect_response_metadata(room_id: str, response_text: str) -> None:
 
 
 def _run_chat(room_id: str, request: ChatRequest, *, skip_tool_execution: bool = False) -> ChatResponse:
+    from api.lite_runtime_controls import lite_request_scope
+
+    _require_room(room_id)
+    with _get_room_lock(room_id):
+        with lite_request_scope(room_id, request.client_message_id):
+            return _run_chat_impl(room_id, request, skip_tool_execution=skip_tool_execution)
+
+
+def _run_chat_impl(room_id: str, request: ChatRequest, *, skip_tool_execution: bool = False) -> ChatResponse:
     _require_room(room_id)
     if not request.message.strip():
         raise ValueError("message is required")
+    if lite_travel.is_presence_locked(room_id):
+        lite_travel.record_deferred_home_event(
+            room_id,
+            "api_chat_rejected",
+            {"source": request.source or "api", "client_message_id": request.client_message_id or ""},
+        )
+        raise ValueError("このペルソナはLite独立お出かけ中です。帰宅統合または緊急帰還後に送信してください。")
 
     log_file, _, _, _, _, _, _ = room_manager.get_room_files_paths(room_id)
     if not log_file:
@@ -942,7 +1278,7 @@ def _run_chat(room_id: str, request: ChatRequest, *, skip_tool_execution: bool =
         except Exception:
             internal_state_before = None
 
-        agent_args = _build_agent_args(
+        agent_args, scenery_context = _build_agent_args_with_scenery_context(
             room_id,
             request,
             log_file,
@@ -951,13 +1287,22 @@ def _run_chat(room_id: str, request: ChatRequest, *, skip_tool_execution: bool =
         results = list(gemini_api.invoke_nexus_agent_stream(agent_args))
         full_response, model_name, response_attachments, visible_tool_results = _extract_final_ai_response(results)
         effective_model_name = model_name or config_manager.get_current_global_model()
-        for tool_result in visible_tool_results:
-            utils.save_message_to_log(log_file, "## SYSTEM:tool_result:recommend_music:api", tool_result)
+        for header, tool_result in visible_tool_results:
+            utils.save_message_to_log(log_file, header, tool_result)
         cleaned_response = utils.remove_ai_timestamp(full_response).strip()
-        if cleaned_response:
-            _reflect_response_metadata(room_id, cleaned_response)
+        if cleaned_response or response_attachments:
+            if _scenery_response_succeeded(results, full_response, response_attachments):
+                commit_scenery_image_context(room_id, scenery_context)
+            if cleaned_response:
+                _reflect_response_metadata(room_id, cleaned_response)
             ai_timestamp = datetime.datetime.now().strftime("%Y-%m-%d (%a) %H:%M:%S")
-            content_to_log = f"{cleaned_response}\n\n{ai_timestamp} | {utils.sanitize_model_name(effective_model_name)}"
+            response_attachment_block = "\n".join(
+                f"[VIEW_IMAGE: {path}]" for path in response_attachments
+            )
+            response_body = cleaned_response
+            if response_attachment_block:
+                response_body = f"{response_body}\n{response_attachment_block}"
+            content_to_log = f"{response_body}\n\n{ai_timestamp} | {utils.sanitize_model_name(effective_model_name)}"
             utils.save_message_to_log(log_file, f"## AGENT:{room_id}", content_to_log)
 
         arousal = 0.5
@@ -1004,6 +1349,8 @@ async def chat(room_id: str, request: ChatRequest) -> ChatResponse:
 def _run_regenerate(room_id: str, request: ChatRegenerateRequest) -> ChatResponse:
     """最新応答を、外部ツールを再実行せずに作り直す。"""
     _require_room(room_id)
+    if lite_travel.is_presence_locked(room_id):
+        raise ValueError("このペルソナはLite独立お出かけ中のため再生成できません。")
     log_file, _, _, _, _, _, _ = room_manager.get_room_files_paths(room_id)
     if not log_file:
         raise ValueError(f"Room log path is not available: {room_id}")
@@ -1813,16 +2160,39 @@ def _save_item_action_receipt(room_id: str, response: ItemActionResponse) -> Non
 
 
 def _item_action_context(action: str, item: Dict[str, Any], amount: int, location: str = "") -> str:
+    if action in {"gift", "place", "pickup"}:
+        # 贈与・配置・拾得は本体同様、ユーザー入力へ本文を追加しない。
+        return ""
+    if action == "consume_location" and "taste_profile" not in item:
+        # 本体の場所消費UIは食べ物だけチャット入力へ詳細を追加する。
+        return ""
+    if action in {"consume", "consume_location"}:
+        # 本体の所持品消費UIは、通常アイテムを含む選択肢すべてで本文・画像を返す。
+        from src.features.item_manager import build_consumed_item_chat_input
+
+        return build_consumed_item_chat_input(
+            item,
+            amount,
+            include_amount=action == "consume_location",
+        )
+    return ""
+
+
+def _item_system_notification(action: str, item: Dict[str, Any], amount: int, location: str = "") -> str:
+    """本体チャットに記録する、操作結果の短いシステム通知を返す。"""
     name = str(item.get("name") or "アイテム")
-    descriptions = {
-        "gift": f"ユーザーがあなたに「{name}」を{amount}個贈りました。受け取ったことを踏まえて応答してください。",
-        "consume": f"ユーザーが「{name}」を{amount}個使いました。感想や現在の状況を踏まえて応答してください。",
-        "place": f"ユーザーが「{name}」を{location}に{amount}個置きました。状況を踏まえて応答してください。",
-        "pickup": f"ユーザーが{location}にあった「{name}」を{amount}個拾いました。状況を踏まえて応答してください。",
-        "consume_location": f"ユーザーが{location}にあった「{name}」を{amount}個その場で使いました。状況を踏まえて応答してください。",
-    }
-    detail = str(item.get("flavor_text") or item.get("description") or "").strip()
-    return descriptions[action] + (f"\nアイテム情報: {detail}" if detail else "")
+    if action == "gift":
+        amount_text = f"（{amount}個）" if amount != 1 else ""
+        return f"【システム通知】ユーザーがアイテム「{name}」{amount_text}をあなたに贈りました。"
+    return ""
+
+
+def _item_action_log_context(action: str, item: Dict[str, Any], amount: int, location: str = "") -> str:
+    """本体のアクションログに相当する、操作結果の短い記録を返す。"""
+    if action == "gift":
+        name = str(item.get("name") or "アイテム")
+        return f"ユーザーから「{name}」を受け取りました。"
+    return ""
 
 
 def perform_item_action(room_id: str, request: ItemActionRequest) -> ItemActionResponse:
@@ -1896,18 +2266,24 @@ def perform_item_action(room_id: str, request: ItemActionRequest) -> ItemActionR
             raise ValueError("アイテム操作に失敗しました。")
 
         chat_context = _item_action_context(action, item_snapshot, amount, location)
-        utils.append_system_message_to_log(room_id, f"【システム通知】{chat_context}")
-        try:
-            import action_logger
-
-            action_logger.append_action_log(
+        # 贈与だけは本体同様にシステム通知と受取アクションログを残す。
+        # 配置・拾得は本体のUIと同じく永続化だけで、消費は入力本文へ返す。
+        if action == "gift":
+            utils.append_system_message_to_log(
                 room_id,
-                "system_event",
-                {"event": f"item_{action}", "client_action_id": request.client_action_id},
-                chat_context,
+                _item_system_notification(action, item_snapshot, amount, location),
             )
-        except Exception as exc:
-            logger.warning("Failed to write item action log for %s: %s", room_id, exc)
+            try:
+                import action_logger
+
+                action_logger.append_action_log(
+                    room_id,
+                    "system_event",
+                    {"event": f"item_{action}", "client_action_id": request.client_action_id},
+                    _item_action_log_context(action, item_snapshot, amount, location),
+                )
+            except Exception as exc:
+                logger.warning("Failed to write item action log for %s: %s", room_id, exc)
 
         response = ItemActionResponse(
             room_id=room_id,

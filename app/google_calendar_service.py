@@ -1,11 +1,11 @@
 # google_calendar_service.py
 """
-Googleカレンダーのバックグラウンド差分同期とローカルキャッシュを担うサービス。
+Googleカレンダーのバックグラウンド範囲同期とローカルキャッシュを担うサービス。
 （計画書フェーズ2 / 5.1・5.2節に対応）
 
 主な責務:
-- syncToken による差分同期（410 Gone 時はフル同期へフォールバック）
-- ローリングウィンドウ（既定: 過去1日〜先2週間）でのキャッシュ剪定
+- ローリングウィンドウ（既定: 過去1日〜先2週間）の全ページを毎回取得
+- 全ページ成功後のスナップショット置換（失敗時は既存キャッシュを保持）
 - reminders.useDefault の二段解決（overrides → カレンダー既定 default_reminders）
 - 終日イベント・タイムゾーンの正規化
 - file_lock_utils によるアトミックなキャッシュ入出力
@@ -203,8 +203,8 @@ def prune_events(events: List[Dict[str, Any]],
                  past_days: int = DEFAULT_PAST_DAYS,
                  future_days: int = DEFAULT_FUTURE_DAYS) -> List[Dict[str, Any]]:
     """
-    ローリングウィンドウ外のイベントを剪定する（計画書5.1節）。
-    syncToken は過去・遠未来の変更も返すため、キャッシュ肥大を防ぐ。
+    指定されたイベント集合をローリングウィンドウに絞る純粋ヘルパー。
+    Calendar APIの範囲同期では使用しない（API側の暦日・境界判定を維持する）。
     """
     window_start = now - datetime.timedelta(days=past_days)
     window_end = now + datetime.timedelta(days=future_days)
@@ -330,25 +330,39 @@ def _local_hhmm(dt: Optional[datetime.datetime], tz) -> str:
     return dt.astimezone(tz).strftime("%H:%M")
 
 
-def _format_event_line(event: Dict[str, Any], tz) -> str:
-    """1イベントを簡潔な1行にする（終日／時刻付き／開始のみを区別）。"""
+def _format_event_line(
+    event: Dict[str, Any],
+    tz,
+    now: Optional[datetime.datetime] = None,
+) -> str:
+    """1イベントを簡潔な1行にし、時刻付き予定には現在との関係を添える。"""
     summary = event.get("summary") or "(無題)"
     if event.get("is_all_day"):
         return f"- 終日: {summary}"
     start, end = _event_bounds(event)
     start_s = _local_hhmm(start, tz)
     end_s = _local_hhmm(end, tz)
+    timing_label = ""
+    local_now = now.astimezone(tz) if now is not None else None
+    if local_now is not None and start is not None:
+        if end is not None and end <= local_now:
+            timing_label = "（終了時刻経過）"
+        elif start <= local_now and (end is None or local_now < end):
+            timing_label = "（進行時間帯）"
+        else:
+            timing_label = "（予定前）"
     if start_s and end_s and end_s != start_s:
-        return f"- {start_s}-{end_s} {summary}"
+        return f"- {start_s}-{end_s} {summary}{timing_label}"
     if start_s:
-        return f"- {start_s} {summary}"
+        return f"- {start_s} {summary}{timing_label}"
     return f"- {summary}"
 
 
 def _format_day_events(events: List[Dict[str, Any]], tz,
-                       max_items: int = _SUMMARY_MAX_ITEMS) -> List[str]:
+                       max_items: int = _SUMMARY_MAX_ITEMS,
+                       now: Optional[datetime.datetime] = None) -> List[str]:
     """その日のイベント群を行リストに整形する（上限超過は「他N件」で省略）。"""
-    lines = [_format_event_line(e, tz) for e in events[:max_items]]
+    lines = [_format_event_line(e, tz, now=now) for e in events[:max_items]]
     overflow = len(events) - max_items
     if overflow > 0:
         lines.append(f"- 他 {overflow} 件の予定があります")
@@ -398,7 +412,7 @@ def build_schedule_summary(cache: Dict[str, Any],
 
     parts: List[str] = ["【本日の予定】"]
     if today_events:
-        parts.extend(_format_day_events(today_events, tz))
+        parts.extend(_format_day_events(today_events, tz, now=local_now))
         if return_prediction:
             pred = _return_prediction_line(today_events, now, tz)
             if pred:
@@ -412,7 +426,7 @@ def build_schedule_summary(cache: Dict[str, Any],
         if tomorrow_events:
             parts.append("")
             parts.append("【明日の予定】")
-            parts.extend(_format_day_events(tomorrow_events, tz))
+            parts.extend(_format_day_events(tomorrow_events, tz, now=local_now))
 
     return "\n".join(parts)
 
@@ -701,7 +715,7 @@ def reconcile_calendar_reminders(now: Optional[datetime.datetime] = None) -> Non
 # =====================================================================
 
 class GoogleCalendarService:
-    """Calendar APIへのアクセスと差分同期を担うサービス。"""
+    """Calendar APIへのアクセスと範囲同期を担うサービス。"""
 
     def __init__(self):
         self._service = None  # 認証済みクライアント（遅延構築）
@@ -801,104 +815,84 @@ class GoogleCalendarService:
         return out
 
     def _sync_one_calendar(self, calendar_id: str, cal_state: Dict[str, Any],
-                           now: datetime.datetime, _is_retry: bool = False) -> Dict[str, Any]:
-        """
-        単一カレンダーを同期する。syncToken があれば差分、無ければフル同期。
-        410 Gone（syncToken無効）時は syncToken を破棄してフル同期に1度だけフォールバック。
-        """
-        from googleapiclient.errors import HttpError
+                           now: datetime.datetime) -> Dict[str, Any]:
+        """現在の時間範囲を全取得し、全ページ成功後だけスナップショットを返す。
 
+        syncToken と未来予定の剪定を併用すると、変更のない予定が時間範囲に
+        入っても復元されない。範囲を毎回取得することで日付の経過にも追従する。
+        旧キャッシュの sync_token は入力に使用せず、成功時に除去する（ADR 050）。
+        """
         service = self._ensure_service()
-        sync_token = cal_state.get("sync_token")
+        window_start = now - datetime.timedelta(days=DEFAULT_PAST_DAYS)
+        window_end = now + datetime.timedelta(days=DEFAULT_FUTURE_DAYS)
         default_reminders = cal_state.get("default_reminders", [])
-        events_by_id: Dict[str, Any] = {
-            e["id"]: e for e in cal_state.get("events", []) if e.get("id")
-        }
-
-        new_sync_token = None
+        events_by_id: Dict[str, Any] = {}
         page_token = None
-        try:
-            while True:
-                params: Dict[str, Any] = {
-                    "calendarId": calendar_id,
-                    "singleEvents": True,        # 繰り返しイベントを個別発生に展開
-                    "showDeleted": True,         # 差分で削除（cancelled）を検知するため
-                    "maxResults": 250,
-                }
-                if sync_token:
-                    params["syncToken"] = sync_token
-                else:
-                    # フル同期: 初回のみ timeMin で範囲を絞る（timeMin は nextSyncToken と両立する）。
-                    # ※ orderBy は付けない。orderBy を含むリクエストには nextSyncToken が返らず、
-                    #   差分同期へ移行できず毎回フル同期になってしまうため（読み取り側で並べ替える）。
-                    params["timeMin"] = (now - datetime.timedelta(days=DEFAULT_PAST_DAYS)).isoformat()
-                if page_token:
-                    params["pageToken"] = page_token
-
-                resp = service.events().list(**params).execute()
-
-                # default_reminders はリストレスポンスにも含まれる（useDefault解決に必要）
-                if resp.get("defaultReminders") is not None:
-                    default_reminders = resp.get("defaultReminders")
-
-                for raw in resp.get("items", []):
-                    eid = raw.get("id")
-                    if not eid:
-                        continue
-                    if raw.get("status") == "cancelled":
-                        events_by_id.pop(eid, None)
-                        continue
+        while True:
+            params: Dict[str, Any] = {
+                "calendarId": calendar_id,
+                "singleEvents": True,
+                "showDeleted": False,
+                "maxResults": 250,
+                "timeMin": window_start.isoformat(),
+                "timeMax": window_end.isoformat(),
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            resp = service.events().list(**params).execute()
+            if resp.get("defaultReminders") is not None:
+                default_reminders = resp["defaultReminders"]
+            for raw in resp.get("items", []):
+                eid = raw.get("id")
+                if eid and raw.get("status") != "cancelled":
                     events_by_id[eid] = _normalize_event(raw, default_reminders)
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
 
-                page_token = resp.get("nextPageToken")
-                if not page_token:
-                    new_sync_token = resp.get("nextSyncToken")
-                    break
-
-        except HttpError as e:
-            status = getattr(getattr(e, "resp", None), "status", None)
-            if status == 410 and not _is_retry:
-                # syncToken無効 → 破棄してフル同期へフォールバック
-                print(f"--- [Calendar] syncToken無効（410）。フル同期にフォールバック: {calendar_id} ---")
-                reset_state = dict(cal_state)
-                reset_state["sync_token"] = None
-                reset_state["events"] = []
-                return self._sync_one_calendar(calendar_id, reset_state, now, _is_retry=True)
-            raise
-
-        events = prune_events(list(events_by_id.values()), now,
-                              past_days=DEFAULT_PAST_DAYS, future_days=DEFAULT_FUTURE_DAYS)
-
+        # API の時間範囲判定を正本にする。終日予定をUTCで再剪定しない。
         new_state = dict(cal_state)
-        new_state["events"] = events
-        new_state["default_reminders"] = default_reminders
-        if new_sync_token:
-            new_state["sync_token"] = new_sync_token
+        new_state.pop("sync_token", None)
+        new_state.pop("last_sync_error", None)
+        new_state.update({
+            "events": list(events_by_id.values()),
+            "default_reminders": default_reminders,
+            "last_synced_at": now.isoformat(),
+        })
         return new_state
 
     def sync_all(self, now: Optional[datetime.datetime] = None) -> Dict[str, Any]:
-        """
-        設定で選択された全カレンダーを同期し、キャッシュを更新して返す。
-        個別カレンダーの失敗は握り潰して他カレンダーの同期を継続する（部分degrade）。
+        """選択された各カレンダーを同期し、失敗したカレンダーの既存予定は保持する。
+
+        最終成功時刻と試行時刻を分け、全失敗を同期成功として記録しない。
+        ログ・エラー記録にはカレンダーIDやAPI例外本文を含めない。
         """
         now = now or datetime.datetime.now(datetime.timezone.utc)
         settings = _get_settings()
         selected = settings.get("selected_calendars") or []
         cache = load_cache()
-        calendars = cache.get("calendars") or {}
+        calendars = dict(cache.get("calendars") or {})
+        all_succeeded = bool(selected)
 
-        for calendar_id in selected:
+        for index, calendar_id in enumerate(selected, start=1):
             cal_state = calendars.get(calendar_id, {})
             try:
                 calendars[calendar_id] = self._sync_one_calendar(calendar_id, cal_state, now)
             except Exception as e:  # noqa: BLE001 - 個別失敗で全体を止めない
-                print(f"--- [Calendar] カレンダー同期に失敗（スキップ）: {calendar_id}: {e} ---")
-                # 既存のキャッシュ状態は保持（古いデータで継続）
-                calendars[calendar_id] = cal_state
+                all_succeeded = False
+                error = {"type": type(e).__name__}
+                status = getattr(getattr(e, "resp", None), "status", None)
+                if isinstance(status, int):
+                    error["http_status"] = status
+                print(f"--- [Calendar] 対象{index}の同期に失敗（既存予定を保持）: {error} ---")
+                calendars[calendar_id] = {**cal_state, "last_sync_error": error}
 
         cache["calendars"] = calendars
-        cache["last_synced_at"] = now.isoformat()
-        save_cache(cache)
+        cache["last_sync_attempt_at"] = now.isoformat()
+        if all_succeeded:
+            cache["last_synced_at"] = now.isoformat()
+        if not save_cache(cache):
+            raise OSError("カレンダーキャッシュの保存に失敗しました。")
         return cache
 
 
@@ -920,7 +914,7 @@ def _is_sync_due(settings: Dict[str, Any], cache: Dict[str, Any],
         return False
     if not settings.get("selected_calendars"):
         return False
-    last = cache.get("last_synced_at")
+    last = cache.get("last_sync_attempt_at") or cache.get("last_synced_at")
     if not last:
         return True
     last_dt = _parse_dt(last)
@@ -942,7 +936,7 @@ def run_sync_if_due(now: Optional[datetime.datetime] = None) -> bool:
     except Exception as e:  # noqa: BLE001 - 定期同期の失敗で全体を止めない
         print(f"--- [Calendar] 定期同期に失敗（次回リトライ）: {e} ---")
         return False
-    # 同期成功後、カレンダー由来リマインダーをアラームと調停する（アイデアB）
+    # 同期実行後、保持されたキャッシュからカレンダー由来リマインダーを調停する（アイデアB）
     try:
         reconcile_calendar_reminders(now)
     except Exception as e:  # noqa: BLE001 - リマインダー調停の失敗で同期成功を覆さない

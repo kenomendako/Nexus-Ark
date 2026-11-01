@@ -10,19 +10,25 @@ import json
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 import config_manager
 import constants
 import atelier_app_grants
+import lite_travel
 from api import atelier_tokens
 from api import capabilities as api_capabilities
 from api import service
+from api import lite_features, lite_runtime_controls
+from api import lite_item_generation, lite_response_settings
+from api import lite_location_library, lite_location_generation
+from api import lite_thought_translation
 from api.schemas import (
     ApiCapabilitiesResponse,
     AutonomyPresetRequest,
@@ -47,6 +53,8 @@ from api.schemas import (
     LocationListResponse,
     LocationSetRequest,
     LocationSetResponse,
+    LiteStandbyPrepareRequest,
+    LiteTravelReturnRequest,
     MemorySearchResponse,
     NoteResponse,
     NoteUpdateRequest,
@@ -179,19 +187,63 @@ def _origin_allowed_for_atelier(origin: str) -> bool:
     return False
 
 
-def _apply_atelier_cors_headers(response: Response, origin: str) -> None:
-    if origin and _origin_allowed_for_atelier(origin):
+def _normalized_https_origin(value: str) -> str:
+    """Pathやuserinfoを含まないHTTPS originだけを正規化する。"""
+
+    try:
+        parsed = urlparse(str(value or "").strip())
+        port = parsed.port
+    except (TypeError, ValueError):
+        return ""
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    host = parsed.hostname.lower()
+    return f"https://{host}{f':{port}' if port not in {None, 443} else ''}"
+
+
+def _origin_allowed_for_lite(origin: str) -> bool:
+    """保存済みWorker URLと完全一致するLite PWA originだけを許可する。"""
+
+    settings = config_manager.CONFIG_GLOBAL.get("lite_travel_settings", {}) or {}
+    configured = _normalized_https_origin(str(settings.get("worker_url") or ""))
+    requested = _normalized_https_origin(origin)
+    return bool(configured and requested and secrets.compare_digest(configured, requested))
+
+
+def _origin_allowed_for_browser_api(origin: str) -> bool:
+    return _origin_allowed_for_atelier(origin) or _origin_allowed_for_lite(origin)
+
+
+def _apply_browser_api_cors_headers(
+    response: Response,
+    origin: str,
+    *,
+    private_network_requested: bool = False,
+) -> None:
+    if origin and _origin_allowed_for_browser_api(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
         response.headers["Access-Control-Max-Age"] = "600"
+        if private_network_requested and _origin_allowed_for_lite(origin):
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
+            response.headers["Vary"] = "Origin, Access-Control-Request-Private-Network"
 
 
 @app.middleware("http")
-async def _atelier_cors_headers_middleware(request: Request, call_next):
+async def _browser_api_cors_headers_middleware(request: Request, call_next):
     response = await call_next(request)
-    _apply_atelier_cors_headers(response, request.headers.get("origin", ""))
+    _apply_browser_api_cors_headers(response, request.headers.get("origin", ""))
     return response
 
 
@@ -319,13 +371,36 @@ def require_api_auth(request: Request, authorization: str = Header(default="")) 
         raise HTTPException(status_code=403, detail="Invalid token")
 
 
+def require_owner_api_auth(request: Request, authorization: str = Header(default="")) -> None:
+    """所有者Tokenだけを許可するルート用の認証依存関係。"""
+
+    require_api_auth(request, authorization)
+    settings = _settings()
+    local_without_auth = not settings.get("require_auth", True) and not _is_public_bind_host(
+        str(settings.get("host") or "127.0.0.1")
+    )
+    if local_without_auth:
+        return
+    token = _expected_token()
+    supplied = authorization[len("Bearer "):].strip() if authorization.startswith("Bearer ") else ""
+    if not token or not secrets.compare_digest(supplied, token):
+        _audit_log("owner_auth_denied", request, "blocked")
+        raise HTTPException(status_code=403, detail="Owner token is required")
+
+
 @app.options("/{requested_path:path}", include_in_schema=False)
-def atelier_cors_preflight(request: Request) -> Response:
+def browser_api_cors_preflight(request: Request) -> Response:
     origin = request.headers.get("origin", "")
-    if not _origin_allowed_for_atelier(origin):
+    if not _origin_allowed_for_browser_api(origin):
         raise HTTPException(status_code=404, detail="not found")
     response = Response(status_code=204)
-    _apply_atelier_cors_headers(response, origin)
+    _apply_browser_api_cors_headers(
+        response,
+        origin,
+        private_network_requested=(
+            request.headers.get("access-control-request-private-network", "").lower() == "true"
+        ),
+    )
     return response
 
 
@@ -369,6 +444,41 @@ def lite_badge() -> FileResponse:
     return FileResponse("mobile_app/badge.png", media_type="image/png")
 
 
+@app.post("/api/v1/lite-travel/standby", dependencies=[Depends(require_api_auth)])
+def prepare_lite_travel_standby(body: LiteStandbyPrepareRequest) -> dict:
+    try:
+        return lite_travel.prepare_standby_snapshot(
+            body.room_ids,
+            parallel_rooms=body.parallel_room_ids,
+            retention_days=body.retention_days,
+            automatic=body.automatic,
+            include_core_memory=body.include_core_memory,
+            include_episodic_memory=body.include_episodic_memory,
+            episodic_memory_days=body.episodic_memory_days,
+            recent_message_limit=body.recent_message_limit,
+        )
+    except lite_travel.LiteTravelError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v1/lite-travel/standby", dependencies=[Depends(require_api_auth)])
+def get_lite_travel_standby() -> dict:
+    return {"manifest": lite_travel.latest_standby_manifest()}
+
+
+@app.get("/api/v1/lite-travel/diagnostics", dependencies=[Depends(require_api_auth)])
+def get_lite_travel_diagnostics() -> dict:
+    return lite_travel.diagnose_worker()
+
+
+@app.post("/api/v1/lite-travel/return", dependencies=[Depends(require_api_auth)])
+def return_lite_travel_home(body: LiteTravelReturnRequest) -> dict:
+    try:
+        return lite_travel.online_return(body.travel_session_id)
+    except lite_travel.LiteTravelError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.get("/api/v1/rooms", response_model=list[RoomSummary], dependencies=[Depends(require_api_auth)])
 def rooms() -> list[RoomSummary]:
     return service.list_rooms()
@@ -398,11 +508,47 @@ def room_capabilities(room_id: str) -> ApiCapabilitiesResponse:
 def room_chat_history(
     room_id: str,
     limit: int = Query(12, ge=1, le=50),
+    include_thoughts: bool = False,
+    request: Request = None,
 ) -> ChatHistoryResponse:
+    if include_thoughts:
+        # read_chat grants cover the ordinary transcript only. Thought text is
+        # an explicit owner opt-in and still follows the room display setting.
+        settings = _settings()
+        local_without_auth = not settings.get("require_auth", True) and not _is_public_bind_host(
+            str(settings.get("host") or "127.0.0.1")
+        )
+        authorization = request.headers.get("authorization", "") if request is not None else ""
+        token = _expected_token()
+        supplied = authorization[len("Bearer "):].strip() if authorization.startswith("Bearer ") else ""
+        if not local_without_auth and not (token and secrets.compare_digest(supplied, token)):
+            raise HTTPException(status_code=403, detail="Thought logs require the owner token")
     try:
+        if include_thoughts:
+            return service.get_recent_chat_history(room_id, limit, include_thoughts=True)
         return service.get_recent_chat_history(room_id, limit)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+
+
+@app.post(
+    "/api/v1/rooms/{room_id}/chat/thoughts/translate",
+    response_model=lite_thought_translation.LiteThoughtTranslationResponse,
+    dependencies=[Depends(require_owner_api_auth)],
+)
+def room_chat_thoughts_translate(
+    room_id: str,
+    request: lite_thought_translation.LiteThoughtTranslationRequest,
+) -> lite_thought_translation.LiteThoughtTranslationResponse:
+    try:
+        translated = lite_thought_translation.translate_thought_log(room_id, request.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Room not found") from exc
+    except lite_thought_translation.ThoughtTranslationDisabledError as exc:
+        raise HTTPException(status_code=403, detail="Thought translation is disabled") from exc
+    except lite_thought_translation.ThoughtTranslationFailedError as exc:
+        raise HTTPException(status_code=502, detail="Thought translation failed") from exc
+    return lite_thought_translation.LiteThoughtTranslationResponse(text=translated)
 
 
 @app.post("/api/v1/rooms/{room_id}/chat", response_model=ChatResponse, dependencies=[Depends(require_api_auth)])
@@ -411,6 +557,8 @@ async def room_chat(room_id: str, request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=501, detail="Streaming responses are not implemented yet")
     try:
         return await service.chat(room_id, request)
+    except lite_runtime_controls.LiteRequestStopped as e:
+        raise HTTPException(status_code=409, detail={"code": "response_stopped", "client_message_id": e.request_id}) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -631,9 +779,10 @@ def room_note(
     note_type: str,
     headings_only: bool = Query(False, description="見出しリストだけを返す"),
     heading: str = Query("", description="特定の見出しセクションだけを返す"),
+    latest: bool = Query(False, description="見出し取得なしで最新の一件を返す"),
 ) -> NoteResponse:
     try:
-        return service.get_note(room_id, note_type, headings_only=headings_only, heading=heading)
+        return lite_features.get_memory_note(room_id, note_type, headings_only=headings_only, heading=heading, latest=latest)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
@@ -793,6 +942,249 @@ def room_autonomy_preset(
         return response
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+class LiteStopRequest(BaseModel):
+    client_message_id: str = Field(..., min_length=1, max_length=200)
+
+
+class LiteTemporaryLocationRequest(BaseModel):
+    scenery_text: str = Field(default="", max_length=4000)
+    location_name: Optional[str] = Field(default=None, max_length=120)
+    source_description: Optional[str] = Field(default=None, max_length=500)
+    active: bool = True
+    # 既存room assetの参照。省略時は現在の画像を保持する。
+    image_path: Optional[str] = Field(default=None, max_length=4096)
+    # active=true の適用時だけ意味を持つ明示的な画像解除。
+    clear_image: bool = False
+
+
+def _lite_call(function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except lite_location_library.LiteLocationConflictError as e:
+        raise HTTPException(status_code=409, detail={"code": e.code, "message": str(e)}) from e
+    except lite_response_settings.LiteResponseSettingsConflictError as e:
+        raise HTTPException(status_code=409, detail={"code": e.code, "message": str(e)}) from e
+    except lite_features.LiteMemoConflictError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _temporary_location_asset_reference(
+    room_id: str,
+    state: lite_runtime_controls.TemporaryLocationState,
+) -> tuple[Optional[str], Optional[str]]:
+    """同一roomで配信可能な場合だけ、安全な相対参照とURLを返す。"""
+
+    if not state.image_path:
+        return None, None
+    try:
+        asset_path = service.resolve_room_asset_path(room_id, state.image_path)
+    except ValueError:
+        # 本体UIの既存一時ファイルなど、room asset境界外の画像はhas_imageだけ公開する。
+        return None, None
+    try:
+        room_root = (Path(constants.ROOMS_DIR) / room_id).resolve()
+        relative_path = asset_path.resolve().relative_to(room_root).as_posix()
+    except (OSError, ValueError):
+        return None, None
+    if not relative_path or relative_path == ".":
+        return None, None
+    encoded_room_id = quote(room_id, safe="")
+    return relative_path, f"/api/v1/rooms/{encoded_room_id}/temporary-location/image"
+
+
+def _temporary_location_response(
+    room_id: str,
+    state: lite_runtime_controls.TemporaryLocationState,
+) -> dict:
+    image_path, image_asset_url = _temporary_location_asset_reference(room_id, state)
+    return state.as_dict(
+        public_image_path=image_path,
+        image_asset_url=image_asset_url,
+    )
+
+
+@app.get("/api/v1/rooms/{room_id}/api-key", response_model=lite_features.LiteApiKeyOptionsResponse, dependencies=[Depends(require_api_auth)])
+def room_api_key(room_id: str):
+    return _lite_call(lite_features.list_api_key_options, room_id)
+
+
+@app.put("/api/v1/rooms/{room_id}/api-key", response_model=lite_features.LiteApiKeySelectionResponse, dependencies=[Depends(require_api_auth)])
+def room_api_key_select(room_id: str, request: lite_features.LiteApiKeySelectionRequest):
+    return _lite_call(lite_features.select_room_api_key, room_id, request)
+
+
+@app.delete("/api/v1/rooms/{room_id}/api-key", response_model=lite_features.LiteApiKeySelectionResponse, dependencies=[Depends(require_api_auth)])
+def room_api_key_reset(room_id: str):
+    return _lite_call(lite_features.reset_room_api_key_to_common, room_id)
+
+
+@app.get(
+    "/api/v1/rooms/{room_id}/response-settings",
+    response_model=lite_response_settings.LiteResponseSettingsResponse,
+    dependencies=[Depends(require_api_auth)],
+)
+def room_response_settings(room_id: str):
+    return _lite_call(lite_response_settings.get_response_settings, room_id)
+
+
+@app.put(
+    "/api/v1/rooms/{room_id}/response-settings",
+    response_model=lite_response_settings.LiteResponseSettingsResponse,
+    dependencies=[Depends(require_api_auth)],
+)
+def room_response_settings_update(room_id: str, request: lite_response_settings.LiteResponseSettingsUpdateRequest):
+    return _lite_call(lite_response_settings.update_response_settings, room_id, request)
+
+
+@app.delete(
+    "/api/v1/rooms/{room_id}/response-settings",
+    response_model=lite_response_settings.LiteResponseSettingsResponse,
+    dependencies=[Depends(require_api_auth)],
+)
+def room_response_settings_reset(room_id: str, request: lite_response_settings.LiteResponseSettingsDeleteRequest):
+    return _lite_call(lite_response_settings.reset_response_settings, room_id, request)
+
+
+@app.put("/api/v1/rooms/{room_id}/autonomy/settings", response_model=lite_features.LiteAutonomySettingsResponse, dependencies=[Depends(require_api_auth)])
+def room_autonomy_settings(room_id: str, request: lite_features.LiteAutonomySettingsUpdateRequest):
+    return _lite_call(lite_features.update_autonomy_settings, room_id, request)
+
+
+@app.get("/api/v1/rooms/{room_id}/user-memo", response_model=lite_features.LiteUserMemoResponse, dependencies=[Depends(require_api_auth)])
+def room_user_memo(room_id: str):
+    return _lite_call(lite_features.get_user_memo, room_id)
+
+
+@app.put("/api/v1/rooms/{room_id}/user-memo", response_model=lite_features.LiteUserMemoResponse, dependencies=[Depends(require_api_auth)])
+def room_user_memo_save(room_id: str, request: lite_features.LiteUserMemoUpdateRequest):
+    return _lite_call(lite_features.save_user_memo, room_id, request)
+
+
+@app.post("/api/v1/rooms/{room_id}/items/food", response_model=lite_features.LiteFoodItemCreateResponse, dependencies=[Depends(require_api_auth)])
+def room_food_create(room_id: str, request: lite_features.LiteFoodItemCreateRequest):
+    return _lite_call(lite_features.create_food_item, room_id, request)
+
+
+@app.post(
+    "/api/v1/rooms/{room_id}/items/generate-profile",
+    response_model=lite_item_generation.LiteItemGenerationResponse,
+    dependencies=[Depends(require_api_auth)],
+)
+def room_item_generate_profile(
+    room_id: str,
+    request: lite_item_generation.LiteItemProfileGenerateRequest,
+):
+    return _lite_call(lite_item_generation.generate_item_profile, room_id, request)
+
+
+@app.post(
+    "/api/v1/rooms/{room_id}/items/generate-image",
+    response_model=lite_item_generation.LiteItemGenerationResponse,
+    dependencies=[Depends(require_api_auth)],
+)
+def room_item_generate_image(
+    room_id: str,
+    request: lite_item_generation.LiteItemImageGenerateRequest,
+):
+    return _lite_call(lite_item_generation.generate_item_image, room_id, request)
+
+
+@app.post(
+    "/api/v1/rooms/{room_id}/items/generated",
+    response_model=lite_item_generation.LiteItemGenerationResponse,
+    dependencies=[Depends(require_api_auth)],
+)
+def room_generated_item_save(
+    room_id: str,
+    request: lite_item_generation.LiteGeneratedItemSaveRequest,
+):
+    return _lite_call(lite_item_generation.save_generated_item, room_id, request)
+
+
+@app.get("/api/v1/rooms/{room_id}/temporary-location", dependencies=[Depends(require_api_auth)])
+def room_temporary_location(room_id: str):
+    _lite_call(service._require_room, room_id)
+    state = _lite_call(lite_runtime_controls.get_temporary_location, room_id)
+    return _temporary_location_response(room_id, state)
+
+
+@app.get("/api/v1/rooms/{room_id}/temporary-location/image", dependencies=[Depends(require_api_auth)])
+def room_temporary_location_image(room_id: str) -> FileResponse:
+    _lite_call(service._require_room, room_id)
+    state = _lite_call(lite_runtime_controls.get_temporary_location, room_id)
+    if not state.image_path:
+        raise HTTPException(status_code=404, detail="temporary location image is not set")
+    try:
+        image_path = service.resolve_room_asset_path(room_id, state.image_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(str(image_path))
+
+
+@app.put("/api/v1/rooms/{room_id}/temporary-location", dependencies=[Depends(require_api_auth)])
+def room_temporary_location_apply(room_id: str, request: LiteTemporaryLocationRequest):
+    _lite_call(service._require_room, room_id)
+    if lite_travel.is_presence_locked(room_id):
+        raise HTTPException(status_code=409, detail="独立モード利用中は本体の現在地を変更できません")
+    function = lite_runtime_controls.apply_temporary_location_text if request.active else lite_runtime_controls.deactivate_temporary_location
+    if request.active:
+        state = _lite_call(
+            function,
+            room_id,
+            request.scenery_text,
+            image_path=request.image_path,
+            clear_image=request.clear_image,
+            location_name=request.location_name,
+            source_description=request.source_description,
+        )
+        return _temporary_location_response(room_id, state)
+    state = _lite_call(function, room_id)
+    return _temporary_location_response(room_id, state)
+
+
+@app.get("/api/v1/rooms/{room_id}/temporary-location/saved", dependencies=[Depends(require_api_auth)])
+def room_temporary_saved_locations(room_id: str):
+    return _lite_call(lite_location_library.list_saved_locations, room_id)
+
+
+@app.get("/api/v1/rooms/{room_id}/temporary-location/saved-entry", dependencies=[Depends(require_api_auth)])
+def room_temporary_saved_location(room_id: str, name: str = Query(..., min_length=1, max_length=120)):
+    return _lite_call(lite_location_library.get_saved_location, room_id, name)
+
+
+@app.get("/api/v1/rooms/{room_id}/temporary-location/saved-image", dependencies=[Depends(require_api_auth)])
+def room_temporary_saved_location_image(room_id: str, name: str = Query(..., min_length=1, max_length=120)):
+    entry = _lite_call(lite_location_library.get_saved_location, room_id, name)
+    if not entry.image_path:
+        raise HTTPException(status_code=404, detail="saved location image is unavailable")
+    path = _lite_call(lite_runtime_controls._validated_room_image_path, room_id, entry.image_path)
+    return FileResponse(path)
+
+
+@app.post("/api/v1/rooms/{room_id}/temporary-location/saved", dependencies=[Depends(require_api_auth)])
+def room_temporary_saved_location_save(room_id: str, request: lite_location_library.LiteLocationSaveRequest):
+    return _lite_call(lite_location_library.save_location, room_id, request)
+
+
+@app.post("/api/v1/rooms/{room_id}/temporary-location/generate", dependencies=[Depends(require_api_auth)])
+def room_temporary_location_generate(room_id: str, request: lite_location_generation.LiteLocationGenerateRequest):
+    return _lite_call(lite_location_generation.generate_location, room_id, request)
+
+
+@app.get("/api/v1/rooms/{room_id}/chat/active", dependencies=[Depends(require_api_auth)])
+def room_chat_active(room_id: str):
+    _lite_call(service._require_room, room_id)
+    return {"room_id": room_id, "requests": [item.as_dict() for item in lite_runtime_controls.get_active_lite_requests(room_id)]}
+
+
+@app.post("/api/v1/rooms/{room_id}/chat/stop", dependencies=[Depends(require_api_auth)])
+def room_chat_stop(room_id: str, request: LiteStopRequest):
+    _lite_call(service._require_room, room_id)
+    return lite_runtime_controls.stop_lite_request(room_id, request.client_message_id).as_dict()
 
 
 def start_server(port: Optional[int] = None, host: Optional[str] = None, daemon: bool = True) -> None:

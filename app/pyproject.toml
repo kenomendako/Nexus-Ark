@@ -4,16 +4,17 @@ version = "0.2.0"
 description = "Nexus Ark: AI Persona Interaction System"
 authors = [{ name = "Kenomendako", email = "kenomendako@example.com" }]
 readme = "README.md"
-requires-python = ">=3.11, <3.14"
+requires-python = ">=3.12.16, <3.13"
 dependencies = [
     # --- Core Frameworks ---
-    "gradio==6.14.0",
+    # Gradio 6.16.0 fixes the Svelte tab-switch update loop (upstream #13240).
+    "gradio==6.16.0",
     "gradio_client",
     "langchain",
     "langchain-core",
-    "langchain-google-genai>=4.2.0",
+    "langchain-google-genai==4.4.2",
     "langgraph",
-    "google-genai>=1.59.0",
+    "google-genai==2.31.0",
     "google-api-core",
     # --- Google Calendar Integration (OAuth + Calendar API) ---
     "google-auth>=2.0.0",
@@ -38,6 +39,11 @@ dependencies = [
     "pywebpush>=2.0.3",
     "schedule==1.2.2",
     "requests==2.32.5",
+    # eMudhra/emSign CA incident: keep the restored safe root bundle.
+    "certifi==2026.10.23",
+    # CVE-2026-111497: HTTP clients may automatically decode br responses.
+    "brotli>=1.2.1; platform_python_implementation == 'CPython'",
+    "brotlicffi>=1.2.1.0; platform_python_implementation != 'CPython'",
     # --- File & System Utilities ---
     "filetype==1.2.0",
     "filelock>=3.20.0",
@@ -50,12 +56,13 @@ dependencies = [
     # --- LangChain/LangGraph Dependencies (Verified) ---
     "aiohttp==3.12.15",
     "anyio==4.11.0",
-    "fastapi==0.117.1",
+    "fastapi==0.133.0",
+    "starlette==1.3.1",
     "httpx==0.28.1",
     "numpy==2.3.3",
     "matplotlib",
     "orjson==3.11.3",
-    "pydantic==2.11.9",
+    "pydantic==2.12.5",
     "PyYAML==6.0.2",
     "SQLAlchemy==2.0.43",
     "tenacity==9.1.2",
@@ -72,7 +79,7 @@ dependencies = [
     "hdbscan>=0.8.33",
     "sentence-transformers>=2.2.0",
     "python-chess",
-    "playwright>=1.58.0",
+    "playwright==1.64.1",
     "pytest-playwright>=0.7.2",
     "tufup>=0.10.0",
     "langchain-anthropic>=1.3.3",

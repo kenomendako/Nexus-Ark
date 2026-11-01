@@ -21,6 +21,7 @@ import gradio as gr
 import gemini_api, config_manager, alarm_manager, room_manager, utils, constants, chatgpt_importer, claude_importer, generic_importer
 import rag_manager
 import utils
+from dream_journal_display import format_dream_journal_entry
 from room_manager import get_room_files_paths, get_world_settings_path
 from episodic_memory_manager import EpisodicMemoryManager
 from file_lock_utils import safe_json_read, safe_text_read, safe_text_write
@@ -50,15 +51,20 @@ def load_core_memory_content(room_name: str) -> str:
     return safe_text_read(core_memory_path)
 
 
-def handle_save_core_memory(room_name: str, content: str) -> str:
-    """コアメモリの保存ボタンのイベントハンドラ。"""
+def handle_save_core_memory(
+    room_name: str, content: str, selected_room: str, editor_room: str, is_switching: bool,
+) -> None:
+    """読込元と選択ルームが一致する場合だけコアメモリを保存する。"""
+    from ._common import require_persona_editor_target
+
+    require_persona_editor_target(room_name, selected_room, editor_room, is_switching)
     if content is None or str(content).strip() == "None":
         gr.Warning("無効な内容(None)が検知されたため、データ保護のために保存を中止しました。")
-        return content
+        return
 
     if not room_name:
         gr.Warning("ルームが選択されていません。")
-        return content
+        return
 
     # ▼▼▼【ここに追加】▼▼▼
     room_manager.create_backup(room_name, 'core_memory')
@@ -67,10 +73,32 @@ def handle_save_core_memory(room_name: str, content: str) -> str:
     try:
         safe_text_write(core_memory_path, content)
         gr.Info(f"「{room_name}」のコアメモリを保存しました。")
-        return content
+        return
     except Exception as e:
         gr.Error(f"コアメモリの保存エラー: {e}")
-        return content
+        return
+
+
+def handle_reload_core_memory_for_editor(room_name: str):
+    return handle_reload_core_memory(room_name), room_name
+
+
+def handle_core_memory_update_for_editor(
+    room_name: str, api_key_name: str, selected_room: str, is_switching: bool,
+):
+    from ._common import require_selected_persona_room, with_persona_editor_room
+
+    require_selected_persona_room(room_name, selected_room, is_switching)
+
+    return with_persona_editor_room(handle_core_memory_update_click(room_name, api_key_name), room_name)
+
+
+def handle_reflect_identity_to_core_for_editor(room_name: str, selected_room: str, is_switching: bool):
+    from ._common import require_selected_persona_room, with_persona_editor_room
+
+    require_selected_persona_room(room_name, selected_room, is_switching)
+
+    return with_persona_editor_room(handle_reflect_identity_to_core(room_name), room_name)
 
 
 def handle_reload_core_memory(room_name: str) -> str:
@@ -972,26 +1000,78 @@ def _get_working_memory_updates(room_name: str) -> tuple[gr.update, gr.update, s
 
     slots, active_slot = load_working_memory_slots(room_name)
     content = load_working_memory_content(room_name, active_slot)
-    
+
+    from tools.working_memory_tools import (
+        WM_TERMINAL_STATUSES,
+        get_working_memory_metadata,
+        get_working_memory_status,
+    )
+    metadata = get_working_memory_metadata(room_name)
+    terminal_count = sum(
+        1
+        for meta in metadata.get("slots", {}).values()
+        if isinstance(meta, dict) and meta.get("status") in WM_TERMINAL_STATUSES
+    )
+    active_status = get_working_memory_status(room_name, active_slot)
     character_name = room_manager.get_character_name(room_name)
-    active_label = f"現在 {character_name} が使用中のスロット: **{active_slot}**"
+    active_label = (
+        f"現在 {character_name} が使用中のスロット: **{active_slot}** "
+        f"(status={active_status})  \n"
+        f"terminalスロット: **{terminal_count}件** "
+        "（本文は保持され、現在の文脈と通常一覧から除外されます）"
+    )
+    selected_value = active_slot if active_slot in slots else None
+    if active_status in WM_TERMINAL_STATUSES:
+        active_label += "  \n現在の選択はterminalです。メタデータ確認後、明示的に再開してください。"
 
     return (
-        gr.update(choices=slots, value=active_slot),
-        gr.update(value=content, placeholder="ワーキングメモリは空です"),
+        gr.update(choices=slots, value=selected_value),
+        gr.update(
+            value=content,
+            interactive=active_status not in WM_TERMINAL_STATUSES,
+            placeholder=(
+                "terminalスロットは明示的に再開するまで表示・編集できません。"
+                if active_status in WM_TERMINAL_STATUSES
+                else "ワーキングメモリは空です"
+            ),
+        ),
         active_label
     )
 
 
-def handle_reload_working_memory(room_name: str, slot_name: str = None) -> tuple[gr.update, gr.update, str]:
+def _get_working_memory_edit_state(room_name: str, slot_name: str = None) -> dict:
+    """セッションごとの本文競合チェック用Stateを返す。"""
+    if not room_name:
+        return {"room_name": "", "slot_name": "", "content_version": 0}
+    from tools.working_memory_tools import get_working_memory_content_version
+    target_slot = slot_name or room_manager.get_active_working_memory_slot(room_name)
+    return {
+        "room_name": room_name,
+        "slot_name": target_slot,
+        "content_version": get_working_memory_content_version(room_name, target_slot),
+    }
+
+
+def handle_get_working_memory_edit_state(room_name: str, slot_name: str = None) -> dict:
+    """Gradioのプログラム的なslot変更時にも競合Stateを同期する。"""
+    return _get_working_memory_edit_state(room_name, slot_name)
+
+
+def handle_reload_working_memory(room_name: str, slot_name: str = None) -> tuple:
     """ワーキングメモリを再読み込み。スロットリストも強制的に同期する(v3)"""
     if not room_name:
         gr.Warning("ルームが選択されていません。")
-        return gr.update(), gr.update(), ""
+        return gr.update(), gr.update(), "", _get_working_memory_edit_state("", "")
 
     wm_slots_update, wm_content_update, active_label = _get_working_memory_updates(room_name)
     gr.Info(f"「{room_name}」のワーキングメモリを再読み込み（同期）しました。")
-    return wm_slots_update, wm_content_update, active_label
+    active_slot = room_manager.get_active_working_memory_slot(room_name)
+    return (
+        wm_slots_update,
+        wm_content_update,
+        active_label,
+        _get_working_memory_edit_state(room_name, active_slot),
+    )
 
 
 def handle_reload_working_memory_metadata(room_name: str) -> tuple[str, str]:
@@ -1013,7 +1093,10 @@ def handle_save_working_memory_metadata(room_name: str, content: str) -> tuple[s
     if not room_name:
         return content or "", "ルームが選択されていません。"
     try:
-        from tools.working_memory_tools import save_working_memory_metadata
+        from tools.working_memory_tools import (
+            WorkingMemoryConflictError,
+            save_working_memory_metadata,
+        )
         parsed = json.loads(content or "{}")
         metadata = save_working_memory_metadata(room_name, parsed)
         gr.Info("Working Memory metadataを保存しました。")
@@ -1021,10 +1104,123 @@ def handle_save_working_memory_metadata(room_name: str, content: str) -> tuple[s
     except json.JSONDecodeError as e:
         gr.Error(f"JSONの形式が不正です: {e}")
         return content or "", f"JSONの形式が不正です: {e}"
+    except WorkingMemoryConflictError as e:
+        gr.Warning(str(e))
+        return content or "", str(e)
     except Exception as e:
         traceback.print_exc()
         gr.Error(f"Working Memory metadataの保存エラー: {e}")
         return content or "", f"エラー: {e}"
+
+
+def get_working_memory_cleanup_notice(room_name: str) -> tuple[bool, str, str]:
+    """対象ルームだけに表示する、fingerprint単位の整理案内を組み立てる。"""
+    if not room_name:
+        return False, "", ""
+    from tools.working_memory_tools import get_working_memory_cleanup_assessment
+
+    assessment = get_working_memory_cleanup_assessment(room_name)
+    if not assessment["affected"]:
+        return False, "", ""
+    room_config = room_manager.get_room_config(room_name) or {}
+    overrides = room_config.get("override_settings", {})
+    dismissed = overrides.get(
+        "working_memory_cleanup_notice_dismissed_fingerprint", ""
+    )
+    fingerprint = assessment["fingerprint"]
+    if dismissed == fingerprint:
+        return False, "", fingerprint
+
+    reasons = []
+    if assessment["unregistered_slots"]:
+        reasons.append(f"旧形式の作業メモ {len(assessment['unregistered_slots'])}件")
+    if assessment["active_flags"]:
+        reasons.append("現在の作業メモに整理候補")
+    reason_text = "、".join(reasons) or "整理候補"
+    message = (
+        f"### 作業メモの整理案内\n\n{reason_text}を検出しました。"
+        "［新しい作業メモを開始］を選ぶと、既存本文を変更・削除せずにバックアップし、"
+        "標準構造の新しい作業メモへ切り替えます。"
+        "今の内容を継続する場合は［そのまま使う］を選べます。"
+    )
+    return True, message, fingerprint
+
+
+def handle_working_memory_cleanup_notice(room_name: str) -> tuple:
+    visible, message, fingerprint = get_working_memory_cleanup_notice(room_name)
+    return gr.update(visible=visible), message, fingerprint
+
+
+def handle_dismiss_working_memory_cleanup_notice(
+    room_name: str, fingerprint: str
+) -> tuple:
+    from tools.working_memory_tools import get_working_memory_cleanup_assessment
+
+    assessment = get_working_memory_cleanup_assessment(room_name)
+    current_fingerprint = assessment["fingerprint"]
+    if (
+        room_name
+        and assessment["affected"]
+        and fingerprint
+        and fingerprint == current_fingerprint
+    ):
+        if not room_manager.update_room_override_key(
+            room_name,
+            "working_memory_cleanup_notice_dismissed_fingerprint",
+            current_fingerprint,
+        ):
+            gr.Warning("整理案内の選択を保存できませんでした。")
+            return gr.update(visible=True), current_fingerprint
+    return gr.update(visible=False), current_fingerprint
+
+
+def handle_start_fresh_working_memory(room_name: str) -> tuple:
+    """整理案内から、退避付きの新しいactive WMへ安全に切り替える。"""
+    try:
+        from tools.working_memory_tools import start_fresh_working_memory
+
+        result = start_fresh_working_memory(room_name)
+        wm_slots, wm_content, active_label = _get_working_memory_updates(room_name)
+        active_slot = room_manager.get_active_working_memory_slot(room_name)
+        edit_state = _get_working_memory_edit_state(room_name, active_slot)
+        metadata_text, metadata_status = handle_reload_working_memory_metadata(room_name)
+        if result["changed"]:
+            gr.Info(
+                "既存の作業メモをバックアップし、新しい作業メモへ切り替えました。"
+            )
+        else:
+            gr.Info("このルームの作業メモはすでに整理済みです。")
+        return (
+            gr.update(visible=False),
+            wm_slots,
+            wm_content,
+            active_label,
+            edit_state,
+            metadata_text,
+            metadata_status,
+            "",
+        )
+    except Exception:
+        traceback.print_exc()
+        gr.Error(
+            "新しい作業メモへの切り替えに失敗しました。"
+            "既存データは復元されています。"
+        )
+        wm_slots, wm_content, active_label = _get_working_memory_updates(room_name)
+        active_slot = room_manager.get_active_working_memory_slot(room_name)
+        edit_state = _get_working_memory_edit_state(room_name, active_slot)
+        metadata_text, _ = handle_reload_working_memory_metadata(room_name)
+        visible, _message, fingerprint = get_working_memory_cleanup_notice(room_name)
+        return (
+            gr.update(visible=visible),
+            wm_slots,
+            wm_content,
+            active_label,
+            edit_state,
+            metadata_text,
+            "切り替えに失敗しました。既存データは復元されています。",
+            fingerprint,
+        )
 
 
 def handle_manual_dreaming(room_name: str, api_key_name: str):
@@ -1187,18 +1383,7 @@ def handle_dream_journal_selection_from_dropdown(room_name: str, selected_create
         selected_dream = next((item for item in insights if item.get("created_at") == selected_created_at), None)
 
         if selected_dream:
-            # 詳細テキストを構築
-            details = (
-                f"【日付】 {selected_dream.get('created_at')}\n"
-                f"【トリガー】 {selected_dream.get('trigger_topic')}\n\n"
-                f"## 💡 得られた洞察 (Insight)\n"
-                f"{selected_dream.get('insight', '（記録なし）')}\n\n"
-                f"## 💭 夢の日記 (Dream Log)\n"
-                f"{selected_dream.get('log_entry', '（記録なし）')}\n\n"
-                f"## 🧭 今後の指針 (Strategy)\n"
-                f"{selected_dream.get('strategy', '（記録なし）')}"
-            )
-            return details
+            return format_dream_journal_entry(selected_dream)
 
         return "選択された日記が見つかりませんでした。"
     except Exception as e:
@@ -1253,16 +1438,7 @@ def handle_show_latest_dream(room_name: str):
         latest = insights[0]
         latest_created_at = latest.get("created_at", "")
 
-        details = (
-            f"【日付】 {latest.get('created_at')}\\n"
-            f"【トリガー】 {latest.get('trigger_topic')}\\n\\n"
-            f"## 💡 得られた洞察 (Insight)\\n"
-            f"{latest.get('insight', '（記録なし）')}\\n\\n"
-            f"## 💭 夢の日記 (Dream Log)\\n"
-            f"{latest.get('log_entry', '（記録なし）')}\\n\\n"
-            f"## 🧭 今後の指針 (Strategy)\\n"
-            f"{latest.get('strategy', '（記録なし）')}"
-        )
+        details = format_dream_journal_entry(latest)
 
         gr.Info("最新の夢日記を表示しています。")
         return (
@@ -1998,11 +2174,25 @@ def _get_working_memory_path(room_name: str, slot_name: str = None) -> str:
 def load_working_memory_content(room_name: str, slot_name: str = None) -> str:
     """ワーキングメモリの内容を読み込む"""
     if not room_name: return ""
+    from tools.working_memory_tools import (
+        WM_INJECTABLE_STATUSES,
+        get_working_memory_status,
+    )
+    target_slot = slot_name or room_manager.get_active_working_memory_slot(room_name)
+    if get_working_memory_status(room_name, target_slot) not in WM_INJECTABLE_STATUSES:
+        return ""
     path = _get_working_memory_path(room_name, slot_name)
     if os.path.exists(path):
         content = safe_text_read(path)
         try:
-            from tools.working_memory_tools import _observe_wm_operation
+            from tools.working_memory_tools import (
+                _observe_wm_operation,
+                mark_working_memory_read,
+            )
+            mark_working_memory_read(
+                room_name,
+                slot_name or room_manager.get_active_working_memory_slot(room_name),
+            )
             _observe_wm_operation(
                 room_name,
                 slot_name or room_manager.get_active_working_memory_slot(room_name),
@@ -2016,24 +2206,53 @@ def load_working_memory_content(room_name: str, slot_name: str = None) -> str:
 
 
 def load_working_memory_slots(room_name: str) -> tuple[list[str], str]:
-    """ワーキングメモリスロット一覧と現在のアクティブスロットを返す"""
+    """通常UI向けにactive/blockedと現在選択中の未登録slotだけを返す。"""
     if not room_name: return ([], constants.WORKING_MEMORY_DEFAULT_SLOT)
     wm_dir = os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME, constants.WORKING_MEMORY_DIR_NAME)
     os.makedirs(wm_dir, exist_ok=True)
 
-    slots = [f.replace(constants.WORKING_MEMORY_EXTENSION, '') for f in os.listdir(wm_dir) if f.endswith(constants.WORKING_MEMORY_EXTENSION)]
+    from tools.working_memory_tools import (
+        WM_INJECTABLE_STATUSES,
+        get_working_memory_metadata,
+    )
+    metadata = get_working_memory_metadata(room_name)
     active_slot = room_manager.get_active_working_memory_slot(room_name)
-
-    if active_slot not in slots:
+    file_slots = sorted(
+        f.replace(constants.WORKING_MEMORY_EXTENSION, "")
+        for f in os.listdir(wm_dir)
+        if f.endswith(constants.WORKING_MEMORY_EXTENSION)
+    )
+    slots = [
+        slot
+        for slot in file_slots
+        if slot in metadata.get("slots", {})
+        and metadata["slots"][slot].get("status") in WM_INJECTABLE_STATUSES
+    ]
+    if active_slot in file_slots and active_slot not in metadata.get("slots", {}):
         slots.append(active_slot)
 
     return (slots, active_slot)
 
 
-def handle_working_memory_slot_change(room_name: str, selected_slot: str) -> tuple[str, str]:
+def handle_working_memory_slot_change(room_name: str, selected_slot: str) -> tuple:
     """UIからのスロット切り替え要求を処理し、指定スロットの内容とアクティブ状態ラベルを返す"""
-    if not room_name or not selected_slot: return "", ""
+    if not room_name or not selected_slot:
+        return "", "", _get_working_memory_edit_state("", "")
+    from tools.working_memory_tools import (
+        get_working_memory_status,
+        is_working_memory_injectable,
+        mark_working_memory_selected,
+    )
+    status = get_working_memory_status(room_name, selected_slot)
+    if status != "unregistered" and not is_working_memory_injectable(status):
+        message = (
+            f"スロット **{selected_slot}** は status={status} のため編集対象へ切り替えられません。"
+            "明示的に再開してください。"
+        )
+        gr.Warning(message)
+        return "", message, _get_working_memory_edit_state("", "")
     room_manager.set_active_working_memory_slot(room_name, selected_slot)
+    mark_working_memory_selected(room_name, selected_slot)
     content = load_working_memory_content(room_name, selected_slot)
     try:
         from tools.working_memory_tools import _observe_wm_operation
@@ -2043,13 +2262,13 @@ def handle_working_memory_slot_change(room_name: str, selected_slot: str) -> tup
     
     character_name = room_manager.get_character_name(room_name)
     active_label = f"現在 {character_name} が使用中のスロット: **{selected_slot}**"
-    return content, active_label
+    return content, active_label, _get_working_memory_edit_state(room_name, selected_slot)
 
 
 def handle_new_working_memory_slot(room_name: str) -> tuple:
     """新しいワーキングメモリスロットの作成（UI上での仮追加と保存による実体化の準備）"""
     if not room_name:
-        return (gr.update(), gr.update(), "")
+        return (gr.update(), gr.update(), "", _get_working_memory_edit_state("", ""))
 
     import datetime
     new_slot = f"new_topic_{datetime.datetime.now().strftime('%M%S')}"
@@ -2063,7 +2282,12 @@ def handle_new_working_memory_slot(room_name: str) -> tuple:
 
     # 選択すると自動で handle_working_memory_slot_change をトリガーして
     # アクティブスロットとして記録される想定
-    return (gr.update(choices=new_slots, value=new_slot), "", active_label)
+    return (
+        gr.update(choices=new_slots, value=new_slot),
+        "",
+        active_label,
+        {"room_name": room_name, "slot_name": new_slot, "content_version": 0},
+    )
 
 
 def handle_action_memory_refresh(room_name: str) -> str:
@@ -2097,33 +2321,56 @@ def handle_action_memory_refresh(room_name: str) -> str:
         return f"履歴の取得に失敗しました: {e}"
 
 
-def handle_save_working_memory(room_name: str, content: str, slot_name: str = None) -> str:
+def handle_save_working_memory(
+    room_name: str,
+    content: str,
+    slot_name: str = None,
+    edit_state: dict = None,
+) -> tuple:
     """ワーキングメモリを保存"""
     if content is None or str(content).strip() == "None":
         gr.Warning("無効な内容(None)が検知されたため、データ保護のために保存を中止しました。")
-        return content
+        return content, edit_state or {}, "保存を中止しました。"
 
     if not room_name:
         gr.Warning("ルームが選択されていません。")
-        return content
+        return content, edit_state or {}, "ルームが選択されていません。"
 
     path = _get_working_memory_path(room_name, slot_name)
     try:
-        # バックアップ作成 (独自のバックアップディレクトリへ)
-        backup_dir = os.path.join(constants.ROOMS_DIR, room_name, "backups", "working_memories")
-        os.makedirs(backup_dir, exist_ok=True)
-        if os.path.exists(path):
-            import datetime, shutil
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            target_slot = slot_name if slot_name else room_manager.get_active_working_memory_slot(room_name)
-            backup_filename = f"{timestamp}_{target_slot}{constants.WORKING_MEMORY_EXTENSION}.bak"
-            shutil.copy2(path, os.path.join(backup_dir, backup_filename))
+        from tools.working_memory_tools import (
+            WorkingMemoryConflictError,
+            get_working_memory_content_version,
+            save_working_memory_content,
+        )
+        target_slot = slot_name or room_manager.get_active_working_memory_slot(room_name)
+        expected = edit_state if isinstance(edit_state, dict) else {}
+        current_version = get_working_memory_content_version(room_name, target_slot)
+        if (
+            expected.get("room_name") != room_name
+            or expected.get("slot_name") != target_slot
+            or expected.get("content_version") != current_version
+        ):
+            message = (
+                "⚠️ 別のセッションまたはAIがこの本文を更新しました。"
+                "未保存の編集内容は保持しています。［🔄 読み込む］で最新状態を確認し、"
+                "差分を反映してから保存してください。"
+            )
+            gr.Warning(message)
+            return content, expected, message
 
-        safe_text_write(path, content)
+        save_working_memory_content(
+            room_name,
+            target_slot,
+            content,
+            expected_content_version=expected.get("content_version"),
+        )
 
         # 新規作成等でアクティブでなかった場合はアクティブにする
         if slot_name:
             room_manager.set_active_working_memory_slot(room_name, slot_name)
+            from tools.working_memory_tools import mark_working_memory_selected
+            mark_working_memory_selected(room_name, slot_name)
 
         try:
             from tools.working_memory_tools import _observe_wm_operation
@@ -2138,10 +2385,15 @@ def handle_save_working_memory(room_name: str, content: str, slot_name: str = No
             pass
 
         gr.Info(f"「{room_name}」の話題「{slot_name or room_manager.get_active_working_memory_slot(room_name)}」を保存しました。")
-        return content
+        new_state = _get_working_memory_edit_state(room_name, target_slot)
+        return content, new_state, f"保存しました（content_version={new_state['content_version']}）。"
+    except WorkingMemoryConflictError as e:
+        message = f"⚠️ {e} 未保存の編集内容は保持しています。"
+        gr.Warning(message)
+        return content, edit_state or {}, message
     except Exception as e:
         gr.Error(f"ワーキングメモリの保存エラー: {e}")
-        return content
+        return content, edit_state or {}, f"保存エラー: {e}"
 
 
 def handle_memos_batch_import(room_name: str, console_content: str):
@@ -2569,7 +2821,7 @@ def handle_refresh_goals(room_name: str):
         short_term = goals.get("short_term", [])
         short_lines = []
         for g in short_term:
-            status_icon = "✅" if g.get("status") == "completed" else "🎯"
+            status_icon = {"active": "🎯", "paused": "⏸️ 保留", "completed": "✅", "abandoned": "終了"}.get(g.get("status", "active"), "状態不明")
             short_lines.append(f"{status_icon} {g.get('goal', '（目標なし）')} [優先度: {g.get('priority', 1)}]")
         short_text = "\n".join(short_lines) if short_lines else "短期目標はありません"
 
@@ -2577,7 +2829,7 @@ def handle_refresh_goals(room_name: str):
         long_term = goals.get("long_term", [])
         long_lines = []
         for g in long_term:
-            status_icon = "✅" if g.get("status") == "completed" else "🌟"
+            status_icon = {"active": "🌟", "paused": "⏸️ 保留", "completed": "✅", "abandoned": "終了"}.get(g.get("status", "active"), "状態不明")
             long_lines.append(f"{status_icon} {g.get('goal', '（目標なし）')}")
         long_text = "\n".join(long_lines) if long_lines else "長期目標はありません"
 

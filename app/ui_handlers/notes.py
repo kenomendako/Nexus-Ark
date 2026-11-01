@@ -14,6 +14,7 @@ import pandas as pd
 import gemini_api, config_manager, alarm_manager, room_manager, utils, constants, chatgpt_importer, claude_importer, generic_importer
 import letterbox_manager
 import note_storage
+import file_lock_utils
 from room_manager import get_room_files_paths, get_world_settings_path
 from file_lock_utils import safe_text_read, safe_text_write
 
@@ -209,13 +210,26 @@ def _parse_notes_entries(content: str) -> list:
     entries = []
 
     # 区切り線(---)の後にタイムスタンプが続く場合のみ分割（本文中の罫線による誤分割を防止）
-    # \s* を追加して区切り線とアイコンの間の不必要な空白・改行を許容する
-    sections = re.split(r'\n---+\n\s*(?=📝|\[)', content)
+    # \s* を追加して区切り線とアイコンの間の不必要な空白・改行を許容する。
+    # split位置も保持する。本文が同じエントリが複数ある場合、文字列の最初の
+    # 出現だけを置換すると別エントリを更新するため、保存時に物理位置を使う。
+    separator_pattern = re.compile(r"\n---+\n\s*(?=📝|\[)")
+    sections = []
+    cursor = 0
+    for separator in separator_pattern.finditer(content):
+        sections.append((content[cursor:separator.start()], cursor))
+        cursor = separator.end()
+    sections.append((content[cursor:], cursor))
 
-    for section in sections:
-        section = section.strip()
+    for raw_section, raw_offset in sections:
+        section = raw_section.strip()
         if not section:
             continue
+
+        leading = len(raw_section) - len(raw_section.lstrip())
+        trailing = len(raw_section.rstrip())
+        section_start = raw_offset + leading
+        section_end = raw_offset + trailing
 
         # タイムスタンプを探す (📝 YYYY-MM-DD HH:MM 形式)
         match1 = re.search(r'📝\s*(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})', section)
@@ -246,7 +260,9 @@ def _parse_notes_entries(content: str) -> list:
                 "timestamp": timestamp,
                 "date": date_str,
                 "content": entry_content,
-                "raw_section": section
+                "raw_section": section,
+                "_raw_start": section_start,
+                "_raw_end": section_end,
             })
 
     return entries[::-1]
@@ -872,6 +888,606 @@ def handle_note_file_list_refresh(room_name: str, note_type: str):
         files = [default_filenam_map.get(note_type, "notes.md")]
 
     return gr.update(choices=files, value=files[0])
+
+
+_NOTE_HISTORY_DEFAULT_FILENAMES = {
+    "research": constants.RESEARCH_NOTES_FILENAME,
+    "creative": constants.CREATIVE_NOTES_FILENAME,
+}
+_NOTE_HISTORY_DATELESS = "日付なし"
+_NOTE_HISTORY_ALL = "すべて"
+
+
+class _NoteHistoryConflictError(ValueError):
+    """履歴画面が読み込んだ後に対象ノートが更新された。"""
+
+
+def _normalize_note_history_kind(kind: str) -> str:
+    normalized = str(kind or "").strip().lower()
+    normalized = {"研究": "research", "創作": "creative"}.get(normalized, normalized)
+    if normalized not in _NOTE_HISTORY_DEFAULT_FILENAMES:
+        raise ValueError(f"unsupported note kind: {kind}")
+    return normalized
+
+
+def _normalize_note_history_filename(kind: str, filename: str | None = None) -> str:
+    normalized_kind = _normalize_note_history_kind(kind)
+    default_filename = _NOTE_HISTORY_DEFAULT_FILENAMES[normalized_kind]
+    if not filename:
+        return default_filename
+    return str(filename).replace("\\", "/").strip("/") or default_filename
+
+
+def _note_history_empty_state() -> dict:
+    return {"loaded": False}
+
+
+def _note_history_read_snapshot(room_name: str, kind: str, filename: str | None = None) -> tuple[str, str]:
+    """履歴対象をロック下で読み、内容とハッシュを同じスナップショットから返す。"""
+    normalized_kind = _normalize_note_history_kind(kind)
+    normalized_filename = _normalize_note_history_filename(normalized_kind, filename)
+    path = note_storage.get_note_path(room_name, normalized_kind, normalized_filename)
+    with file_lock_utils.locked_file(path) as locked_path:
+        if locked_path.exists():
+            content = locked_path.read_text(encoding="utf-8")
+        else:
+            content = ""
+    return content, note_storage.content_hash(content)
+
+
+def _note_history_read_all(room_name: str, kind: str) -> list[dict]:
+    """現行ファイルと全アーカイブを読み、表示用の一意な物理位置を付与する。"""
+    normalized_kind = _normalize_note_history_kind(kind)
+    if not room_name:
+        return []
+
+    source_filenames = room_manager.get_note_files(room_name, normalized_kind)
+    if not source_filenames:
+        source_filenames = [_NOTE_HISTORY_DEFAULT_FILENAMES[normalized_kind]]
+
+    entries = []
+    for source_filename in source_filenames:
+        content, source_hash = _note_history_read_snapshot(
+            room_name, normalized_kind, source_filename
+        )
+        for source_index, parsed_entry in enumerate(_parse_notes_entries(content)):
+            entry = dict(parsed_entry)
+            entry["source_filename"] = source_filename
+            entry["source_index"] = source_index
+            entry["_source_hash"] = source_hash
+            entries.append(entry)
+
+    # 日付は本文の見出しから得た値だけを使う。ファイル名のアーカイブ時刻は
+    # 並び順へ混ぜず、同一時刻の別エントリも安定して全件残す。
+    return sorted(
+        entries,
+        key=lambda entry: (
+            entry.get("timestamp", "")
+            if entry.get("timestamp") != _NOTE_HISTORY_DATELESS
+            else "0000-00-00 00:00",
+            entry.get("source_filename", ""),
+            -int(entry.get("source_index", 0)),
+        ),
+        reverse=True,
+    )
+
+
+def _note_history_entry_date(entry: dict) -> str:
+    date_value = str(entry.get("date") or "")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value):
+        return date_value
+    return ""
+
+
+def _normalize_note_history_year(year) -> str:
+    if year is None:
+        return _NOTE_HISTORY_ALL
+    normalized = str(year).strip().translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    return normalized or _NOTE_HISTORY_ALL
+
+
+def _normalize_note_history_month(month) -> str:
+    if month is None:
+        return _NOTE_HISTORY_ALL
+    normalized = str(month).strip().translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+    if normalized == _NOTE_HISTORY_ALL:
+        return normalized
+    if normalized.isdigit():
+        return normalized.zfill(2)
+    return normalized or _NOTE_HISTORY_ALL
+
+
+def _note_history_has_date(entry: dict) -> bool:
+    return bool(_note_history_entry_date(entry))
+
+
+def _note_history_entry_matches(entry: dict, year, month) -> bool:
+    normalized_year = _normalize_note_history_year(year)
+    normalized_month = _normalize_note_history_month(month)
+    date_value = _note_history_entry_date(entry)
+
+    if normalized_year == _NOTE_HISTORY_DATELESS or normalized_month == _NOTE_HISTORY_DATELESS:
+        return (
+            not date_value
+            and normalized_year in {_NOTE_HISTORY_ALL, _NOTE_HISTORY_DATELESS}
+            and normalized_month in {_NOTE_HISTORY_ALL, _NOTE_HISTORY_DATELESS}
+        )
+    if not date_value:
+        return normalized_year == _NOTE_HISTORY_ALL and normalized_month == _NOTE_HISTORY_ALL
+
+    return (
+        (normalized_year == _NOTE_HISTORY_ALL or date_value[:4] == normalized_year)
+        and (normalized_month == _NOTE_HISTORY_ALL or date_value[5:7] == normalized_month)
+    )
+
+
+def _note_history_year_choices(entries: list[dict]) -> list[str]:
+    years = sorted(
+        {_note_history_entry_date(entry)[:4] for entry in entries if _note_history_has_date(entry)},
+        reverse=True,
+    )
+    choices = [_NOTE_HISTORY_ALL] + years
+    if any(not _note_history_has_date(entry) for entry in entries):
+        choices.append(_NOTE_HISTORY_DATELESS)
+    return choices
+
+
+def _note_history_month_choices(entries: list[dict], year) -> list[str]:
+    normalized_year = _normalize_note_history_year(year)
+    if normalized_year == _NOTE_HISTORY_DATELESS:
+        return [_NOTE_HISTORY_ALL]
+    months = set()
+    for entry in entries:
+        date_value = _note_history_entry_date(entry)
+        if not date_value:
+            continue
+        if normalized_year in {_NOTE_HISTORY_ALL, _NOTE_HISTORY_DATELESS} or date_value[:4] == normalized_year:
+            months.add(date_value[5:7])
+
+    choices = [_NOTE_HISTORY_ALL] + sorted(months)
+    if normalized_year in {_NOTE_HISTORY_ALL, _NOTE_HISTORY_DATELESS} and any(
+        not _note_history_has_date(entry) for entry in entries
+    ):
+        choices.append(_NOTE_HISTORY_DATELESS)
+    return choices
+
+
+def _note_history_period(entries: list[dict]) -> str:
+    if not entries:
+        return "期間: 記録なし"
+    dates = sorted(
+        {_note_history_entry_date(entry) for entry in entries if _note_history_has_date(entry)}
+    )
+    if not dates:
+        return "期間: 日付なし"
+    if len(dates) == 1:
+        return f"期間: {dates[0]}"
+    return f"期間: {dates[0]} ～ {dates[-1]}"
+
+
+def _note_history_summary(
+    entries: list[dict],
+    visible_entries: list[dict],
+    year=None,
+    month=None,
+    status: str = "",
+) -> str:
+    total = len(entries)
+    visible = len(visible_entries)
+    dateless_count = sum(1 for entry in entries if not _note_history_has_date(entry))
+    lines = [f"**全件:** {total}件 / **表示:** {visible}件", _note_history_period(entries)]
+    if dateless_count:
+        lines.append(f"日付なし: {dateless_count}件（「日付なし」で選択できます）")
+    if status:
+        lines.append(status)
+    return "\n\n".join(lines)
+
+
+def _note_history_entry_label(entry: dict) -> str:
+    preview = str(entry.get("content") or "").replace("\n", " ")
+    if len(preview) > 30:
+        preview = preview[:30] + "..."
+    return f"{entry.get('timestamp', _NOTE_HISTORY_DATELESS)} - {preview}"
+
+
+def _note_history_entry_value(entry: dict) -> str:
+    return (
+        f"{entry.get('source_filename', '')}::"
+        f"{int(entry.get('source_index', 0))}::"
+        f"{entry.get('_source_hash', '')}"
+    )
+
+
+def _parse_note_history_entry_value(selected) -> tuple[str, int, str] | None:
+    if selected is None:
+        return None
+    value = str(selected)
+    if value.count("::") < 2:
+        return None
+    filename, raw_index, expected_hash = value.rsplit("::", 2)
+    try:
+        source_index = int(raw_index)
+    except (TypeError, ValueError):
+        return None
+    if not filename or source_index < 0 or not expected_hash:
+        return None
+    return filename, source_index, expected_hash
+
+
+def _note_history_entry_choices(entries: list[dict], selected=None):
+    values = [_note_history_entry_value(entry) for entry in entries]
+    selected_value = selected if selected in values else None
+    return gr.update(
+        choices=[(_note_history_entry_label(entry), _note_history_entry_value(entry)) for entry in entries],
+        value=selected_value,
+    )
+
+
+def _note_history_state(room_name: str, kind: str, entry: dict, source_hash: str | None = None) -> dict:
+    return {
+        "loaded": True,
+        "room_name": room_name,
+        "kind": _normalize_note_history_kind(kind),
+        "filename": entry.get("source_filename", ""),
+        "source_index": int(entry.get("source_index", 0)),
+        "content_hash": source_hash or entry.get("_source_hash", ""),
+        "raw_section": entry.get("raw_section", ""),
+        "timestamp": entry.get("timestamp", _NOTE_HISTORY_DATELESS),
+    }
+
+
+def _note_history_find_entry(room_name: str, kind: str, filename: str, source_index: int):
+    content, source_hash = _note_history_read_snapshot(room_name, kind, filename)
+    entries = _parse_notes_entries(content)
+    if source_index < 0 or source_index >= len(entries):
+        raise _NoteHistoryConflictError("対象エントリが見つかりません。")
+    entry = dict(entries[source_index])
+    entry["source_filename"] = filename
+    entry["source_index"] = source_index
+    entry["_source_hash"] = source_hash
+    return content, source_hash, entry
+
+
+def _note_history_replace_entry(content: str, entry: dict, new_content: str) -> str:
+    start = int(entry.get("_raw_start", -1))
+    end = int(entry.get("_raw_end", -1))
+    if start < 0 or end < start or end > len(content):
+        raise _NoteHistoryConflictError("対象エントリの位置を確認できません。")
+
+    raw_section = str(entry.get("raw_section") or "")
+    section_prefix_match = re.match(r"---+\s*", raw_section)
+    section_prefix = section_prefix_match.group(0) if section_prefix_match else ""
+    timestamp = entry.get("timestamp", _NOTE_HISTORY_DATELESS)
+    if timestamp == _NOTE_HISTORY_DATELESS:
+        replacement = f"{section_prefix}{str(new_content).strip()}".strip()
+    else:
+        header_match = re.search(
+            r"(?:📝\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}|\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\])",
+            raw_section,
+        )
+        header = header_match.group(0) if header_match else f"📝 {timestamp}"
+        replacement = f"{section_prefix}{header}\n{str(new_content).strip()}".strip()
+    return content[:start] + replacement + content[end:]
+
+
+def _note_history_visible_selection(entries: list[dict], selected, year, month):
+    visible_entries = [entry for entry in entries if _note_history_entry_matches(entry, year, month)]
+    selected_value = selected if selected in {_note_history_entry_value(entry) for entry in visible_entries} else None
+    return visible_entries, selected_value
+
+
+def handle_note_history_load(room, kind, show_latest=False):
+    """創作・研究ノートを全ファイル横断で読み込む（明示的な履歴読込用）。"""
+    try:
+        normalized_kind = _normalize_note_history_kind(kind)
+    except ValueError:
+        return (
+            gr.update(choices=[_NOTE_HISTORY_ALL], value=_NOTE_HISTORY_ALL),
+            gr.update(choices=[_NOTE_HISTORY_ALL], value=_NOTE_HISTORY_ALL),
+            gr.update(choices=[], value=None),
+            gr.update(),
+            "履歴を読み込めません。ノート種別を確認してください。",
+            _note_history_empty_state(),
+        )
+    if not room:
+        return (
+            gr.update(choices=[_NOTE_HISTORY_ALL], value=_NOTE_HISTORY_ALL),
+            gr.update(choices=[_NOTE_HISTORY_ALL], value=_NOTE_HISTORY_ALL),
+            gr.update(choices=[], value=None),
+            gr.update(),
+            "ルームが選択されていません。",
+            _note_history_empty_state(),
+        )
+
+    try:
+        entries = _note_history_read_all(room, normalized_kind)
+    except Exception as exc:
+        return (
+            gr.update(choices=[_NOTE_HISTORY_ALL], value=_NOTE_HISTORY_ALL),
+            gr.update(choices=[_NOTE_HISTORY_ALL], value=_NOTE_HISTORY_ALL),
+            gr.update(choices=[], value=None),
+            gr.update(),
+            f"履歴の読込に失敗しました: {exc}",
+            _note_history_empty_state(),
+        )
+
+    selected_value = None
+    editor_text = ""
+    edit_state = _note_history_empty_state()
+    if show_latest and entries:
+        latest = entries[0]
+        selected_value = _note_history_entry_value(latest)
+        editor_text = latest.get("content", "")
+        edit_state = _note_history_state(room, normalized_kind, latest)
+
+    return (
+        gr.update(choices=_note_history_year_choices(entries), value=_NOTE_HISTORY_ALL),
+        gr.update(choices=_note_history_month_choices(entries, _NOTE_HISTORY_ALL), value=_NOTE_HISTORY_ALL),
+        _note_history_entry_choices(entries, selected_value),
+        editor_text,
+        _note_history_summary(entries, entries),
+        edit_state,
+    )
+
+
+def handle_note_history_latest(room, kind):
+    return handle_note_history_load(room, kind, show_latest=True)
+
+
+def handle_note_history_filter(room, kind, year, month):
+    """選択年・月の履歴だけを表示し、選択中の詳細を解除する。"""
+    try:
+        normalized_kind = _normalize_note_history_kind(kind)
+    except ValueError:
+        return gr.update(), gr.update(choices=[], value=None), gr.update(), "履歴を読み込めません。", _note_history_empty_state()
+    if not room:
+        return gr.update(choices=[_NOTE_HISTORY_ALL], value=_NOTE_HISTORY_ALL), gr.update(choices=[], value=None), gr.update(), "ルームが選択されていません。", _note_history_empty_state()
+
+    try:
+        entries = _note_history_read_all(room, normalized_kind)
+    except Exception as exc:
+        return gr.update(), gr.update(choices=[], value=None), gr.update(), f"履歴の読込に失敗しました: {exc}", _note_history_empty_state()
+
+    normalized_year = _normalize_note_history_year(year)
+    normalized_month = _normalize_note_history_month(month)
+    month_choices = _note_history_month_choices(entries, normalized_year)
+    if normalized_month not in month_choices:
+        normalized_month = _NOTE_HISTORY_ALL
+    visible_entries = [
+        entry for entry in entries if _note_history_entry_matches(entry, normalized_year, normalized_month)
+    ]
+    return (
+        gr.update(choices=month_choices, value=normalized_month),
+        _note_history_entry_choices(visible_entries),
+        "",
+        _note_history_summary(entries, visible_entries, normalized_year, normalized_month),
+        _note_history_empty_state(),
+    )
+
+
+def handle_note_history_selection(room, kind, selected):
+    """履歴選択値から対象ファイルを再読込して詳細編集欄へ表示する。"""
+    try:
+        normalized_kind = _normalize_note_history_kind(kind)
+        parsed_value = _parse_note_history_entry_value(selected)
+        if not room or parsed_value is None:
+            raise ValueError("履歴が選択されていません。")
+        filename, source_index, expected_hash = parsed_value
+        if not _note_history_filename_is_current_member(room, normalized_kind, filename):
+            raise _NoteHistoryConflictError("対象ファイルが現在のルームのノート一覧にありません。")
+        _, source_hash, entry = _note_history_find_entry(room, normalized_kind, filename, source_index)
+        if source_hash != expected_hash:
+            raise _NoteHistoryConflictError("一覧表示後に対象ファイルが更新されました。")
+        return entry.get("content", ""), _note_history_state(
+            room, normalized_kind, entry, source_hash
+        )
+    except Exception as exc:
+        gr.Warning(f"履歴の選択に失敗しました: {exc}。一覧を再読込してください。")
+        return gr.update(), _note_history_empty_state()
+
+
+def _note_history_state_matches(state, room, kind, filename, source_index):
+    return bool(
+        isinstance(state, dict)
+        and state.get("loaded")
+        and state.get("room_name") == room
+        and state.get("kind") == kind
+        and state.get("filename") == filename
+        and int(state.get("source_index", -1)) == int(source_index)
+        and state.get("content_hash")
+    )
+
+
+def _note_history_filename_is_current_member(room, kind, filename) -> bool:
+    """保存直前に、ファイルが現在のルーム／ノート種別の候補であることを確認する。"""
+    allowed = room_manager.get_note_files(room, kind)
+    if not allowed:
+        allowed = [_NOTE_HISTORY_DEFAULT_FILENAMES[kind]]
+    return filename in allowed
+
+
+def handle_note_history_save(room, kind, selected, text, state, year, month):
+    """履歴の物理位置とハッシュを検証して、対象セクションだけを原子的に更新する。"""
+    draft = "" if text is None else str(text)
+    written_state = state
+    written_entry = None
+    written_hash = ""
+    try:
+        normalized_kind = _normalize_note_history_kind(kind)
+        parsed_value = _parse_note_history_entry_value(selected)
+        if not room or parsed_value is None:
+            raise ValueError("保存対象の履歴が選択されていません。")
+        filename, source_index, expected_hash = parsed_value
+        if not _note_history_state_matches(state, room, normalized_kind, filename, source_index):
+            raise _NoteHistoryConflictError("読込状態が古いか、別ルーム／別ファイルの履歴です。")
+        if state.get("content_hash") != expected_hash:
+            raise _NoteHistoryConflictError("一覧表示後に対象ファイルが更新されました。")
+        if not _note_history_filename_is_current_member(room, normalized_kind, filename):
+            raise _NoteHistoryConflictError("対象ファイルが現在のルームのノート一覧にありません。")
+        if text is None or draft.strip() == "None":
+            raise ValueError("無効な本文のため保存を中止しました。")
+
+        path = note_storage.get_note_path(room, normalized_kind, filename)
+        with file_lock_utils.locked_file(path) as locked_path:
+            current_content = locked_path.read_text(encoding="utf-8") if locked_path.exists() else ""
+            current_hash = note_storage.content_hash(current_content)
+            if current_hash != state.get("content_hash"):
+                raise _NoteHistoryConflictError("保存前に対象ノートが更新されました。")
+
+            current_entries = _parse_notes_entries(current_content)
+            if source_index < 0 or source_index >= len(current_entries):
+                raise _NoteHistoryConflictError("対象エントリが見つかりません。")
+            target = current_entries[source_index]
+            if (
+                target.get("raw_section") != state.get("raw_section")
+                or target.get("timestamp") != state.get("timestamp")
+            ):
+                raise _NoteHistoryConflictError("対象エントリが変更されたため保存できません。")
+            updated_content = _note_history_replace_entry(current_content, target, draft)
+            written_hash = note_storage.content_hash(updated_content)
+            updated_entries = _parse_notes_entries(updated_content)
+            # 本文を空にした場合や、本文へ別の記録見出しを加えた場合も、
+            # 保存後の位置から選択を決める。別記録のindexを読込元にしない。
+            written_entry = None
+            for updated_index, updated_entry in enumerate(updated_entries):
+                if updated_entry.get("_raw_start") == target.get("_raw_start"):
+                    source_index = updated_index
+                    written_entry = dict(updated_entry)
+                    written_entry["source_filename"] = filename
+                    written_entry["source_index"] = updated_index
+                    written_entry["_source_hash"] = written_hash
+                    break
+            if written_entry is not None and written_entry.get("content", "") != draft.strip():
+                # 複数記録を貼り付けた場合、編集欄全体を1記録の読込元へ
+                # 結びつけない。保存した記録を一覧から選び直す。
+                written_entry = None
+            written_state = (
+                _note_history_state(room, normalized_kind, written_entry, written_hash)
+                if written_entry is not None else _note_history_empty_state()
+            )
+            file_lock_utils._atomic_text_write(locked_path.as_posix(), updated_content)
+
+        # 保存後の一覧再走査は表示用にのみ使う。保存直後の別書込を
+        # stateへ取り込むと、画面に返した下書きがその変更を上書きし得るため、
+        # stateは必ず上のロック内で実際に書いた内容から組み立てる。
+        try:
+            entries = _note_history_read_all(room, normalized_kind)
+        except Exception as exc:
+            return (
+                gr.update(),
+                gr.update(),
+                draft,
+                f"保存しましたが、一覧の更新に失敗しました: {exc}\n\n履歴を再読込してください。",
+                written_state,
+            )
+        normalized_year = _normalize_note_history_year(year)
+        normalized_month = _normalize_note_history_month(month)
+        month_choices = _note_history_month_choices(entries, normalized_year)
+        if normalized_month not in month_choices:
+            normalized_month = _NOTE_HISTORY_ALL
+        visible_entries, selected_value = _note_history_visible_selection(
+            entries, selected, normalized_year, normalized_month
+        )
+        current_target = next(
+            (
+                entry
+                for entry in entries
+                if entry.get("source_filename") == filename
+                and int(entry.get("source_index", -1)) == source_index
+            ),
+            None,
+        )
+        target_still_matches = bool(
+            written_entry is not None
+            and current_target
+            and current_target.get("_source_hash") == written_hash
+        )
+        fresh_selected_value = _note_history_entry_value(written_entry) if target_still_matches else None
+        if fresh_selected_value not in {
+            _note_history_entry_value(entry) for entry in visible_entries
+        }:
+            fresh_selected_value = None
+        status = "保存しました。"
+        if written_entry is None:
+            status = "保存しました。記録の構成が変わったため選択を解除しました。"
+        elif not target_still_matches:
+            status = "保存しましたが、保存直後に対象ファイルが更新されたため選択を解除しました。"
+        return (
+            gr.update(choices=month_choices, value=normalized_month),
+            _note_history_entry_choices(visible_entries, fresh_selected_value),
+            draft,
+            _note_history_summary(entries, visible_entries, normalized_year, normalized_month, status),
+            written_state,
+        )
+    except Exception as exc:
+        try:
+            entries = _note_history_read_all(room, _normalize_note_history_kind(kind)) if room else []
+            summary = _note_history_summary(entries, [], year, month, f"保存できませんでした: {exc}")
+        except Exception:
+            summary = f"保存できませんでした: {exc}"
+        return gr.update(), gr.update(), draft, f"{summary}\n\n下書きは保持しています。履歴を再読込してください。", state
+
+
+def handle_note_raw_load(room, kind, filename):
+    """RAW編集用に、指定ファイルだけを読み込む。"""
+    try:
+        normalized_kind = _normalize_note_history_kind(kind)
+        normalized_filename = _normalize_note_history_filename(normalized_kind, filename)
+        if not room:
+            raise ValueError("ルームが選択されていません。")
+        if not _note_history_filename_is_current_member(room, normalized_kind, normalized_filename):
+            raise ValueError("指定ファイルが現在のルームのノート一覧にありません。")
+        text, source_hash = _note_history_read_snapshot(room, normalized_kind, normalized_filename)
+        return text, {
+            "loaded": True,
+            "room_name": room,
+            "kind": normalized_kind,
+            "filename": normalized_filename,
+            "content_hash": source_hash,
+        }
+    except Exception as exc:
+        gr.Warning(f"ファイルの読込に失敗しました: {exc}。下書きは保持されています。")
+        return gr.update(), _note_history_empty_state()
+
+
+def handle_note_raw_save(room, kind, filename, text, raw_state):
+    """RAW編集をロード時ハッシュと照合して保存し、競合時は下書きを返す。"""
+    draft = "" if text is None else str(text)
+    try:
+        normalized_kind = _normalize_note_history_kind(kind)
+        normalized_filename = _normalize_note_history_filename(normalized_kind, filename)
+        if not room:
+            raise ValueError("ルームが選択されていません。")
+        if not _note_history_state_matches(
+            raw_state, room, normalized_kind, normalized_filename, -1
+        ):
+            raise _NoteHistoryConflictError("ファイルの読込状態が古いか、別ルーム／別ファイルです。")
+        if not _note_history_filename_is_current_member(room, normalized_kind, normalized_filename):
+            raise _NoteHistoryConflictError("対象ファイルが現在のルームのノート一覧にありません。")
+        note_storage.write_note_content(
+            room,
+            normalized_kind,
+            draft,
+            normalized_filename,
+            expected_hash=raw_state.get("content_hash"),
+        )
+        # write_note_content はロック下でこの内容を原子的に確定して返す。
+        # 保存直後の別書込を再読込してstateへ取り込むと、画面の下書きと
+        # 異なる内容を次回保存で上書きするため、ハッシュは実書込値から作る。
+        written_hash = note_storage.content_hash(draft)
+        return draft, {
+            "loaded": True,
+            "room_name": room,
+            "kind": normalized_kind,
+            "filename": normalized_filename,
+            "content_hash": written_hash,
+        }
+    except note_storage.NoteWriteConflictError:
+        gr.Warning("ファイル全文を保存できませんでした。読み込み後にノートが更新されています。下書きは保持しています。「🔄 ファイルを読み込む」で最新の内容を確認してください。")
+        return draft, raw_state
+    except Exception as exc:
+        gr.Warning(f"ファイル全文を保存できませんでした: {exc}。下書きは保持しています。再読込してください。")
+        return draft, raw_state
 
 
 def _research_subscription_rows(room_name: str):

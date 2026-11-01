@@ -9,6 +9,10 @@ import utils
 import constants
 import room_manager
 import config_manager
+from agent.scenery_image_context import (
+    commit_scenery_image_context,
+    get_scenery_image_context,
+)
 from tools.action_tools import format_schedule_min_minutes_guidance
 # import ui_handlers 
 import datetime
@@ -321,13 +325,22 @@ class UnifiedTimer:
 
             log_f, _, _, _, _, _, _ = room_manager.get_room_files_paths(self.room_name)
             current_api_key_name = config_manager.get_latest_api_key_name_from_config()
-            if not current_api_key_name or not log_f:
+            from gemini_connection import is_vertex
+            if (not current_api_key_name and not is_vertex(self.room_name)) or not log_f:
                 print(f"警告: APIキーまたはログファイルが見つかりません。")
                 return
 
 
             # --- [Lazy Scenery] ---
             season_en, time_of_day_en = utils._get_current_time_context(self.room_name)
+            effective_settings = config_manager.get_effective_settings(self.room_name)
+            scenery_context = get_scenery_image_context(
+                self.room_name,
+                settings=effective_settings,
+                season_en=season_en,
+                time_of_day_en=time_of_day_en,
+                include_virtual=False,
+            )
             location_name = None
             scenery_text = None
             global_model_for_bg = config_manager.get_current_global_model()
@@ -341,7 +354,10 @@ class UnifiedTimer:
                 "api_history_limit": str(constants.DEFAULT_ALARM_API_HISTORY_TURNS),
                 "debug_mode": False,
                 "history_log_path": log_f,
-                "user_prompt_parts": [{"type": "text", "text": synthesized_user_message}],
+                "user_prompt_parts": [
+                    *scenery_context.parts,
+                    {"type": "text", "text": synthesized_user_message},
+                ],
                 "soul_vessel_room": self.room_name,
                 "active_participants": [],
                 "active_attachments": [],
@@ -440,7 +456,8 @@ class UnifiedTimer:
             # 【変更】remove_thoughts_from_text ではなく clean_persona_text を使用
             response_text = utils.clean_persona_text(raw_response)
 
-            if response_text and not response_text.startswith("[エラー"):
+            if response_text and not response_text.startswith(("[エラー", "[ERROR")):
+                commit_scenery_image_context(self.room_name, scenery_context)
                 # ヘッダー（自律行動 or タイマー）でシステムログを記録
                 utils.save_message_to_log(log_f, log_header, message_for_log)
                 if is_autonomous_action and autonomous_tool_summary:
@@ -659,7 +676,8 @@ def restore_scheduled_action_plans():
                 continue
 
             api_key_name = config_manager.get_latest_api_key_name_from_config()
-            if not api_key_name:
+            from gemini_connection import is_vertex
+            if not api_key_name and not is_vertex(room_name):
                 print(f"--- [ActionPlan復元] APIキー未設定のためスキップ: {room_name} / {description} ---")
                 continue
 

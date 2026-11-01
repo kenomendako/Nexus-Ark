@@ -1,0 +1,377 @@
+<!doctype html>
+<!-- Generated from docs/user_guide/. Do not edit directly. -->
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>取得できる情報から探すAPIガイド | Nexus Ark ガイド</title>
+  <meta name="description" content="Nexus Ark ユーザーガイド: 取得できる情報から探すAPIガイド">
+  <link rel="icon" href="../assets/favicon-180.png" type="image/png">
+  <link rel="apple-touch-icon" href="../assets/favicon-180.png">
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="../index.html#top" aria-label="Nexus Ark トップ">
+      <img class="brand-mark" src="../assets/favicon-180.png" alt="" width="36" height="36">
+      <span>Nexus Ark</span>
+    </a>
+    <nav class="nav-links" aria-label="主要ナビゲーション">
+      <a href="../index.html#experience">体験</a>
+      <a href="../index.html#features">特徴</a>
+      <a href="index.html">ガイド</a>
+      <a href="../index.html#start">はじめかた</a>
+      <a href="../index.html#faq">FAQ</a>
+    </nav>
+  </header>
+  <main class="guide-layout">
+    <aside class="guide-sidebar" aria-label="ガイド目次">
+      <a class="guide-home" href="index.html">ガイド目次</a>
+      <ol>
+  <li><a href="00_getting_started.html">はじめに</a></li>
+  <li><a href="01_initial_settings.html">最初の設定ガイド</a></li>
+  <li><a href="02_ui_overview.html">画面構成と基本操作</a></li>
+  <li><a href="03_chat_and_logs.html">チャットとログ管理</a></li>
+  <li><a href="04_memory_notes_knowledge.html">記憶・ノート・知識</a></li>
+  <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
+  <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
+  <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="07a_lite_cloud_setup.html">PCを止めてLiteを使うための準備ガイド</a></li>
+  <li><a href="07b_api_data_reference.html">取得できる情報から探すAPIガイド</a></li>
+  <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
+  <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
+  <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
+  <li><a href="11_troubleshooting.html">トラブルシューティング</a></li>
+</ol>
+    </aside>
+    <article class="guide-article">
+      <h1>取得できる情報から探すAPIガイド</h1>
+<p>Liteで表示している情報を、自作ツールやアトリエアプリでも利用するためのガイドです。APIを選ぶときは、取得情報・返却形式・権限・接続先を確認してください。 全APIと利用条件の正本は本体の「外部接続」→「API・外部ツール」→「利用可能なAPI一覧・外部連携リファレンス」に表示されます。同じ一覧を <code>GET /api/v1/rooms/{room_id}/capabilities</code> からJSONで取得でき、ペルソナのアトリエ能力確認にも使われます。 以下は目的別の読み方と合成データの例です。例のフィールドは一部を省略しています。実際の全項目・型は本体の <code>/docs</code> で確認できます。</p>
+<h2>本体接続と独立モードの接続先</h2>
+<table>
+<thead><tr>
+<th>接続先</th>
+<th>利用できる情報</th>
+<th>認証とデータの時点</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>本体API Gateway <code>/api/v1/...</code></td>
+<td>現在地・状態、履歴、ノート、手紙、アイテム、予定、管理情報など</td>
+<td>本体が稼働し到達できることが必要。所有者Token、または対象ルーム・アプリ権限に限定したアトリエTokenを使用</td>
+</tr>
+<tr>
+<td>Lite独立用Worker <code>/v1/...</code></td>
+<td>現在セッション、引継ぎ会話、独立中の会話イベント、利用量、モデル一覧など</td>
+<td>ペアリングした端末のaccess tokenを使用。本体Tokenやアトリエのscopeとは別の仕組み</td>
+</tr>
+</tbody>
+</table>
+<p>独立中の履歴は、お出かけ前に引き継いだ会話とWorkerに確定した新しい会話を組み合わせます。引継ぎデータの作成時刻と、独立中の最新イベントを区別してください。 独立中でも、本体が稼働して接続情報が残っていれば、Liteの記録・管理の一部から本体APIを参照できる場合があります。その取得元は本体です。PC停止中にWorkerだけでノートや本体の現在地を読み直せる機能ではありません。</p>
+<h2>本体APIで取得できる情報</h2>
+<p><code>{room_id}</code> は対象ルームIDに置き換えます。「追加承認不要」も認証不要という意味ではなく、有効なアトリエTokenの対象ルームで使える範囲です。所有者Tokenは本体の接続用Tokenです。</p>
+<table>
+<thead><tr>
+<th>目的</th>
+<th>GETパス</th>
+<th>主な情報・絞り込み</th>
+<th>アトリエの必要権限</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>現在地・動機・感情を見る</td>
+<td><code>/api/v1/rooms/{room_id}/status</code></td>
+<td><code>current_location</code>、<code>drives</code>、<code>current_expression</code>、<code>persistent_emotions</code>、<code>arousal</code>・件数・日付、<code>active_goals_count</code>、<code>profile_image_path</code></td>
+<td>追加承認不要</td>
+</tr>
+<tr>
+<td>移動先を選ぶ</td>
+<td><code>/api/v1/rooms/{room_id}/locations</code></td>
+<td>現在地と<code>locations[].id/name/area</code></td>
+<td>追加承認不要</td>
+</tr>
+<tr>
+<td>会話・音楽カード・通知案内を読む</td>
+<td><code>/api/v1/rooms/{room_id}/chat/history</code></td>
+<td><code>messages[]</code>。<code>limit=1〜50</code>、既定12。本文、話者、ID、時刻、モデル、添付パス</td>
+<td><code>read_chat</code></td>
+</tr>
+<tr>
+<td>生成画像・アイテム画像を見る</td>
+<td><code>/api/v1/rooms/{room_id}/assets</code></td>
+<td><code>path</code>必須。画像バイナリを返す。履歴・状態・アイテムに含まれる画像パスを指定</td>
+<td><code>read_items</code></td>
+</tr>
+<tr>
+<td>生成済み音声を聴く</td>
+<td><code>/api/v1/rooms/{room_id}/audio</code></td>
+<td><code>path</code>必須。音声バイナリを返す。音声の生成は別途<code>POST .../tts</code></td>
+<td><code>use_voice</code></td>
+</tr>
+<tr>
+<td>記憶を検索する</td>
+<td><code>/api/v1/rooms/{room_id}/memory/search</code></td>
+<td><code>query</code>必須、<code>limit=1〜20</code>。<code>results[].type/content/metadata</code></td>
+<td><code>read_memory</code></td>
+</tr>
+<tr>
+<td>ノート・日記等を読む</td>
+<td><code>/api/v1/rooms/{room_id}/notes/{note_type}</code></td>
+<td><code>content</code>、<code>headings</code>、<code>content_hash</code>、更新時刻、編集可否。下記の読取指定に対応</td>
+<td><code>read_notes</code></td>
+</tr>
+<tr>
+<td>手紙を探す</td>
+<td><code>/api/v1/rooms/{room_id}/letters</code></td>
+<td><code>unread_count</code>とid・件名・作成日時・既読状態。<code>limit=1〜200</code>、既定100</td>
+<td><code>read_letters</code></td>
+</tr>
+<tr>
+<td>手紙本文を読む</td>
+<td><code>/api/v1/rooms/{room_id}/letters/{letter_id}</code></td>
+<td><code>body</code>、作成日時、既読日時。既定で既読化。確認だけなら<code>mark_read=false</code></td>
+<td><code>read_letters</code></td>
+</tr>
+<tr>
+<td>所持品・配置アイテムを読む</td>
+<td><code>/api/v1/rooms/{room_id}/items</code></td>
+<td><code>target=user/persona/location</code>、<code>location</code>。id・名前・個数・説明・画像パス</td>
+<td><code>read_items</code></td>
+</tr>
+<tr>
+<td>予定を表示する</td>
+<td><code>/api/v1/rooms/{room_id}/calendar/events</code></td>
+<td><code>days=1〜31</code>、既定7。共有範囲内の予定の件名・開始/終了・終日・場所</td>
+<td><code>read_calendar</code></td>
+</tr>
+<tr>
+<td>Twitter下書きを確認する</td>
+<td><code>/api/v1/rooms/{room_id}/twitter/drafts</code></td>
+<td><code>drafts[]</code>の本文・警告・返信先・画像パス。取得では投稿しない</td>
+<td><code>read_twitter</code></td>
+</tr>
+<tr>
+<td>自律行動の設定を確認する</td>
+<td><code>/api/v1/rooms/{room_id}/autonomy</code></td>
+<td>有効状態、行動間隔、予約間隔、quiet hours、<code>preset</code></td>
+<td><code>read_autonomy</code></td>
+</tr>
+<tr>
+<td>Push登録状況を調べる</td>
+<td><code>/api/v1/rooms/{room_id}/push/status</code></td>
+<td>登録端末数、端末別の成功/失敗時刻・失敗数。通知本文一覧ではない</td>
+<td><code>manage_push</code></td>
+</tr>
+</tbody>
+</table>
+<p>履歴の添付パスを読む権限と、画像本体を取得する<code>read_items</code>は別です。画像付き会話ビューでは、両方の承認が必要になります。 手紙本文の既読化、Push状態取得時の無効な登録情報の整理など、GETでも状態が変わるものがあります。記憶検索は構成により検索用Embeddingの外部API送信・費用を伴います。</p>
+<h3>履歴の音楽カード・通知・ツール案内</h3>
+<p><code>role: "system"</code>の<code>content</code>には、PC向けに整形した音楽カードや通知・タイマー設定・現在地変更・ツール失敗等の案内が入ります。音楽はMarkdown形式の曲名・理由・検索リンクで、曲の専用JSON配列や音声データではありません。 <code>[RAW_RESULT]</code>以下の内部結果は返しません。通知ツールが記録した通知本文と、ツールの実行結果を知らせる案内は別の履歴行になることがあります。 添付画像は<code>attachments[]</code>から取得します。案内・添付を持つ行も履歴件数に含まれます。履歴は保存済みの表示情報で、現在稼働中のタイマー一覧や自律行動の全タイムラインを返すAPIではありません。 <code>include_thoughts=true</code>は所有者Tokenで明示したときだけ利用でき、さらに本体の表示設定に従います。アトリエの<code>read_chat</code>承認だけでは取得できません。</p>
+<h3>ノート・記憶の読み方</h3>
+<p><code>note_type</code>は<code>research</code>（研究）、<code>creative</code>（創作）、<code>diary</code>（日記）、<code>notepad</code>（メモ帳）、<code>dream</code>（夢日記）、<code>episodic</code>（エピソード）です。</p>
+<ul>
+<li><code>headings_only=true</code>: 見出し一覧だけを取得。</li>
+<li><code>heading=&lt;見出し&gt;</code>: 選んだセクションを取得。URLエンコードして指定。</li>
+<li><code>latest=true</code>: 最新の一件を取得。夢日記・エピソードにも利用可能。</li>
+<li>研究・創作の本文更新は<code>write_notes</code>と<code>PUT</code>が必要です。<code>base_hash</code>で更新前の内容を照合します。日記・メモ帳・夢・エピソードは読み取り専用です。</li>
+</ul>
+<h2>所有者Tokenで確認できる本体管理情報</h2>
+<p>Liteが利用していても、以下はアトリエアプリへ無条件に公開するAPIではありません。アプリの承認へscopeを追加しても所有者限定のAPIは利用できません。</p>
+<table>
+<thead><tr>
+<th>GETパス</th>
+<th>取得できる情報</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>/api/v1/rooms</code></td>
+<td>本体にあるルームのID・表示名・説明・現在地</td>
+</tr>
+<tr>
+<td><code>/api/v1/rooms/{room_id}/api-key</code></td>
+<td>登録キーの表示名・共通/個別の選択状態。キー本体は返さない</td>
+</tr>
+<tr>
+<td><code>/api/v1/rooms/{room_id}/response-settings</code></td>
+<td>実効プロバイダ・モデル・キー名・回転設定・共通/個別の値・候補・<code>revision</code></td>
+</tr>
+<tr>
+<td><code>/api/v1/rooms/{room_id}/user-memo</code></td>
+<td>ユーザーからペルソナへの置き手紙の<code>body</code>・<code>content_hash</code>・更新時刻</td>
+</tr>
+<tr>
+<td><code>/api/v1/rooms/{room_id}/temporary-location</code></td>
+<td>一時的現在地の適用状態・名前・情景文・写真有無と画像URL</td>
+</tr>
+<tr>
+<td><code>/api/v1/rooms/{room_id}/temporary-location/saved</code></td>
+<td>保存済み一時地点の一覧</td>
+</tr>
+<tr>
+<td><code>/api/v1/rooms/{room_id}/temporary-location/saved-entry</code></td>
+<td><code>name</code>で選んだ保存地点の情景・写真。取得だけでは適用しない</td>
+</tr>
+<tr>
+<td><code>/api/v1/rooms/{room_id}/chat/active</code></td>
+<td>進行中の本体接続チャット要求。タイマー一覧ではない</td>
+</tr>
+<tr>
+<td><code>/api/v1/lite-travel/standby</code></td>
+<td>本体が管理するお出かけ前データの準備状況</td>
+</tr>
+<tr>
+<td><code>/api/v1/lite-travel/diagnostics</code></td>
+<td>本体とLite用クラウドの互換性・運用診断</td>
+</tr>
+</tbody>
+</table>
+<p>一時的現在地の写真は専用の<code>.../temporary-location/image</code>、保存写真は<code>.../temporary-location/saved-image?name=...</code>から取得します。どちらも所有者Token限定です。</p>
+<h2>独立Workerで取得できる情報</h2>
+<p>以下のパスは本体URLではなく、設定したLite用クラウドURLへ送ります。Liteの通常利用では<code>/v1/health</code>以外に端末のaccess tokenを使用し、期限切れ時の更新はrefresh tokenで行います。provider profilesとそのmodelsはWorkerの管理用owner tokenも受理します。本体TokenやアトリエTokenを流用しません。</p>
+<table>
+<thead><tr>
+<th>GETパス</th>
+<th>主な情報・引数</th>
+</tr></thead>
+<tbody>
+<tr>
+<td><code>/v1/health</code></td>
+<td>Workerの状態、build・API/PWA/schema互換情報、capabilities（認証不要）</td>
+</tr>
+<tr>
+<td><code>/v1/travel-sessions/current</code></td>
+<td>現在の<code>session</code>、複数ペルソナの<code>personas[]</code>、経路・状態、<code>inherited_recent_messages</code>、<code>snapshot_created_at</code></td>
+</tr>
+<tr>
+<td><code>/v1/standby-snapshots</code></td>
+<td><code>snapshots[]</code>の世代・作成/期限日時・準備状態・persona manifest。全記憶の本文ではない</td>
+</tr>
+<tr>
+<td><code>/v1/travel-sessions/{session_id}/personas/{persona_id}/events</code></td>
+<td><code>after_sequence</code>以降の<code>events[]</code>、<code>next_cursor</code>、<code>missing_sequences</code></td>
+</tr>
+<tr>
+<td><code>/v1/travel-sessions/{session_id}/usage-summary</code></td>
+<td>既知費用、価格不明件数、予約額、予算・警告・停止状態。<code>persona_id</code>でペルソナ別に絞れる</td>
+</tr>
+<tr>
+<td><code>/v1/provider-profiles</code></td>
+<td>AI接続の表示名・provider・有効状態。Secret値は返さない</td>
+</tr>
+<tr>
+<td><code>/v1/provider-profiles/{profile_id}/models</code></td>
+<td>モデル候補・利用可否・料金表の版。<code>refresh=1</code>で再取得</td>
+</tr>
+<tr>
+<td><code>/v1/message-requests/{client_message_id}</code></td>
+<td>送信要求の状態・確定済みevent ID等。未確定送信の再照会にも使用</td>
+</tr>
+</tbody>
+</table>
+<p>予算の明示増額は登録端末のaccess tokenで <code>PUT /v1/travel-sessions/{session_id}/budget</code> を使用します。 <code>scope</code>（<code>session</code>／<code>persona</code>）、ペルソナ範囲なら<code>persona_id</code>、確認時点の<code>expected</code>と新しい<code>limits</code> （各<code>daily_limit_usd</code>／<code>session_limit_usd</code>）、<code>confirmed: true</code>が必要です。今回の有限上限の増額だけを許可し、 既存の無制限項目は<code>null</code>を維持します。古い上限・送信中・帰宅後は拒否し、次回初期値や保留額を変えず、自動送信しません。</p>
+<p>単一ペルソナの旧セッションでは<code>/v1/travel-sessions/{session_id}/events</code>を使います。イベントは100件単位で取得し、必要なら返された<code>next_cursor</code>を次の<code>after_sequence</code>へ渡します。 Workerのイベント本文に音楽カードがあればLiteで表示できますが、本体のツール実行やPC側のツール結果をWorkerへ追加する機能ではありません。 Workerには本体ノート・手紙・現在地・稼働タイマー・思考を直接取得する同等のGET APIはありません。完全なペルソナsnapshotの本文をGETで読むAPIもありません。外部AI向けの書き出しは明示同意付きの別操作です。</p>
+<h2>本体APIの返却例</h2>
+<p>以下はすべて架空のデータです。画像パスやIDは、実際には取得結果にある値を使います。</p>
+<h3>現在地と状態</h3>
+<p>取得先: <code>GET /api/v1/rooms/{room_id}/status</code></p>
+<pre><code class="language-json">{
+  &quot;room_id&quot;: &quot;example-room&quot;,
+  &quot;display_name&quot;: &quot;サンプル&quot;,
+  &quot;current_location&quot;: &quot;庭&quot;,
+  &quot;drives&quot;: {&quot;boredom&quot;: 0.2, &quot;curiosity&quot;: 0.6},
+  &quot;current_expression&quot;: &quot;joy&quot;,
+  &quot;arousal&quot;: 0.4,
+  &quot;arousal_sample_count&quot;: 3,
+  &quot;arousal_date&quot;: &quot;2026-10-21&quot;,
+  &quot;persistent_emotions_available&quot;: true,
+  &quot;persistent_emotions&quot;: [
+    {&quot;category&quot;: &quot;joy&quot;, &quot;name&quot;: &quot;喜び&quot;, &quot;enabled&quot;: true, &quot;status&quot;: &quot;active&quot;, &quot;presentation_status&quot;: &quot;active&quot;, &quot;intensity&quot;: 0.8, &quot;started_at&quot;: &quot;2026-10-21T03:00:00Z&quot;, &quot;current_intensity&quot;: 0.4}
+  ],
+  &quot;active_goals_count&quot;: 1,
+  &quot;profile_image_path&quot;: &quot;profile.png&quot;,
+  &quot;updated_at&quot;: &quot;2026-10-21T09:00:00Z&quot;
+}</code></pre>
+<p>持続感情の一覧は、独自項目を含む本人の申告記録です。<code>intensity</code>は申告値、<code>started_at</code>は申告日時、 <code>current_intensity</code>は取得時点の減衰参考値です。未申告は<code>status="unreported"</code>で数値・日時がnullとなり、0と異なります。 <code>status</code>は保存上の状態、<code>presentation_status</code>は表示用で、<code>active</code>・<code>unreported</code>・<code>settled</code>・<code>expired</code>・ <code>below_threshold</code>・<code>disabled</code>・<code>invalid</code>・<code>unsupported</code>を返します。<code>expired</code>は本人による終了ではありません。 <code>persistent_emotions_available=false</code>は読取不能で、未申告や空一覧と同一視しません。理由・revision・設定編集機能は公開しません。</p>
+<p><code>arousal</code>は記憶整理・想起のために使う内部スコアの本日平均です。対話に加え、内省で問いを解決した際の記録も含みます。 有効記録数<code>arousal_sample_count=0</code>では実測値がなく、<code>arousal=0.5</code>は互換用の値です。 件数nullは取得不明、<code>arousal_date</code>は集計対象日です。UI110ではLiteの画面表示を外し、APIの値・件数・日付と内部処理は維持します。 既存の記録がないルームへ状態GETを行っても、感情値・申告時刻・設定・ログ・索引を新規作成／変更しません。</p>
+<h3>音楽カードを含む履歴</h3>
+<p>取得先: <code>GET /api/v1/rooms/{room_id}/chat/history</code></p>
+<pre><code class="language-json">{
+  &quot;room_id&quot;: &quot;example-room&quot;,
+  &quot;messages&quot;: [
+    {
+      &quot;role&quot;: &quot;system&quot;,
+      &quot;speaker&quot;: &quot;tool_result:recommend_music:example-call&quot;,
+      &quot;message_id&quot;: &quot;example-message&quot;,
+      &quot;content&quot;: &quot;🛠️ ## 音楽推薦カード\n\n1. **Example Song** - Example Artist\n   - 聴く/探す: [YouTube](https://www.youtube.com/results?search_query=Example+Song)&quot;,
+      &quot;thoughts&quot;: &quot;&quot;,
+      &quot;attachments&quot;: []
+    },
+    {
+      &quot;role&quot;: &quot;agent&quot;,
+      &quot;content&quot;: &quot;この曲が合いそうです。&quot;,
+      &quot;timestamp&quot;: &quot;2026-10-20T12:00:00Z&quot;,
+      &quot;model&quot;: &quot;example-model&quot;,
+      &quot;attachments&quot;: [&quot;generated_images/example.png&quot;]
+    }
+  ]
+}</code></pre>
+<h3>所持アイテム</h3>
+<p>取得先: <code>GET /api/v1/rooms/{room_id}/items</code></p>
+<pre><code class="language-json">{
+  &quot;room_id&quot;: &quot;example-room&quot;,
+  &quot;target&quot;: &quot;user&quot;,
+  &quot;items&quot;: [{&quot;id&quot;: &quot;example-item&quot;, &quot;name&quot;: &quot;お茶&quot;, &quot;amount&quot;: 2, &quot;image_path&quot;: &quot;items/example.png&quot;}]
+}</code></pre>
+<h3>ノートの選択セクション</h3>
+<p>取得先: <code>GET /api/v1/rooms/{room_id}/notes/{note_type}</code></p>
+<pre><code class="language-json">{
+  &quot;room_id&quot;: &quot;example-room&quot;,
+  &quot;note_type&quot;: &quot;research&quot;,
+  &quot;title&quot;: &quot;研究ノート&quot;,
+  &quot;content&quot;: &quot;葉の形を比べました。&quot;,
+  &quot;headings&quot;: [&quot;2026-10-20 12:00 - 葉の形を比べました。&quot;],
+  &quot;content_hash&quot;: &quot;0000000000000000000000000000000000000000000000000000000000000000&quot;,
+  &quot;editable&quot;: true
+}</code></pre>
+<h3>自律行動の設定</h3>
+<p>取得先: <code>GET /api/v1/rooms/{room_id}/autonomy</code></p>
+<pre><code class="language-json">{
+  &quot;room_id&quot;: &quot;example-room&quot;,
+  &quot;enabled&quot;: true,
+  &quot;inactivity_minutes&quot;: 120,
+  &quot;schedule_cooldown_minutes&quot;: 60,
+  &quot;quiet_hours_start&quot;: &quot;00:00&quot;,
+  &quot;quiet_hours_end&quot;: &quot;07:00&quot;,
+  &quot;preset&quot;: &quot;normal&quot;
+}</code></pre>
+<h3>既読にせず読む手紙</h3>
+<p><code>GET /api/v1/rooms/{room_id}/letters/{letter_id}?mark_read=false</code>で確認だけ行う例です。</p>
+<p>取得先: <code>GET /api/v1/rooms/{room_id}/letters/{letter_id}</code></p>
+<pre><code class="language-json">{
+  &quot;room_id&quot;: &quot;example-room&quot;,
+  &quot;id&quot;: &quot;example-letter&quot;,
+  &quot;title&quot;: &quot;夕方の散歩&quot;,
+  &quot;body&quot;: &quot;今日は庭を歩きました。&quot;,
+  &quot;created_at&quot;: &quot;2026-10-20T12:00:00Z&quot;,
+  &quot;read_at&quot;: null
+}</code></pre>
+<h2>アトリエアプリから取得する例</h2>
+<p>アプリは<code>nexus.json</code>で必要な<code>requested_scopes</code>を宣言し、ユーザーの承認を受けます。所有者Tokenをアプリのソースへ埋め込まず、同じアプリの<code>./_nexus/config</code>から対象ルームの短期Tokenを取得します。</p>
+<pre><code class="language-javascript">const cfg = await (await fetch(&quot;./_nexus/config&quot;, { cache: &quot;no-store&quot; })).json();
+const room = encodeURIComponent(cfg.roomId);
+const response = await fetch(`${cfg.apiBase}/api/v1/rooms/${room}/chat/history?limit=12`, {
+  headers: { Authorization: `Bearer ${cfg.token}` }
+});
+if (!response.ok) throw new Error(`履歴取得失敗: ${response.status}`);
+const { messages } = await response.json();
+// contentは文字列として表示。独自HTMLとして直接流し込まない。</code></pre>
+<p>この例には<code>read_chat</code>の承認が必要です。401/403では設定を一度再取得して再試行し、それでも取得できなければ権限・接続状態を表示してください。画像も表示する場合は<code>read_items</code>を宣言し、<code>assets?path=...</code>で取得します。</p>
+      <nav class="guide-page-nav" aria-label="前後のページ">
+        <a href="07a_lite_cloud_setup.html">前へ</a>
+        <a href="index.html">目次へ</a>
+        <a href="08_models_api_costs.html">次へ</a>
+      </nav>
+    </article>
+  </main>
+</body>
+</html>

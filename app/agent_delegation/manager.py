@@ -26,6 +26,13 @@ import tool_usage_stats
 import utils
 from agent_delegation import roles, skill_pack
 from agent_delegation.types import AgentRunResult, AgentTaskSpec, DelegationScope
+from agent_delegation.worker_contract import (
+    NATIVE_WORKER_MAX_STEER_CHARS,
+    NATIVE_WORKER_MAX_STEERS,
+    NativeWorkerControl,
+    NativeWorkerEvent,
+    NativeWorkerExecutionError,
+)
 from agent_delegation.resource_limits import (
     DELEGATION_RLIMIT_AS_MB,
     DELEGATION_RLIMIT_CPU_SECONDS,
@@ -52,6 +59,8 @@ SHELL_TOOLS = ["Bash"]
 ALL_CLAUDE_CODE_TOOLS = READ_ONLY_TOOLS + WEB_TOOLS + WRITE_TOOLS + SHELL_TOOLS
 DEFAULT_DENY_MESSAGE = "Nexus Ark policy: this tool call is not allowed for the delegated workspace."
 AGENT_DELEGATION_DEFAULT_MAX_TURNS = 20
+DELEGATION_NATIVE_RSS_LIMIT_MB = 3072
+DELEGATION_NATIVE_RSS_HEADROOM_MB = 768
 NEEDS_CLARIFICATION_MARKER = "NEXUS_ARK_NEEDS_CLARIFICATION"
 ROOM_AGENT_DELEGATION_POLICY_KEYS = {
     "enabled",
@@ -90,6 +99,10 @@ class MaxTurnsReachedError(RuntimeError):
 class MemoryLimitExceededError(RuntimeError):
     """Raised when an in-process native delegation run exceeds its RSS budget."""
 
+    def __init__(self, message: str, metadata: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.metadata = dict(metadata or {})
+
 
 def _metadata_dir() -> Path:
     return Path(constants.METADATA_DIR) / "agent_delegation"
@@ -111,6 +124,8 @@ def get_agent_delegation_settings(room_name: str | None = None) -> dict[str, Any
         "max_turns": AGENT_DELEGATION_DEFAULT_MAX_TURNS,
         "timeout_seconds": 600,
         "allow_web_tools": False,
+        "native_spawn_canary_enabled": True,
+        "native_spawn_canary_mode": "read",
         "model": "",
         "deleg_exec_provider_cat": "",
         "deleg_exec_openai_profile": "",
@@ -133,7 +148,8 @@ def get_agent_delegation_settings(room_name: str | None = None) -> dict[str, Any
         "deleg_rlimit_cpu_seconds": DELEGATION_RLIMIT_CPU_SECONDS,
         "deleg_rlimit_as_mb": DELEGATION_RLIMIT_AS_MB,
         "deleg_rlimit_fsize_mb": DELEGATION_RLIMIT_FSIZE_MB,
-        "deleg_rss_limit_mb": DELEGATION_RLIMIT_AS_MB,
+        "deleg_rss_limit_mb": DELEGATION_NATIVE_RSS_LIMIT_MB,
+        "deleg_rss_headroom_mb": DELEGATION_NATIVE_RSS_HEADROOM_MB,
     }
     raw = config_manager.CONFIG_GLOBAL.get("agent_delegation_settings", {}) if isinstance(config_manager.CONFIG_GLOBAL, dict) else {}
     settings = {**defaults, **(raw if isinstance(raw, dict) else {})}
@@ -156,6 +172,8 @@ def get_agent_delegation_settings(room_name: str | None = None) -> dict[str, Any
     settings["max_turns"] = max(3, raw_max_turns)
     settings["timeout_seconds"] = max(30, int(settings.get("timeout_seconds") or 600))
     settings["allow_web_tools"] = bool(settings.get("allow_web_tools"))
+    settings["native_spawn_canary_enabled"] = bool(settings.get("native_spawn_canary_enabled"))
+    settings["native_spawn_canary_mode"] = str(settings.get("native_spawn_canary_mode") or "read").strip().lower()
     settings["model"] = str(settings.get("model") or "").strip()
     settings["deleg_exec_provider_cat"] = str(settings.get("deleg_exec_provider_cat") or "").strip()
     settings["deleg_exec_openai_profile"] = str(settings.get("deleg_exec_openai_profile") or "").strip()
@@ -182,6 +200,7 @@ def get_agent_delegation_settings(room_name: str | None = None) -> dict[str, Any
     settings["deleg_rlimit_as_mb"] = max(256, int(settings.get("deleg_rlimit_as_mb") or DELEGATION_RLIMIT_AS_MB))
     settings["deleg_rlimit_fsize_mb"] = max(16, int(settings.get("deleg_rlimit_fsize_mb") or DELEGATION_RLIMIT_FSIZE_MB))
     settings["deleg_rss_limit_mb"] = max(0, int(settings.get("deleg_rss_limit_mb") or 0))
+    settings["deleg_rss_headroom_mb"] = max(0, int(settings.get("deleg_rss_headroom_mb") or 0))
     settings["deleg_auto_tune_limits"] = bool(settings.get("deleg_auto_tune_limits", True))
     _apply_auto_tuned_limits(settings, room_name)
     return settings
@@ -327,6 +346,13 @@ def reconcile_orphaned_tasks() -> list[dict[str, Any]]:
     OOM 等でプロセスごと落ちると JSON に running のまま残るため、起動時に整合させる。
     あわせて古い終了済みタスクを間引く。戻り値は中断扱いに変更したタスクレコード。
     """
+    try:
+        from agent_delegation.native_worker_processes import reconcile_native_worker_registry
+
+        reconcile_native_worker_registry()
+    except Exception:
+        logger.exception("[AgentDelegation] native worker registry reconciliation failed")
+
     now = datetime.now().isoformat()
     changed_records: list[dict[str, Any]] = []
 
@@ -1211,12 +1237,36 @@ class _Runner:
             return pending
 
 
+@dataclass(frozen=True)
+class _ThreadNativeWorkerControl(NativeWorkerControl):
+    """Parent-side adapter that preserves the current thread execution path."""
+
+    task_id: str
+    runner: _Runner | None
+
+    def is_cancelled(self) -> bool:
+        return bool(self.runner and self.runner.cancel_requested.is_set())
+
+    def drain_steer(self) -> list[str]:
+        return self.runner.drain_steer() if self.runner else []
+
+    def report_event(self, event: NativeWorkerEvent) -> None:
+        # Validate the same payload that a future IPC transport will receive.
+        payload = NativeWorkerEvent.from_payload(event.to_payload())
+        if payload.event_type == "progress":
+            report_task_progress(self.task_id, payload.payload)
+            return
+        message = str(payload.payload.get("message") or "worker event")
+        extra = payload.payload.get("extra")
+        _append_log(self.task_id, message, dict(extra) if isinstance(extra, dict) else None)
+
+
 _RUNNERS: dict[str, _Runner] = {}
 
 # 1タスクへ送れる途中指示の累計上限（暴走防止）。
-AGENT_STEER_MAX_TOTAL = 10
+AGENT_STEER_MAX_TOTAL = NATIVE_WORKER_MAX_STEERS
 # 1指示あたりの最大文字数。
-AGENT_STEER_MAX_CHARS = 2000
+AGENT_STEER_MAX_CHARS = NATIVE_WORKER_MAX_STEER_CHARS
 
 
 @dataclass
@@ -1469,7 +1519,12 @@ async def _run_task_async(
     try:
         spec = _task_spec_from_task(task, settings)
         backend = _select_agent_backend(task, settings)
-        result = await backend.run(spec, runner=runner, sdk_factory=sdk_factory, client_factory=client_factory)
+        if isinstance(backend, ClaudeSDKBackend):
+            # [SEALED] Legacy SDK path keeps its process/client cancellation wiring.
+            result = await backend.run(spec, runner=runner, sdk_factory=sdk_factory, client_factory=client_factory)
+        else:
+            control = _ThreadNativeWorkerControl(task_id=task_id, runner=runner)
+            result = await backend.run(spec, control=control, sdk_factory=sdk_factory, client_factory=client_factory)
         if _load_tasks().get("tasks", {}).get(task_id, {}).get("status") == "cancelled":
             raise asyncio.CancelledError("委任タスクはキャンセルされました。")
         summary = result.assistant_text.strip() or "委任タスクは完了しましたが、要約は空でした。"
@@ -1528,8 +1583,31 @@ async def _run_task_async(
         _inject_completion_notice(partial)
     except MemoryLimitExceededError as exc:
         message = str(exc) or "native 委任がメモリ上限を超えたため中断しました。"
-        failed = _update_task(task_id, {"status": "failed", "error": message, "finished_at": datetime.now().isoformat()})
-        _append_log(task_id, "task memory limit exceeded", {"error": message})
+        memory_metadata = exc.metadata if isinstance(getattr(exc, "metadata", None), dict) else {}
+        failed = _update_task(
+            task_id,
+            {
+                "status": "failed",
+                "error": message,
+                "metadata": _merge_task_metadata(task, memory_metadata),
+                "finished_at": datetime.now().isoformat(),
+            },
+        )
+        _append_log(task_id, "task memory limit exceeded", {"error": message, "metadata": memory_metadata})
+        _inject_completion_notice(failed)
+    except NativeWorkerExecutionError as exc:
+        message = str(exc) or "native workerが異常終了しました。"
+        worker_metadata = dict(exc.metadata)
+        failed = _update_task(
+            task_id,
+            {
+                "status": "failed",
+                "error": message,
+                "metadata": _merge_task_metadata(task, worker_metadata),
+                "finished_at": datetime.now().isoformat(),
+            },
+        )
+        _append_log(task_id, "native worker failed", {"error": message, "metadata": worker_metadata})
         _inject_completion_notice(failed)
     except asyncio.CancelledError as exc:
         cancelled = _update_task(task_id, {"status": "cancelled", "error": str(exc), "finished_at": datetime.now().isoformat()})
@@ -1630,9 +1708,13 @@ def describe_delegation_backend(room_name: str, settings: dict[str, Any] | None 
 
 
 def _select_agent_backend(task: dict[str, Any], settings: dict[str, Any]) -> Any:
-    # [SEALED] Claude SDK経路は封印中（削除禁止）。無条件native固定の経緯: docs/decisions/010_claude_sdk_path_sealed_not_deleted.md
+    # [SEALED] Claude SDK経路は封印中（削除禁止）。native family固定の経緯: docs/decisions/010_claude_sdk_path_sealed_not_deleted.md
     from agent_delegation.native_backend import NativeAgentBackend
+    from agent_delegation.native_worker_supervisor import NativeWorkerSupervisor, is_native_spawn_canary_eligible
 
+    resolved_spec = _task_spec_from_task(task, settings)
+    if is_native_spawn_canary_eligible(resolved_spec, settings):
+        return NativeWorkerSupervisor(settings=settings)
     return NativeAgentBackend(settings=settings)
 
 

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
+import gc
 import inspect
 import functools
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -21,6 +24,7 @@ from agent.tool_message_compression import (
 )
 from agent_delegation.native_tools import build_native_tools
 from agent_delegation.types import AgentRunResult, AgentTaskSpec
+from agent_delegation.worker_contract import NativeWorkerControl, NativeWorkerEvent, NullNativeWorkerControl
 
 try:
     import psutil
@@ -48,19 +52,28 @@ DENIAL_MARKERS = (
 
 class NativeAgentBackend:
     def __init__(self, settings: dict[str, Any], *, llm: Any = None):
-        self.settings = settings
+        # タスクごとの開始RSSをprivate keyへ保持するため、呼び出し元の共有設定を変更しない。
+        self.settings = dict(settings or {})
         self.llm = llm
 
     async def run(
         self,
         spec: AgentTaskSpec,
         *,
-        runner: Any = None,
+        control: NativeWorkerControl | None = None,
         sdk_factory: Any = None,
         client_factory: Any = None,
     ) -> AgentRunResult:
+        worker_control = control or NullNativeWorkerControl()
+        memory_guard = _prepare_native_memory_guard(self.settings, control=worker_control)
+        baseline_mb = memory_guard.get("baseline_rss_mb")
+        if baseline_mb is not None:
+            self.settings["_deleg_rss_baseline_mb"] = baseline_mb
+        self.settings["_deleg_memory_guard_metadata"] = memory_guard
+        _raise_if_rss_limit_exceeded(self.settings, phase="開始前メモリ整理後")
+
         async def execute() -> AgentRunResult:
-            return await self._run_loop(spec, runner=runner)
+            return await self._run_loop(spec, control=worker_control)
 
         return await asyncio.wait_for(execute(), timeout=int(spec.timeout_seconds))
 
@@ -100,7 +113,7 @@ class NativeAgentBackend:
             max_retries=2,
         )
 
-    async def _run_loop(self, spec: AgentTaskSpec, *, runner: Any = None) -> AgentRunResult:
+    async def _run_loop(self, spec: AgentTaskSpec, *, control: NativeWorkerControl) -> AgentRunResult:
         provider = _active_provider_for_spec(spec)
         routed_model = _routed_model_metadata(spec)
         ledger_model_name = _ledger_model_name_for_spec(spec)
@@ -120,6 +133,7 @@ class NativeAgentBackend:
                     "denied_tool_count": 0,
                     "auth_source": f"native:{provider}",
                     "backend": "native",
+                    "memory_guard": _memory_guard_metadata(self.settings),
                     **({"routed_model": routed_model} if routed_model else {}),
                 },
             )
@@ -146,13 +160,13 @@ class NativeAgentBackend:
 
         max_turns = int(spec.max_turns)
         for _turn in range(max_turns):
-            if runner and runner.cancel_requested.is_set():
+            if control.is_cancelled():
                 raise asyncio.CancelledError("委任タスクはキャンセルされました。")
             _raise_if_rss_limit_exceeded(self.settings, phase="ターン開始時")
 
             # 途中指示（ステアリング・D-1）：保留があれば HumanMessage として注入し、次の思考へ反映する。
-            if runner is not None:
-                pending_steers = runner.drain_steer()
+            if control is not None:
+                pending_steers = control.drain_steer()
                 if pending_steers:
                     steer_body = "\n".join(f"- {s}" for s in pending_steers)
                     messages.append(
@@ -171,6 +185,7 @@ class NativeAgentBackend:
                         max_turns=max_turns,
                         tool_uses=tool_uses,
                         denied_tool_count=denied_tool_count,
+                        control=control,
                     )
 
             turn_no = _turn + 1
@@ -181,6 +196,7 @@ class NativeAgentBackend:
                 max_turns=max_turns,
                 tool_uses=tool_uses,
                 denied_tool_count=denied_tool_count,
+                control=control,
             )
 
             messages_for_llm, compressed_count, original_chars, compressed_chars = compress_tool_messages_for_agent(messages)
@@ -194,7 +210,7 @@ class NativeAgentBackend:
                 llm_with_tools,
                 messages_for_llm,
                 settings=self.settings,
-                runner=runner,
+                control=control,
                 spec=spec,
                 turn=turn_no,
             )
@@ -223,6 +239,7 @@ class NativeAgentBackend:
                         "denied_tool_count": denied_tool_count,
                         "auth_source": f"native:{provider}",
                         "backend": "native",
+                        "memory_guard": _memory_guard_metadata(self.settings),
                         **({"routed_model": routed_model} if routed_model else {}),
                     },
                 )
@@ -238,7 +255,7 @@ class NativeAgentBackend:
                         spec.expected_output,
                         text,
                         settings=self.settings,
-                        runner=runner,
+                        control=control,
                         phase="自動レビュー待機中",
                         room_name=spec.room_name,
                         review_role=review_role,
@@ -263,16 +280,16 @@ class NativeAgentBackend:
                             max_turns=max_turns,
                             tool_uses=tool_uses,
                             denied_tool_count=denied_tool_count,
+                            control=control,
                         )
                         continue
                     if verdict == "unknown":
                         print(f"[Native Delegation] 自動レビュー判定不能: task_id={spec.task_id}")
                         try:
-                            manager._append_log(
-                                spec.task_id,
-                                "review verdict unknown",
-                                {"review_verdict": "unknown", "review_text": review_text[:1000]},
-                            )
+                            control.report_event(NativeWorkerEvent("log", {
+                                "message": "review verdict unknown",
+                                "extra": {"review_verdict": "unknown", "review_text": review_text[:1000]},
+                            }))
                         except Exception:
                             pass
                 return AgentRunResult(
@@ -283,6 +300,7 @@ class NativeAgentBackend:
                         "denied_tool_count": denied_tool_count,
                         "auth_source": f"native:{provider}",
                         "backend": "native",
+                        "memory_guard": _memory_guard_metadata(self.settings),
                         "review_iterations": len(review_verdicts),
                         "review_verdicts": list(review_verdicts),
                         "review_verdict": review_verdicts[-1] if review_verdicts else "",
@@ -298,7 +316,7 @@ class NativeAgentBackend:
                 if tool is None:
                     result = f"Native agent tool is not available: {name}"
                 else:
-                    result = await _invoke_tool(tool, args, settings=self.settings, runner=runner, phase=f"{name} 実行中")
+                    result = await _invoke_tool(tool, args, settings=self.settings, control=control, phase=f"{name} 実行中")
                 result_text = str(result)
                 denied = _is_denial_result(result_text)
                 if denied:
@@ -314,6 +332,7 @@ class NativeAgentBackend:
                     denied_tool_count=denied_tool_count,
                     last_tool=name,
                     last_tool_denied=denied,
+                    control=control,
                 )
                 _raise_if_rss_limit_exceeded(self.settings, phase=f"{name} 実行後")
 
@@ -323,6 +342,7 @@ class NativeAgentBackend:
             "denied_tool_count": denied_tool_count,
             "auth_source": f"native:{provider}",
             "backend": "native",
+            "memory_guard": _memory_guard_metadata(self.settings),
             "review_iterations": len(review_verdicts),
             "review_verdicts": list(review_verdicts),
             "review_verdict": review_verdicts[-1] if review_verdicts else "",
@@ -335,14 +355,14 @@ class NativeAgentBackend:
         )
 
 
-async def _await_with_polling(awaitable: Any, *, settings: dict[str, Any], runner: Any = None, phase: str = "待機中") -> Any:
+async def _await_with_polling(awaitable: Any, *, settings: dict[str, Any], control: NativeWorkerControl, phase: str = "待機中") -> Any:
     task = asyncio.ensure_future(awaitable)
     try:
         while True:
             done, _pending = await asyncio.wait({task}, timeout=BLOCKING_CALL_POLL_INTERVAL_SECONDS)
             if done:
                 return await task
-            if runner and runner.cancel_requested.is_set():
+            if control.is_cancelled():
                 task.cancel()
                 raise asyncio.CancelledError("委任タスクはキャンセルされました。")
             _raise_if_rss_limit_exceeded(settings, phase=phase)
@@ -355,7 +375,7 @@ async def _run_blocking_with_polling(
     func: Any,
     *args: Any,
     settings: dict[str, Any],
-    runner: Any = None,
+    control: NativeWorkerControl,
     phase: str = "同期処理待機中",
     **kwargs: Any,
 ) -> Any:
@@ -364,20 +384,20 @@ async def _run_blocking_with_polling(
     call = functools.partial(func, *args, **kwargs)
     future = loop.run_in_executor(executor, call)
     try:
-        return await _await_with_polling(future, settings=settings, runner=runner, phase=phase)
+        return await _await_with_polling(future, settings=settings, control=control, phase=phase)
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
 
-async def _invoke_llm(llm_with_tools: Any, messages: list[Any], *, settings: dict[str, Any], runner: Any = None) -> Any:
+async def _invoke_llm(llm_with_tools: Any, messages: list[Any], *, settings: dict[str, Any], control: NativeWorkerControl) -> Any:
     ainvoke = getattr(llm_with_tools, "ainvoke", None)
     if callable(ainvoke):
-        return await _await_with_polling(ainvoke(messages), settings=settings, runner=runner, phase="LLM応答待機中")
+        return await _await_with_polling(ainvoke(messages), settings=settings, control=control, phase="LLM応答待機中")
     return await _run_blocking_with_polling(
         llm_with_tools.invoke,
         messages,
         settings=settings,
-        runner=runner,
+        control=control,
         phase="LLM応答待機中",
     )
 
@@ -387,49 +407,46 @@ async def _invoke_llm_with_server_retry(
     messages: list[Any],
     *,
     settings: dict[str, Any],
-    runner: Any = None,
+    control: NativeWorkerControl,
     spec: AgentTaskSpec,
     turn: int,
 ) -> Any:
-    from agent_delegation import manager
-
     attempt = 0
     while True:
         try:
-            return await _invoke_llm(llm_with_tools, messages, settings=settings, runner=runner)
+            return await _invoke_llm(llm_with_tools, messages, settings=settings, control=control)
         except Exception as exc:
             if not _is_retryable_server_error(exc) or attempt >= SERVER_ERROR_TURN_RETRY_LIMIT:
                 raise
             attempt += 1
             error_text = _exception_chain_text(exc)
             try:
-                manager._append_log(
-                    spec.task_id,
-                    "server error retry",
-                    {
+                control.report_event(NativeWorkerEvent("log", {
+                    "message": "server error retry",
+                    "extra": {
                         "turn": int(turn),
                         "attempt": attempt,
                         "max_retries": SERVER_ERROR_TURN_RETRY_LIMIT,
                         "wait_seconds": SERVER_ERROR_TURN_RETRY_WAIT_SECONDS,
                         "error": error_text[:100],
                     },
-                )
+                }))
             except Exception:
                 pass
-            await _sleep_before_server_retry(settings=settings, runner=runner)
+            await _sleep_before_server_retry(settings=settings, control=control)
 
 
-async def _sleep_before_server_retry(*, settings: dict[str, Any], runner: Any = None) -> None:
+async def _sleep_before_server_retry(*, settings: dict[str, Any], control: NativeWorkerControl) -> None:
     remaining = float(SERVER_ERROR_TURN_RETRY_WAIT_SECONDS)
     poll = max(0.01, float(SERVER_ERROR_TURN_RETRY_POLL_SECONDS))
     while remaining > 0:
-        if runner and runner.cancel_requested.is_set():
+        if control.is_cancelled():
             raise asyncio.CancelledError("委任タスクはキャンセルされました。")
         _raise_if_rss_limit_exceeded(settings, phase="LLM 5xx リトライ待機中")
         sleep_for = min(poll, remaining)
         await asyncio.sleep(sleep_for)
         remaining -= sleep_for
-    if runner and runner.cancel_requested.is_set():
+    if control.is_cancelled():
         raise asyncio.CancelledError("委任タスクはキャンセルされました。")
     _raise_if_rss_limit_exceeded(settings, phase="LLM 5xx リトライ待機後")
 
@@ -471,7 +488,7 @@ async def _invoke_tool(
     args: dict[str, Any],
     *,
     settings: dict[str, Any],
-    runner: Any = None,
+    control: NativeWorkerControl,
     phase: str = "ツール実行中",
 ) -> str:
     try:
@@ -479,11 +496,11 @@ async def _invoke_tool(
             tool.invoke,
             args,
             settings=settings,
-            runner=runner,
+            control=control,
             phase=phase,
         )
         if inspect.isawaitable(result):
-            result = await _await_with_polling(result, settings=settings, runner=runner, phase=phase)
+            result = await _await_with_polling(result, settings=settings, control=control, phase=phase)
         return str(result)
     except Exception as exc:
         from agent_delegation import manager
@@ -529,14 +546,9 @@ def _report_native_progress(
     denied_tool_count: int,
     last_tool: str | None = None,
     last_tool_denied: bool = False,
+    control: NativeWorkerControl,
 ) -> None:
-    """実行中の委任タスクの進捗をタスクレコードとログに逐次反映する。
-
-    UIの「タスク一覧を更新」で実行中タスクのターン数・直近ツールが見えるようにする。
-    進捗の書き込み失敗はタスク本体を止めない（best-effort）。
-    """
-    from agent_delegation import manager
-
+    """Report JSON-only progress/log events to the parent-side control."""
     counts = _aggregate_tool_call_counts(tool_uses)
     progress = {
         "phase": phase,
@@ -547,16 +559,18 @@ def _report_native_progress(
         "denied_tool_count": int(denied_tool_count),
         "last_tool": str(last_tool or ""),
     }
-    manager.report_task_progress(spec.task_id, progress)
+    control.report_event(NativeWorkerEvent("progress", progress))
     try:
         if phase == "thinking":
-            manager._append_log(spec.task_id, "turn start", {"turn": int(turn), "max_turns": int(max_turns)})
+            control.report_event(NativeWorkerEvent("log", {
+                "message": "turn start",
+                "extra": {"turn": int(turn), "max_turns": int(max_turns)},
+            }))
         elif phase == "tool" and last_tool:
-            manager._append_log(
-                spec.task_id,
-                "tool used",
-                {"turn": int(turn), "tool": str(last_tool), "denied": bool(last_tool_denied)},
-            )
+            control.report_event(NativeWorkerEvent("log", {
+                "message": "tool used",
+                "extra": {"turn": int(turn), "tool": str(last_tool), "denied": bool(last_tool_denied)},
+            }))
     except Exception:
         pass
 
@@ -577,19 +591,101 @@ def _stored_tool_result_content(tool_name: str, content: str) -> str:
     return make_tool_result_excerpt(tool_name, content)
 
 
+def _prepare_native_memory_guard(
+    settings: dict[str, Any],
+    *,
+    control: NativeWorkerControl | None = None,
+) -> dict[str, Any]:
+    """native委任開始前に解放可能な本体メモリを整理し、増分計測の基準RSSを返す。"""
+
+    before_mb = _process_rss_mb()
+    cache_release_error = ""
+    try:
+        from rag_manager import RAGManager
+
+        RAGManager.clear_cache()
+    except Exception as exc:
+        cache_release_error = f"{type(exc).__name__}: {exc}"
+        gc.collect()
+        if os.name == "posix":
+            try:
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
+    after_mb = _process_rss_mb()
+    metadata = {
+        "available": after_mb is not None,
+        "preflight_rss_mb": round(before_mb, 1) if before_mb is not None else None,
+        "baseline_rss_mb": round(after_mb, 1) if after_mb is not None else None,
+        "released_mb": round(max(0.0, before_mb - after_mb), 1) if before_mb is not None and after_mb is not None else None,
+        "absolute_limit_mb": max(0, int((settings or {}).get("deleg_rss_limit_mb") or 0)),
+        "headroom_limit_mb": max(0, int((settings or {}).get("deleg_rss_headroom_mb") or 0)),
+    }
+    if cache_release_error:
+        metadata["cache_release_error"] = cache_release_error
+    if control is not None:
+        try:
+            control.report_event(NativeWorkerEvent("log", {
+                "message": "native memory preflight",
+                "extra": {"memory_guard": metadata},
+            }))
+        except Exception:
+            pass
+    return metadata
+
+
+def _process_rss_mb() -> float | None:
+    if psutil is None:
+        return None
+    try:
+        return psutil.Process().memory_info().rss / 1024 / 1024
+    except Exception:
+        return None
+
+
+def _memory_guard_metadata(settings: dict[str, Any]) -> dict[str, Any]:
+    metadata = (settings or {}).get("_deleg_memory_guard_metadata") or {}
+    return dict(metadata) if isinstance(metadata, dict) else {}
+
+
 def _raise_if_rss_limit_exceeded(settings: dict[str, Any], *, phase: str) -> None:
-    limit_mb = int((settings or {}).get("deleg_rss_limit_mb") or 0)
-    if limit_mb <= 0 or psutil is None:
+    absolute_limit_mb = int((settings or {}).get("deleg_rss_limit_mb") or 0)
+    headroom_limit_mb = int((settings or {}).get("deleg_rss_headroom_mb") or 0)
+    # 既存契約どおり絶対上限0はメモリガード全体を無効化する。
+    if absolute_limit_mb <= 0 or psutil is None:
         return
-    rss_bytes = psutil.Process().memory_info().rss
-    limit_bytes = limit_mb * 1024 * 1024
-    if rss_bytes <= limit_bytes:
+    rss_mb = _process_rss_mb()
+    if rss_mb is None:
+        return
+    baseline_raw = (settings or {}).get("_deleg_rss_baseline_mb")
+    baseline_mb = float(baseline_raw) if baseline_raw is not None else None
+    delta_mb = max(0.0, rss_mb - baseline_mb) if baseline_mb is not None else None
+    absolute_exceeded = absolute_limit_mb > 0 and rss_mb > absolute_limit_mb
+    headroom_exceeded = headroom_limit_mb > 0 and delta_mb is not None and delta_mb > headroom_limit_mb
+    if not absolute_exceeded and not headroom_exceeded:
         return
     from agent_delegation import manager
 
-    rss_mb = rss_bytes / 1024 / 1024
+    reasons = []
+    if absolute_exceeded:
+        reasons.append(f"絶対上限 {absolute_limit_mb}MB")
+    if headroom_exceeded:
+        reasons.append(f"増分上限 {headroom_limit_mb}MB")
+    details = f"RSS {rss_mb:.1f}MB"
+    if baseline_mb is not None and delta_mb is not None:
+        details += f" / 開始時 {baseline_mb:.1f}MB / 増分 {delta_mb:.1f}MB"
+    metadata = {
+        "memory_guard": {
+            **_memory_guard_metadata(settings),
+            "phase": phase,
+            "reason": "absolute_and_headroom" if absolute_exceeded and headroom_exceeded else ("absolute" if absolute_exceeded else "headroom"),
+            "rss_mb": round(rss_mb, 1),
+            "delta_mb": round(delta_mb, 1) if delta_mb is not None else None,
+        }
+    }
     raise manager.MemoryLimitExceededError(
-        f"native 委任がメモリ上限を超えたため中断しました（{phase}: RSS {rss_mb:.1f}MB / 上限 {limit_mb}MB）。"
+        f"native 委任がメモリ上限を超えたため中断しました（{phase}: {details} / {'・'.join(reasons)}）。",
+        metadata=metadata,
     )
 
 

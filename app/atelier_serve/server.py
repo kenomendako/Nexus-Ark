@@ -27,7 +27,7 @@ _server: Optional[uvicorn.Server] = None
 _server_thread: Optional[threading.Thread] = None
 
 _APP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
-_ATELIER_PWA_VERSION = "v4"
+_ATELIER_PWA_VERSION = "v5"
 _DENIED_DIR_NAMES = {"_nexus", "_source", "_preview", "__pycache__", ".git", ".hg", ".svn", ".mypy_cache", ".pytest_cache"}
 _ATELIER_LIBS_ROOT = (Path(__file__).resolve().parent.parent / "assets" / "atelier_libs").resolve()
 _ATELIER_LIB_ALLOWED_SUFFIXES = {".js", ".map", ".txt"}
@@ -493,6 +493,11 @@ self.addEventListener("fetch", (event) => {{
   if (url.origin !== self.location.origin) return;
   const isSharedLibrary = url.pathname.startsWith("/atelier/_lib/");
   if (!isSharedLibrary && !url.pathname.startsWith(SCOPE_PATH)) return;
+  const isRuntimeConfig = url.pathname === `${{SCOPE_PATH}}_nexus/config`;
+  if (isRuntimeConfig) {{
+    event.respondWith(fetch(event.request));
+    return;
+  }}
   if (event.request.mode === "navigate" || url.pathname === SCOPE_PATH || url.pathname === `${{SCOPE_PATH}}index.html`) {{
     event.respondWith(networkFirst(event.request));
     return;
@@ -690,7 +695,8 @@ def app_config(request: Request, room_name: str, app_name: str) -> JSONResponse:
             "pendingScopes": pending_scopes,
             "token": token,
             "expiresIn": atelier_tokens.ATELIER_TOKEN_TTL_SECONDS,
-        }
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 

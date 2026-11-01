@@ -7,6 +7,7 @@ import threading
 from typing import Optional, List
 import asyncio
 import httpx
+import certifi
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
@@ -58,7 +59,10 @@ def init_line_bot():
     if not token or not secret:
         return False
         
-    configuration = Configuration(access_token=token)
+    # line-bot-sdk は urllib3 の既定 trust store（Windows では OS の
+    # ストア）を使うため、配布時に検証した certifi の CA bundle を明示する。
+    # `verify_ssl=True` だけでは CA の選択を固定できない。
+    configuration = Configuration(access_token=token, ssl_ca_cert=certifi.where())
     api_client = ApiClient(configuration)
     messaging_api = MessagingApi(api_client)
     handler.parser.signature_validator.channel_secret = secret.encode('utf-8')

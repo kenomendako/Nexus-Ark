@@ -1,0 +1,54 @@
+{
+ "signatures": [
+  {
+   "keyid": "eb0c396d6f011da52a28cd5366f90b087f6afc1c758c7e493201c8ffc43a60d4",
+   "sig": "32843daf1e715bc8fe8784d79708fb5578cdf077a97fa215a8337f656dd18ea7c68211067ae94d6b4b4293953bc44c7602ee5c7bbdace21e9737f1e20e25910b"
+  }
+ ],
+ "signed": {
+  "_type": "targets",
+  "expires": "2027-10-21T16:25:26Z",
+  "spec_version": "1.0.31",
+  "targets": {
+   "LiteRuntime-win-x64-node-22.23.2+wrangler-4.118.0.tar.gz": {
+    "custom": {
+     "binding": {
+      "artifact_digest": "855ff79ff19c3113eb0ef6a1619db08a51484781d7d063b036df4a3cbca244f1",
+      "id": "lite-wrangler",
+      "manifest_digest": "eea365c650b613083dcc626e591296f05036596dbc9d6c199c2047f08b20aa0b",
+      "node_version": "22.23.2",
+      "present": true,
+      "target_name": "LiteRuntime-win-x64-node-22.23.2+wrangler-4.118.0.tar.gz",
+      "version": "node-22.23.2_wrangler-4.118.0",
+      "wrangler_version": "4.118.0"
+     },
+     "component": "lite-runtime"
+    },
+    "hashes": {
+     "sha256": "1fddd96b7c45de4c6d3afc3d03c175ae7a6011f6d2be1434bb9a3e6bd5477876"
+    },
+    "length": 92250393
+   },
+   "LiteRuntime-win-x64-node-22.23.4+wrangler-4.149.0.tar.gz": {
+    "custom": {
+     "binding": {
+      "artifact_digest": "8e0c479c8082d2fb2689df93a6ad31534b72f91945a70b5cce2e943451878ba0",
+      "id": "lite-wrangler",
+      "manifest_digest": "6c045fbbc5a23cf2587631ec4115a516f923d51694ecf70d7f193555dd7b6f2c",
+      "node_version": "22.23.4",
+      "present": true,
+      "target_name": "LiteRuntime-win-x64-node-22.23.4+wrangler-4.149.0.tar.gz",
+      "version": "node-22.23.4_wrangler-4.149.0",
+      "wrangler_version": "4.149.0"
+     },
+     "component": "lite-runtime"
+    },
+    "hashes": {
+     "sha256": "fb18c67832586c6abc211f20716ac43147e5c3de4216c0311945de84c5dd0393"
+    },
+    "length": 91020785
+   }
+  },
+  "version": 2
+ }
+}

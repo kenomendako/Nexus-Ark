@@ -9,6 +9,7 @@ import constants
 import tools.roblox_webhook as roblox_webhook
 import room_manager
 import tool_usage_stats
+from tools.capability_tools import split_capability_categories
 
 class ToolRegistry:
     """
@@ -30,7 +31,7 @@ class ToolRegistry:
             "read_full_notepad", "plan_notepad_edit",
             "read_working_memory", "update_working_memory", "list_working_memories", "switch_working_memory",
             "patch_working_memory", "link_working_memory_to_research_thread", "link_working_memory_to_goal",
-            "reactivate_working_memory_slot",
+            "reactivate_working_memory_slot", "set_working_memory_state",
             "web_search_tool", "read_url_tool",
             "generate_image", "view_past_image", "read_closet", "read_user_closet",
             "list_closet", "wear_closet_item", "take_off_closet_item", "change_outfit", "register_item_to_closet",
@@ -49,7 +50,7 @@ class ToolRegistry:
             "list_research_threads", "read_research_thread", "find_similar_research_threads", "update_research_thread",
             "manage_research_subscriptions",
             "add_to_watchlist", "remove_from_watchlist", "get_watchlist", "check_watchlist", "update_watchlist_interval",
-            "manage_open_questions", "manage_goals",
+            "manage_open_questions", "manage_goals", "manage_relationship_intentions", "manage_emotions",
             "read_purpose_profile", "update_active_purpose", "propose_purpose_change",
             "list_my_items", "consume_item", "gift_item_to_user", "create_food_item",
             "place_item_to_location", "pickup_item_from_location", "list_location_items", "consume_item_from_location",
@@ -62,9 +63,20 @@ class ToolRegistry:
         self.DEVELOPER_TOOL_NAMES = ["list_project_files", "read_project_file"]
         self.AGENT_DELEGATION_TOOL_NAMES = ["delegate_agent_task", "delegate_anthology_task", "delegate_atelier_task", "delegate_deep_research", "share_atelier_work", "check_agent_task_status", "cancel_agent_task", "get_atelier_app_capabilities", "preview_atelier_app", "set_atelier_app_icon", "list_agent_playbooks", "list_agent_roles", "review_agent_task", "revise_agent_task", "steer_agent_task", "read_agent_task_report", "share_research_result", "propose_playbook_update", "read_persona_contract", "check_text_against_persona_contract"]
         self.TWITTER_TOOL_NAMES = ["draft_tweet", "post_tweet", "check_twitter_updates"]
+        self.CALENDAR_TOOL_NAMES = [
+            "read_calendar_schedule",
+            "check_free_time",
+            "add_calendar_event",
+            "update_calendar_event",
+            "delete_calendar_event",
+            "list_persona_calendar_events",
+        ]
         self.CUSTOM_TOOL_NAMES: List[str] = []
         self.BROKER_TOOL_NAMES = ["request_capability"]
         self.SAFETY_TOOL_NAMES = ["read_capability_policy", "request_capability_approval", "record_capability_audit"]
+        # このカテゴリはルーム設定の有無にかかわらず実ツールへ到達できる必要がある。
+        # 実行時の設定不足は各ツールが安全側のエラーとして返す。
+        self.ALWAYS_AVAILABLE_CAPABILITY_CATEGORIES = {"calendar", "calendar_write"}
         # 意図的にどのカテゴリ/メニューにも載せないツール（値は理由）。
         # ここに載せず、かつどの登録簿にも無いツールは dev_tools/audit_tool_reachability.py が FAIL にする。
         self.INTENTIONALLY_UNLISTED_TOOLS = {
@@ -78,6 +90,8 @@ class ToolRegistry:
             "roblox": "Roblox操作。自律行動での自発使用はリスクが利益を上回るため会話経由のみ",
         }
         self.AUTONOMY_REQUIRED_TOOL_NAMES = {
+            # 内面を見直す選択肢は問い/研究の反復抑制で取り上げない。実行を要求するものではない。
+            "manage_emotions",
             "request_capability",
             "read_autonomy_context",
             "start_autonomy_timeline",
@@ -102,7 +116,7 @@ class ToolRegistry:
                 "create_procedure_from_timeline",
             },
             "questions": {
-                "manage_open_questions", "manage_goals",
+                "manage_open_questions", "manage_goals", "manage_relationship_intentions", "manage_emotions",
                 "read_purpose_profile", "update_active_purpose", "propose_purpose_change",
             },
             "working_memory": {
@@ -127,7 +141,7 @@ class ToolRegistry:
             "knowledge": {"search_knowledge_base"},
             "watchlist": {"get_watchlist", "check_watchlist"},
             "questions": {
-                "manage_open_questions", "manage_goals",
+                "manage_open_questions", "manage_goals", "manage_relationship_intentions", "manage_emotions",
                 "read_purpose_profile", "update_active_purpose", "propose_purpose_change",
             },
             "agent_delegation": set(self.AGENT_DELEGATION_TOOL_NAMES),
@@ -142,7 +156,7 @@ class ToolRegistry:
             ("notes", "ノート全般", "メモ帳、Working Memory、創作ノート、研究ノートを横断して読み書きする"),
             ("working_memory", "作業記憶", "今取り組んでいる作業の短期メモを読み、更新し、スロットを切り替える"),
             ("procedure", "手順記憶", "手順の一覧確認、読み出し、保存、タイムラインからの手順化を行う"),
-            ("questions", "問いと目標", "未解決の問い（好奇心）や目標（goals）、Purpose Profileの確認・更新を扱う"),
+            ("questions", "問い・目標・関係の意図・感情", "未解決の問い、目標、本人が感じた関係の気がかり・望み、感情の見直し、Purpose Profileを確認・更新する"),
             ("image", "画像生成", "情景や作品を画像にする"),
             ("twitter", "SNS発信・確認", "SNS下書きで発信する・通知やタイムラインを確認して反応を拾う"),
             ("music", "音楽推薦", "今の空気に合う曲を推薦する"),
@@ -180,6 +194,7 @@ class ToolRegistry:
             "read_procedure",
             "manage_open_questions",
             "manage_goals",
+            "manage_relationship_intentions", "manage_emotions",
             "read_working_memory",
             "patch_working_memory",
             "send_user_notification",
@@ -200,7 +215,7 @@ class ToolRegistry:
             "world": ["list_available_locations", "set_current_location"],
             "memory": ["recall_memories", "read_entity_memory", "list_entity_memories"],
             "questions": [
-                "manage_open_questions", "manage_goals",
+                "manage_open_questions", "manage_goals", "manage_relationship_intentions", "manage_emotions",
                 "read_purpose_profile", "update_active_purpose", "propose_purpose_change",
             ],
             "diary": ["plan_diary_append", "read_diary_memory", "plan_secret_diary_edit", "read_secret_diary"],
@@ -289,6 +304,9 @@ class ToolRegistry:
             "goals": "questions",
             "問い": "questions",
             "目標": "questions",
+            "relationship": "questions",
+            "関係": "questions",
+            "気がかり": "questions",
         }
         self.TOOL_CATEGORIES: Dict[str, List[str]] = {
             "world": ["list_available_locations", "set_current_location", "read_world_settings", "plan_world_edit"],
@@ -312,13 +330,13 @@ class ToolRegistry:
             "working_memory": [
                 "read_working_memory", "update_working_memory", "list_working_memories", "switch_working_memory",
                 "patch_working_memory", "link_working_memory_to_research_thread", "link_working_memory_to_goal",
-                "reactivate_working_memory_slot",
+                "reactivate_working_memory_slot", "set_working_memory_state",
             ],
             "notes": [
                 "read_full_notepad", "plan_notepad_edit",
                 "read_working_memory", "update_working_memory", "list_working_memories", "switch_working_memory",
                 "patch_working_memory", "link_working_memory_to_research_thread", "link_working_memory_to_goal",
-                "reactivate_working_memory_slot",
+                "reactivate_working_memory_slot", "set_working_memory_state",
                 "read_creative_notes", "plan_creative_notes_edit",
                 "read_research_notes", "plan_research_notes_edit",
                 "list_research_threads", "read_research_thread", "find_similar_research_threads", "update_research_thread",
@@ -333,7 +351,7 @@ class ToolRegistry:
                 "leave_letter_for_user", "list_my_letters",
                 "read_autonomy_context", "reflect_after_action",
                 "start_autonomy_timeline", "record_autonomy_step", "complete_autonomy_timeline",
-                "manage_open_questions", "manage_goals",
+                "manage_open_questions", "manage_goals", "manage_relationship_intentions", "manage_emotions",
             ],
             "music": ["recommend_music"],
             "procedure": ["list_procedures", "read_procedure", "save_procedure", "create_procedure_from_timeline"],
@@ -341,7 +359,7 @@ class ToolRegistry:
             "discord": ["send_discord_message", "send_discord_image"],
             "watchlist": ["add_to_watchlist", "remove_from_watchlist", "get_watchlist", "check_watchlist", "update_watchlist_interval"],
             "questions": [
-                "manage_open_questions", "manage_goals",
+                "manage_open_questions", "manage_goals", "manage_relationship_intentions", "manage_emotions",
                 "read_purpose_profile", "update_active_purpose", "propose_purpose_change",
             ],
             "items": [
@@ -354,8 +372,8 @@ class ToolRegistry:
             "agent_delegation": self.AGENT_DELEGATION_TOOL_NAMES,
             "roblox": self.ROBLOX_TOOL_NAMES,
             "twitter": self.TWITTER_TOOL_NAMES,
-            "calendar": ["read_calendar_schedule", "check_free_time", "add_calendar_event"],
-            # 書き込み承認カテゴリ。request_capability("calendar_write") で add_calendar_event を提示する。
+            "calendar": ["read_calendar_schedule", "check_free_time"],
+            # 書き込みカテゴリ。request_capability("calendar_write") で専用カレンダー操作を提示する。
             # 空だと既定ツールへフォールバックしツールが出ない（混乱の原因）ため必ず実体を持たせる。
             "calendar_write": ["add_calendar_event", "update_calendar_event", "delete_calendar_event",
                                "list_persona_calendar_events", "read_calendar_schedule", "check_free_time"],
@@ -407,6 +425,11 @@ class ToolRegistry:
         # 現状は互換性維持のため追加
         active_names.extend(self.DEVELOPER_TOOL_NAMES)
 
+        # 読み取り・書き込み先の設定不足は各ツール内の安全ゲートで扱う。
+        # Capability Brokerが実体0件として既定ツールへ誤フォールバックしないよう、
+        # カレンダーツール自体は常に利用可能集合へ登録する。
+        active_names.extend(self.CALENDAR_TOOL_NAMES)
+
         for name in self._agent_delegation_tool_names_for_room(room_name):
             if name not in active_names:
                 active_names.append(name)
@@ -438,11 +461,11 @@ class ToolRegistry:
         if not tool_use_enabled:
             return []
 
-        requested_category = self.extract_requested_capability(latest_user_text)
-        if requested_category:
-            return self.get_tools_for_capability(
+        requested_categories = self.extract_requested_capabilities(latest_user_text)
+        if requested_categories:
+            return self.get_tools_for_capabilities(
                 room_name=room_name,
-                category=requested_category,
+                categories=requested_categories,
                 tool_use_enabled=tool_use_enabled,
                 is_roblox_active=is_roblox_active,
                 image_generation_enabled=image_generation_enabled,
@@ -477,6 +500,45 @@ class ToolRegistry:
                 selected_names.add("search_knowledge_base")
             ordered_names = [name for name in ordered_active_names if name in selected_names and name in active_names]
         return [self._all_tools_map[name] for name in ordered_names if name in self._all_tools_map]
+
+    def get_tools_for_capabilities(
+        self,
+        room_name: str,
+        categories: List[str],
+        tool_use_enabled: bool = True,
+        is_roblox_active: Optional[bool] = None,
+        image_generation_enabled: bool = True,
+        autonomous_action_mode: bool = False,
+    ) -> List[Callable]:
+        """複数カテゴリの利用可能ツールを順序維持で統合する。"""
+        tools: List[Callable] = []
+        seen: Set[str] = set()
+        for category in categories or []:
+            for selected in self.get_tools_for_capability(
+                room_name=room_name,
+                category=category,
+                tool_use_enabled=tool_use_enabled,
+                is_roblox_active=is_roblox_active,
+                image_generation_enabled=image_generation_enabled,
+                autonomous_action_mode=autonomous_action_mode,
+            ):
+                if selected.name not in seen:
+                    seen.add(selected.name)
+                    tools.append(selected)
+        return tools
+
+    def get_delegation_completion_tools(
+        self, room_name: str, tool_use_enabled: bool = True
+    ) -> List[Callable]:
+        """委任完了による起床で、成果確認に必要な読み取りツールだけを返す。"""
+        completion_names = {"check_agent_task_status", "read_agent_task_report"}
+        return [
+            tool
+            for tool in self.get_active_tools(
+                room_name, tool_use_enabled=tool_use_enabled
+            )
+            if tool.name in completion_names
+        ]
 
     @staticmethod
     def _is_product_guide_query(text: str) -> bool:
@@ -832,19 +894,30 @@ class ToolRegistry:
         ordered_names = [name for name in ordered_active_names if name in selected_names and name in active_names]
         return [self._all_tools_map[name] for name in ordered_names if name in self._all_tools_map]
 
-    def extract_requested_capability(self, text: str) -> Optional[str]:
+    def extract_requested_capabilities(self, text: str) -> List[str]:
         if not text or "【能力要求を受け付けました】" not in text:
-            return None
+            return []
         match = re.search(r"\{.*?\}", text, re.DOTALL)
         if not match:
-            return None
+            return []
         try:
             payload = json.loads(match.group(0))
         except Exception:
-            return None
-        category = str(payload.get("category", "")).strip().lower()
-        category = self.CATEGORY_ALIASES.get(category, category)
-        return category if category in self.TOOL_CATEGORIES else None
+            return []
+        raw_categories = payload.get("categories")
+        if not isinstance(raw_categories, list) or not raw_categories:
+            raw_categories = split_capability_categories(payload.get("category", ""))
+        categories: List[str] = []
+        for raw_category in raw_categories:
+            category = str(raw_category or "").strip().lower()
+            category = self.CATEGORY_ALIASES.get(category, category)
+            if category in self.TOOL_CATEGORIES and category not in categories:
+                categories.append(category)
+        return categories
+
+    def extract_requested_capability(self, text: str) -> Optional[str]:
+        categories = self.extract_requested_capabilities(text)
+        return categories[-1] if categories else None
 
     def extract_recent_requested_capability(self, messages: List[object]) -> Optional[str]:
         """
@@ -870,17 +943,19 @@ class ToolRegistry:
         提示されず「ツールが見つからない」状態になる。ここでは現在のユーザーターン内の
         全要求カテゴリを集め、呼び出し側でそれらの実ツールを統合提示できるようにする。
         """
-        categories: List[str] = []
+        request_batches: List[List[str]] = []
         for msg in reversed(messages or []):
             class_name = msg.__class__.__name__
             if class_name == "HumanMessage":
                 break
             if class_name == "ToolMessage" and getattr(msg, "name", "") == "request_capability":
                 content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                cat = self.extract_requested_capability(content)
-                if cat and cat not in categories:
+                request_batches.append(self.extract_requested_capabilities(content))
+        categories: List[str] = []
+        for batch in reversed(request_batches):
+            for cat in batch:
+                if cat not in categories:
                     categories.append(cat)
-        categories.reverse()  # 要求された順に並べる
         return categories
 
     def get_capability_tool_names(self, category: str) -> List[str]:

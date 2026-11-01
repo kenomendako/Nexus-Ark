@@ -12,7 +12,7 @@ import logging
 import asyncio
 import threading
 from typing import Optional
-from playwright.async_api import async_playwright
+from playwright_utils import async_playwright
 import playwright_utils
 
 logger = logging.getLogger("twitter_browser")

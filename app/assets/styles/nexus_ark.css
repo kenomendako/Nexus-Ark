@@ -1,3 +1,5 @@
+/* 接続設定は閉じたアコーディオン内のHTMLに依存せず、起動時から隠す。 */
+.gemini-connection-hidden { display: none !important; }
 
     /* --- [Onboarding Overlay] --- */
     #onboarding_overlay {
@@ -125,6 +127,15 @@
         font-size: 1.8em;
     }
     /* --- [Final Styles - v9: Nexus Modern Polish] --- */
+
+    /* 本文が作る描画レイヤーよりタブメニューを手前に保つ。 */
+    .tabs > .tab-wrapper {
+        position: relative;
+        z-index: 2;
+    }
+    .tabs > .tabitem {
+        isolation: isolate;
+    }
 
     /* 狭幅時に残りのトップタブを開く「…」を見つけやすくする。 */
     #top_level_tabs .overflow-menu > button {
@@ -620,4 +631,326 @@
     }
     .prose a:hover, .gr-prose a:hover, #chat_output_area a:hover, .markdown-text a:hover {
         opacity: 0.6 !important;
+    }
+
+    /* --- Lite接続ウィザード --- */
+    .lite-start-choice {
+        display: grid;
+        gap: 12px;
+    }
+    .lite-start-choice h3,
+    .lite-start-choice h4,
+    .lite-start-choice p {
+        margin: 0;
+    }
+    .lite-start-choice-lead,
+    .lite-start-choice-safety {
+        color: var(--body-text-color-subdued);
+    }
+    .lite-start-choice-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }
+    .lite-start-choice-card {
+        display: grid;
+        align-content: start;
+        gap: 10px;
+        min-width: 0;
+        padding: 16px;
+        border: 1px solid var(--border-color-primary);
+        border-radius: 12px;
+        background: var(--background-fill-secondary);
+    }
+    .lite-start-choice-card[data-mode="connected"] {
+        border-top: 4px solid #3f8f6b;
+    }
+    .lite-start-choice-card[data-mode="independent"] {
+        border-top: 4px solid #4c78c2;
+    }
+    .lite-start-choice-card h4 {
+        font-size: 1.08em;
+    }
+    .lite-start-choice-card ul {
+        display: grid;
+        gap: 5px;
+        margin: 0;
+        padding-left: 1.2em;
+    }
+    .lite-start-choice-card li,
+    .lite-start-choice-card p {
+        overflow-wrap: anywhere;
+    }
+    .lite-start-choice-badge {
+        width: fit-content;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: var(--block-background-fill);
+        color: var(--body-text-color-subdued);
+        font-size: 0.8em;
+        font-weight: 700;
+    }
+    .lite-start-choice-next {
+        margin-top: auto !important;
+        padding-top: 8px;
+        border-top: 1px solid var(--border-color-primary);
+    }
+    .lite-start-choice-details {
+        display: grid;
+        gap: 8px;
+    }
+    .lite-start-choice-details details {
+        padding: 9px 11px;
+        border: 1px solid var(--border-color-primary);
+        border-radius: 9px;
+        background: var(--block-background-fill);
+    }
+    .lite-start-choice-details summary {
+        cursor: pointer;
+        font-weight: 700;
+    }
+    .lite-start-choice-details details[open] summary {
+        margin-bottom: 8px;
+    }
+    .lite-start-choice-details ol,
+    .lite-start-choice-details dl {
+        margin-bottom: 0;
+    }
+    .lite-start-choice-details dt {
+        margin-top: 8px;
+        font-weight: 700;
+    }
+    .lite-start-choice-details dd {
+        margin-left: 0;
+    }
+    .lite-start-choice-details small {
+        display: block;
+        color: var(--body-text-color-subdued);
+    }
+    .lite-start-choice-safety {
+        padding-left: 10px;
+        border-left: 3px solid var(--primary-500);
+        font-size: 0.85em;
+    }
+    .lite-connectivity-wizard {
+        display: grid;
+        gap: 12px;
+        padding: 14px;
+        border: 1px solid var(--border-color-primary);
+        border-radius: 12px;
+        background: var(--block-background-fill);
+    }
+    .lite-connectivity-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+    }
+    .lite-connectivity-heading > span {
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: var(--background-fill-secondary);
+        font-size: 0.82em;
+    }
+    .lite-connectivity-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+    }
+    .lite-connectivity-step {
+        display: grid;
+        align-content: start;
+        gap: 5px;
+        min-width: 0;
+        min-height: 112px;
+        padding: 10px;
+        border: 1px solid var(--border-color-primary);
+        border-radius: 9px;
+        background: var(--background-fill-secondary);
+    }
+    .lite-connectivity-step-title,
+    .lite-connectivity-step small {
+        color: var(--body-text-color-subdued);
+        font-size: 0.78em;
+    }
+    .lite-connectivity-step strong,
+    .lite-connectivity-step small {
+        overflow-wrap: anywhere;
+    }
+    .lite-connectivity-step[data-mode="ready"] {
+        border-color: #3f8f6b;
+        background: color-mix(in srgb, #3f8f6b 12%, var(--block-background-fill));
+    }
+    .lite-connectivity-step[data-mode="attention"],
+    .lite-connectivity-step[data-mode="not_checked"] {
+        border-color: #b4822f;
+    }
+    .lite-connectivity-step[data-mode="error"] {
+        border-color: #bb554f;
+        background: color-mix(in srgb, #bb554f 12%, var(--block-background-fill));
+    }
+    .lite-connectivity-next {
+        margin: 0;
+        font-weight: 700;
+    }
+    .lite-connectivity-safety {
+        margin: 0;
+        color: var(--body-text-color-subdued);
+        font-size: 0.82em;
+    }
+    #outing_tab .outing-mode-panel {
+        gap: 12px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+    }
+
+    #outing_mode_loading_feedback:has(.outing-mode-loading-message[hidden]) {
+        display: none !important;
+    }
+
+    #outing_mode_loading_feedback .outing-mode-loading-message {
+        margin: 0.5rem 0 0.75rem;
+        padding: 0.75rem 0.9rem;
+        border-radius: 0.75rem;
+        background: var(--background-fill-secondary);
+        color: var(--body-text-color-subdued);
+    }
+    #outing_tab .outing-accordion-content {
+        gap: 12px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+    }
+    #outing_tab .lite-outing-progress {
+        display: grid;
+        gap: 8px;
+        margin: 10px 0 4px;
+        padding: 12px 14px;
+        border: 1px solid var(--border-color-primary);
+        border-radius: 12px;
+        background: var(--background-fill-secondary);
+    }
+    #outing_tab .lite-outing-progress > div {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px;
+    }
+    #outing_tab .lite-outing-progress span {
+        padding: 4px 6px;
+        border-radius: 999px;
+        color: var(--body-text-color-subdued);
+        text-align: center;
+        font-size: 0.8em;
+    }
+    #outing_tab .lite-outing-progress span[data-state="current"] {
+        color: var(--button-primary-text-color);
+        background: var(--button-primary-background-fill);
+        font-weight: 700;
+    }
+    #outing_tab .lite-outing-progress strong,
+    #outing_tab .lite-outing-progress small {
+        overflow-wrap: anywhere;
+    }
+    #outing_tab .lite-outing-progress small {
+        color: var(--body-text-color-subdued);
+    }
+    #outing_tab .lite-outing-stage {
+        gap: 0;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+    }
+    #outing_tab .lite-outing-stage:not(:has(.styler > :not(.hidden))) {
+        display: none !important;
+    }
+    #outing_tab .lite-outing-stage:not(:has(> .lite-outing-stage)):has(> .styler > :not(.hidden)) {
+        gap: 10px;
+        margin: 14px 0;
+        padding: 16px;
+        border: 1px solid var(--border-color-primary);
+        border-radius: 12px;
+        background: var(--block-background-fill);
+    }
+    #outing_tab .lite-outing-presence {
+        margin: 0;
+        padding: 8px 10px;
+        border-left: 4px solid var(--primary-500);
+        background: var(--background-fill-secondary);
+    }
+    .lite-pairing-handoff {
+        display: grid;
+        gap: 10px;
+        padding: 14px;
+        border: 1px solid #3f8f6b;
+        border-radius: 12px;
+        background: var(--block-background-fill);
+    }
+    .lite-pairing-handoff-grid {
+        display: grid;
+        grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+        align-items: center;
+        gap: 16px;
+    }
+    .lite-pairing-handoff-grid img {
+        width: 240px;
+        max-width: 100%;
+        height: auto;
+        padding: 8px;
+        border-radius: 8px;
+        background: #fff;
+    }
+    .lite-pairing-handoff-error {
+        border-color: #bb554f;
+    }
+    .lite-pairing-manual {
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        gap: 4px 10px;
+        margin: 10px 0 0;
+    }
+    .lite-pairing-manual dd {
+        min-width: 0;
+        margin: 0;
+        overflow-wrap: anywhere;
+    }
+    @media (max-width: 768px) {
+        .lite-start-choice-grid {
+            grid-template-columns: 1fr;
+        }
+        .lite-start-choice-card {
+            padding: 13px;
+        }
+        .lite-connectivity-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+        .lite-connectivity-step {
+            min-height: 96px;
+        }
+        #outing_tab .lite-outing-stage:not(:has(> .lite-outing-stage)):has(> .styler > :not(.hidden)) {
+            margin: 10px 0;
+            padding: 12px;
+        }
+        .lite-pairing-handoff-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+    @media (max-width: 480px) {
+        .lite-connectivity-grid {
+            grid-template-columns: 1fr;
+        }
+        .lite-connectivity-step {
+            min-height: 0;
+        }
+        #outing_tab .lite-outing-progress {
+            padding: 10px;
+        }
+        #outing_tab .lite-outing-progress > div {
+            gap: 3px;
+        }
+        #outing_tab .lite-outing-progress span {
+            padding: 4px 2px;
+            font-size: 0.74em;
+        }
     }

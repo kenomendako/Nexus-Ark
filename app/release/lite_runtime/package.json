@@ -1,0 +1,16 @@
+{
+  "name": "@nexus-ark/lite-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Windows x64 release input for the Nexus Ark Lite private runtime",
+  "engines": {
+    "node": "22.23.4"
+  },
+  "dependencies": {
+    "wrangler": "4.149.0"
+  },
+  "overrides": {
+    "undici": "7.29.1",
+    "sharp": "0.35.5"
+  }
+}

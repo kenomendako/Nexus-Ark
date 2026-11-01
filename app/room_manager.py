@@ -10,17 +10,21 @@ import traceback
 import datetime
 import threading
 import time
+from contextlib import contextmanager
 from typing import Any, Dict, Optional, List, Tuple
 from filelock import Timeout
 from send2trash import send2trash
 import constants
+import file_lock_utils
 from file_lock_utils import locked_file
 from settings_backup_manager import create_layered_settings_backup
 
 # スレッドセーフなファイル操作のためのロック
-_room_config_lock = threading.Lock()
+# 版照合を保持したまま既存保存処理へ再入する呼び出しも排他する。
+_room_config_lock = threading.RLock()
 SYSTEM_ROOM_DIR_NAMES = {"_shared"}
 OLIVIE_ROOM_NAME_ALIASES = {"オリヴェ", "オリベ", "Olivie", "olivie"}
+EMOTION_DEFINITIONS_KEY = "emotion_definitions"
 ROOM_OVERRIDE_STRING_OR_NONE_KEYS = {
     "provider",
     "model_name",
@@ -28,6 +32,20 @@ ROOM_OVERRIDE_STRING_OR_NONE_KEYS = {
     "zhipu_model",
     "tts_profile_name",
 }
+
+
+@contextmanager
+def room_config_write_guard(room_name: str):
+    """ルーム設定のread/modify/write区間をthread・プロセス間で排他する。"""
+    with _room_config_lock:
+        room_dir = os.path.join(constants.ROOMS_DIR, room_name) if room_name else ""
+        if room_dir and os.path.isdir(room_dir):
+            config_file = os.path.join(room_dir, "room_config.json")
+            with file_lock_utils.get_file_lock(config_file):
+                yield
+        else:
+            # 初期作成時は、room_config.jsonのロックファイルを先に作らない。
+            yield
 
 
 def _sanitize_room_override_updates(room_name: str, updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -1039,13 +1057,14 @@ def create_backup(room_name: str, file_type: str, new_data: Any = None) -> Optio
 def update_room_config(room_name: str, updates: dict) -> bool:
     """
     ルーム設定ファイル(room_config.json)を安全に更新する。
-    - threading.Lock による排他制御
+    - 既存ルームはthreading.LockとFileLockによる排他制御
+    - 感情定義は専用の版照合付き操作で更新し、汎用入力から変更しない
     - ユニークな一時ファイルによるアトミック書き込み
     - 変更がない場合は書き込まない
     """
     if not room_name: return False
 
-    with _room_config_lock:
+    with room_config_write_guard(room_name):
         config = get_room_config(room_name)
         if not config:
             # Configがない場合（または破損して復旧不能な場合）のフォールバック
@@ -1065,6 +1084,12 @@ def update_room_config(room_name: str, updates: dict) -> bool:
         root_keys = ["room_name", "user_display_name", "description", "version", "last_sent_scenery_image"]
         
         overrides = config["override_settings"]
+        has_emotion_definitions = EMOTION_DEFINITIONS_KEY in overrides
+        preserved_emotion_definitions = (
+            copy.deepcopy(overrides[EMOTION_DEFINITIONS_KEY])
+            if has_emotion_definitions
+            else None
+        )
         
         def deep_merge(target, source):
             for k, v in source.items():
@@ -1074,10 +1099,14 @@ def update_room_config(room_name: str, updates: dict) -> bool:
                     target[k] = v
                     
         for k, v in updates.items():
+            if k == EMOTION_DEFINITIONS_KEY:
+                # 感情定義は専用の差分+revision経路だけが更新する。
+                continue
             if k in root_keys:
                 config[k] = v
             elif k == "override_settings" and isinstance(v, dict):
                 safe_updates = _sanitize_room_override_updates(room_name, v)
+                safe_updates.pop(EMOTION_DEFINITIONS_KEY, None)
                 deep_merge(overrides, safe_updates)
             else:
                 if k in ROOM_OVERRIDE_STRING_OR_NONE_KEYS and v is not None and not isinstance(v, str):
@@ -1096,6 +1125,8 @@ def update_room_config(room_name: str, updates: dict) -> bool:
         # まずは直下の None のみ削除する従来の挙動を維持
         config["override_settings"] = {k: v for k, v in overrides.items() if v is not None}
         overrides = config["override_settings"] # 以降の参照用に更新
+        if has_emotion_definitions:
+            config["override_settings"][EMOTION_DEFINITIONS_KEY] = preserved_emotion_definitions
 
         # 変更があるかチェック
         if config == old_config:

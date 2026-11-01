@@ -10,8 +10,10 @@ import datetime
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 import uuid
+from copy import deepcopy
 
 import constants
+from filelock import Timeout
 from episodic_memory_manager import EpisodicMemoryManager
 from resolution_memory import is_substantive_reflection, save_resolution_insight
 from utils import normalized_text_similarity
@@ -134,7 +136,7 @@ class GoalManager:
             nonlocal goal_id
             goals.setdefault(goal_type, [])
             for existing_goal in goals.get(goal_type, []):
-                if existing_goal.get("status", "active") != "active":
+                if existing_goal.get("status", "active") not in {"active", "paused"}:
                     continue
                 similarity = normalized_text_similarity(goal_text, existing_goal.get("goal", ""))
                 if similarity >= GOAL_DEDUP_SIMILARITY_THRESHOLD:
@@ -189,12 +191,127 @@ class GoalManager:
         long_term = [g for g in goals.get("long_term", []) if g.get("status") == "active"]
         return short_term + long_term
     
+    def get_retained_goals(self, goal_type: str = None) -> List[Dict]:
+        """保留を含む未終了の目標。保留しても本人が一覧から見返せる。"""
+        data = self._load_goals()
+        kinds = [goal_type] if goal_type else ["short_term", "long_term"]
+        return [g for kind in kinds for g in data.get(kind, [])
+                if g.get("status") in {"active", "paused"}]
+
+    @staticmethod
+    def _assert_expected_goal(data, goal_id, expected_goal):
+        if expected_goal is None:
+            return
+        current = next((g for kind in ("short_term", "long_term", "completed", "abandoned")
+                        for g in data.get(kind, []) if g.get("id") == goal_id), None)
+        if current != expected_goal:
+            raise ValueError("目標が別の処理で更新されました。再読して判断してください。")
+
+    def review_goal(self, goal_id: str, decision: str, reason: str,
+                    review_interval_days: int = 30, *, expected_goal=None) -> Dict:
+        """継続・保留・再開の明示選択だけを適用する。期限では状態を変えない。"""
+        if decision not in {"continue", "pause", "resume"}:
+            raise ValueError("decisionはcontinue/pause/resumeで指定してください。")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("今そうしたい理由をreasonに記録してください。")
+        if type(review_interval_days) is not int or not 1 <= review_interval_days <= 365:
+            raise ValueError("再確認間隔は1〜365日で指定してください。")
+        result = {}
+        now = datetime.datetime.now()
+        def mutate(data):
+            self._assert_expected_goal(data, goal_id, expected_goal)
+            for kind in ("short_term", "long_term"):
+                for goal in data.get(kind, []):
+                    if goal.get("id") != goal_id:
+                        continue
+                    if goal.get("status") not in {"active", "paused"}:
+                        raise ValueError("終了した目標は再検討できません。")
+                    if decision == "continue" and goal.get("status") == "paused":
+                        raise ValueError("保留目標を再開する場合はresumeを指定してください。")
+                    goal["status"] = "paused" if decision == "pause" else "active"
+                    goal["last_reviewed_at"] = now.strftime('%Y-%m-%d %H:%M:%S')
+                    goal["last_review_decision"] = decision
+                    goal.pop("review_presented_at", None)
+                    goal["review_reason"] = reason.strip()
+                    goal["review_after"] = (now + datetime.timedelta(days=review_interval_days)).strftime('%Y-%m-%d %H:%M:%S')
+                    result.update(deepcopy(goal))
+                    return data
+            raise ValueError("未終了の目標IDが見つかりません。")
+        self._update_goals(mutate)
+        return result
+
+    @staticmethod
+    def _parse_goal_time(value):
+        try:
+            return datetime.datetime.strptime(str(value), '%Y-%m-%d %H:%M:%S')
+        except (ValueError, TypeError):
+            return None
+
+    @classmethod
+    def _last_progress_time(cls, goal):
+        dates = [cls._parse_goal_time(goal.get("created_at"))]
+        for note in goal.get("progress_notes", []):
+            if isinstance(note, str) and note.startswith("[") and "]" in note:
+                stamp, body = note[1:].split("]", 1)
+                if body.strip():
+                    dates.append(cls._parse_goal_time(stamp))
+        return max((d for d in dates if d is not None), default=None)
+
+    def get_review_candidates(self, limit: int = 3, *, now=None, goal_data=None) -> List[Dict]:
+        """状態を変更せず、古さ・件数・保留期日から少数の再検討候補を返す。"""
+        now = now or datetime.datetime.now()
+        data = goal_data if goal_data is not None else self._load_goals()
+        active_short = [g for g in data.get("short_term", []) if g.get("status") == "active"]
+        active_short.sort(key=lambda g: g.get("priority", 999))
+        excess = {g.get("id") for g in active_short[10:]}
+        candidates = []
+        for kind in ("short_term", "long_term"):
+            for goal in data.get(kind, []):
+                if goal.get("status") not in {"active", "paused"}:
+                    continue
+                after = self._parse_goal_time(goal.get("review_after"))
+                shown = self._parse_goal_time(goal.get("review_presented_at"))
+                if (after and after > now) or (shown and now - shown < datetime.timedelta(days=7)):
+                    continue
+                last = self._last_progress_time(goal)
+                stale = last and now - last >= datetime.timedelta(days=30)
+                if goal.get("status") == "paused" or stale or goal.get("id") in excess or (after and after <= now):
+                    candidates.append(deepcopy(goal))
+        candidates.sort(key=lambda g: (g.get("review_presented_at", ""), g.get("created_at", ""), g.get("id", "")))
+        return candidates[:max(0, limit)]
+
+    def mark_review_presented(self, candidates: List[Dict]):
+        """成功した省察で未判断の候補だけ再提示間隔を空ける。古いsnapshotは書かない。"""
+        expected = {g["id"]: g for g in candidates}
+        if not expected:
+            return
+        def mutate(data):
+            for kind in ("short_term", "long_term"):
+                for goal in data.get(kind, []):
+                    if goal == expected.get(goal.get("id")):
+                        goal["review_presented_at"] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            return data
+        self._update_goals(mutate)
+
+    def get_review_prompt(self, candidates: List[Dict]) -> str:
+        if not candidates:
+            return ""
+        lines = ["【必要なら見直せる目標（判断を見送っても保持されます）】",
+                 "進捗の記録がないことは、進展や意欲がない証拠ではありません。",
+                 "継続・保留・再開はgoal_reviews、達成はcompleted_goals、手放す時だけabandoned_goalsに指定できます。"]
+        for g in candidates:
+            last = self._last_progress_time(g)
+            lines.append(f"- [{g['id']}] {g.get('goal', '')} / 状態={g.get('status')} / 最終進捗記録（なければ作成）={last or '不明'}")
+            if g.get("last_review_decision"):
+                lines.append(f"  前回の選択={g['last_review_decision']} ({g.get('last_reviewed_at', '不明')}) / 理由={g.get('review_reason', '')}")
+        return "\n".join(lines)
+
     def get_top_goal(self) -> Optional[Dict]:
         """最優先の短期目標を取得する"""
         goals = self.get_active_goals("short_term")
         return goals[0] if goals else None
     
-    def update_goal_progress(self, goal_id: str, progress_note: str):
+    def update_goal_progress(self, goal_id: str, progress_note: str, *, expected_goal=None):
         """
         目標の進捗を記録する。
         
@@ -203,6 +320,7 @@ class GoalManager:
             progress_note: 進捗メモ
         """
         def mutate(goals: Dict) -> Dict:
+            self._assert_expected_goal(goals, goal_id, expected_goal)
             for goal_type in ["short_term", "long_term"]:
                 for goal in goals.get(goal_type, []):
                     if goal["id"] == goal_id:
@@ -211,9 +329,11 @@ class GoalManager:
                         return goals
             return goals
 
-        self._update_goals(mutate)
+        data = self._update_goals(mutate)
+        return next((g for kind in ("short_term", "long_term") for g in data.get(kind, [])
+                     if g.get("id") == goal_id), None)
     
-    def complete_goal(self, goal_id: str, completion_note: str = None):
+    def complete_goal(self, goal_id: str, completion_note: str = None, *, expected_goal=None):
         """
         目標を達成済みとしてマークし、アーカイブに移動する。
         Phase E: 達成時に高Arousalエピソード記憶を自動生成。
@@ -226,6 +346,7 @@ class GoalManager:
 
         def mutate(goals: Dict) -> Dict:
             nonlocal completed_goal_info
+            self._assert_expected_goal(goals, goal_id, expected_goal)
             goals.setdefault("completed", [])
             for goal_type in ["short_term", "long_term"]:
                 for i, goal in enumerate(goals.get(goal_type, [])):
@@ -256,7 +377,7 @@ class GoalManager:
                     metadata={"goal_id": completed_goal.get("id", ""), "goal_type": goal_type}
                 )
             self._create_achievement_episode(completed_goal, completion_note)
-        return
+        return completed_goal_info[0] if completed_goal_info else None
 
     def _sync_purpose_profile_goal_closure(self, goal: Dict[str, Any], status: str) -> None:
         """Goal終了時にPurpose Profileのgoal由来関心を整理する。"""
@@ -267,6 +388,9 @@ class GoalManager:
                 goal_text=str(goal.get("goal", "")),
                 status=status,
             )
+        except Timeout as e:
+            print(f"⚠️ Purpose Profileの目標同期がタイムアウト: {e}")
+            raise
         except Exception as e:
             print(f"⚠️ Purpose Profileの目標同期に失敗: {e}")
     
@@ -306,7 +430,7 @@ class GoalManager:
         except Exception as e:
             print(f"⚠️ 達成エピソード記憶の生成に失敗: {e}")
     
-    def abandon_goal(self, goal_id: str, reason: str = None):
+    def abandon_goal(self, goal_id: str, reason: str = None, *, expected_goal=None):
         """
         目標を放棄する（達成せず終了）。
         
@@ -318,6 +442,7 @@ class GoalManager:
 
         def mutate(goals: Dict) -> Dict:
             nonlocal abandoned_goal_info
+            self._assert_expected_goal(goals, goal_id, expected_goal)
             goals.setdefault("abandoned", [])
             for goal_type in ["short_term", "long_term"]:
                 for i, goal in enumerate(goals.get(goal_type, [])):
@@ -339,8 +464,17 @@ class GoalManager:
     # ==========================================
     # Reflection Support
     # ==========================================
-    
-    def get_goals_for_prompt(self, max_short: int = 3, max_long: int = 2) -> str:
+            return abandoned_goal_info
+
+    def get_prompt_goal_snapshot(self, max_short: int = 3, max_long: int = 2, *, goal_data=None) -> Dict:
+        """目標本文と他の提示欄の重複判定で、同じ選択結果を共有する。"""
+        goals = goal_data if goal_data is not None else self._load_goals()
+        return {
+            kind: [g for g in goals.get(kind, []) if g.get("status") == "active"][:limit]
+            for kind, limit in (("short_term", max_short), ("long_term", max_long))
+        }
+
+    def get_goals_for_prompt(self, max_short: int = 3, max_long: int = 2, *, goal_snapshot: Optional[Dict] = None) -> str:
         """
         システムプロンプト注入用に目標をテキスト化する。
         
@@ -351,8 +485,9 @@ class GoalManager:
         Returns:
             プロンプト注入用のテキスト
         """
-        short_term = self.get_active_goals("short_term")[:max_short]
-        long_term = self.get_active_goals("long_term")[:max_long]
+        snapshot = goal_snapshot if goal_snapshot is not None else self.get_prompt_goal_snapshot(max_short, max_long)
+        short_term = snapshot.get("short_term", [])
+        long_term = snapshot.get("long_term", [])
         
         if not short_term and not long_term:
             return ""
@@ -371,7 +506,7 @@ class GoalManager:
         
         return "\n".join(lines)
     
-    def get_goals_for_reflection(self, max_short: int = 10, max_long: int = 3) -> str:
+    def get_goals_for_reflection(self, max_short: int = 10, max_long: int = 3, *, goal_snapshot: Optional[Dict] = None) -> str:
         """
         省察プロンプト用に目標をIDと共にテキスト化する。
         LLMが達成/放棄を判定できるようにIDを含める。
@@ -383,8 +518,9 @@ class GoalManager:
         Returns:
             省察用のテキスト（IDと作成日付き）
         """
-        short_term = self.get_active_goals("short_term")[:max_short]
-        long_term = self.get_active_goals("long_term")[:max_long]
+        snapshot = goal_snapshot if goal_snapshot is not None else self.get_prompt_goal_snapshot(max_short, max_long)
+        short_term = snapshot.get("short_term", [])
+        long_term = snapshot.get("long_term", [])
         
         if not short_term and not long_term:
             return "現在設定されている目標はありません。"
@@ -460,139 +596,96 @@ class GoalManager:
     # ==========================================
     # Bulk Operations (for AI-driven updates)
     # ==========================================
-    
-    def apply_reflection_updates(self, updates: Dict[str, Any]):
-        """
-        AI省察からの一括更新を適用する。
-        
-        Args:
-            updates: AI からの更新データ（形式は dreaming_manager と連携）
-            {
-                "new_goals": [{"goal": "...", "type": "short_term", "priority": 1}],
-                "progress_updates": [{"goal_id": "...", "note": "..."}],
-                "completed_goals": ["goal_id_1", "goal_id_2"],
-                "abandoned_goals": [{"goal_id": "...", "reason": "..."}]
-            }
-        """
-        # 新規目標追加
-        for new_goal in updates.get("new_goals", []):
-            self.add_goal(
-                goal_text=new_goal.get("goal", ""),
-                goal_type=new_goal.get("type", "short_term"),
-                priority=new_goal.get("priority", 1),
-                related_values=new_goal.get("related_values")
-            )
-        
-        # 進捗更新
-        for progress in updates.get("progress_updates", []):
-            self.update_goal_progress(
-                goal_id=progress.get("goal_id", ""),
-                progress_note=progress.get("note", "")
-            )
-        
-        # 達成マーク
-        for goal_id in updates.get("completed_goals", []):
-            self.complete_goal(goal_id)
-        
-        # 放棄マーク
-        for abandoned in updates.get("abandoned_goals", []):
-            self.abandon_goal(
-                goal_id=abandoned.get("goal_id", ""),
-                reason=abandoned.get("reason")
-            )
-    
-    # ==========================================
-    # Auto Cleanup (Phase D)
-    # ==========================================
-    
-    def auto_cleanup_stale_goals(self, days_threshold: int = 30) -> int:
-        """
-        長期間アクティブな短期目標を自動放棄する。
-        
-        Args:
-            days_threshold: この日数以上経過した短期目標は放棄対象
-        
-        Returns:
-            放棄した目標の数
-        """
-        now = datetime.datetime.now()
-        abandoned_count = 0
 
-        def mutate(goals: Dict) -> Dict:
-            nonlocal abandoned_count
-            goals.setdefault("abandoned", [])
-            remaining_short_term = []
-            for goal in goals.get("short_term", []):
-                created_str = goal.get("created_at", "")
-                if not created_str:
-                    remaining_short_term.append(goal)
-                    continue
-                try:
-                    created = datetime.datetime.strptime(created_str, '%Y-%m-%d %H:%M:%S')
-                    days_elapsed = (now - created).days
-                except ValueError:
-                    remaining_short_term.append(goal)
-                    continue
+    @staticmethod
+    def _validate_reflection_updates(updates):
+        """不正な後続項目で部分保存しないよう、書き込み前に全入力を検証する。"""
+        if updates == []:  # 旧睡眠プロンプトの「変更なし」との互換
+            return {}
+        if not isinstance(updates, dict):
+            raise ValueError("goal_updatesはオブジェクトで指定してください。")
 
-                if days_elapsed < days_threshold:
-                    remaining_short_term.append(goal)
-                    continue
+        def text_field(item, key, *, required=False):
+            value = item.get(key)
+            if value is None and not required:
+                return
+            if not isinstance(value, str) or (required and not value.strip()):
+                raise ValueError(f"{key}は{'空でない' if required else ''}文字列で指定してください。")
 
-                goal["status"] = "abandoned"
-                goal["abandoned_at"] = now.strftime('%Y-%m-%d %H:%M:%S')
-                goal["abandon_reason"] = f"自動整理: {days_threshold}日以上進展なし"
-                goals["abandoned"].append(goal)
-                abandoned_count += 1
-
-            goals["short_term"] = remaining_short_term
-            return goals
-
-        self._update_goals(mutate)
-        return abandoned_count
-    
-    def enforce_goal_limit(self, max_short: int = 10) -> int:
-        """
-        短期目標の上限を設定し、超過分は放棄する。
-        優先度が低く、古い目標から放棄する。
-        
-        Args:
-            max_short: 短期目標の最大数
-        
-        Returns:
-            放棄した目標の数
-        """
-        abandoned_count = 0
-
-        def mutate(goals: Dict) -> Dict:
-            nonlocal abandoned_count
-            short_term = goals.get("short_term", [])
-            if len(short_term) <= max_short:
-                return goals
-
-            sorted_goals = sorted(
-                short_term,
-                key=lambda g: (g.get("priority", 999), g.get("created_at", "")),
-                reverse=True
-            )
-            to_abandon_ids = {goal.get("id") for goal in sorted_goals[:len(short_term) - max_short]}
-            goals.setdefault("abandoned", [])
-            remaining_short_term = []
-            now_str = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            for goal in short_term:
-                if goal.get("id") in to_abandon_ids:
-                    goal["status"] = "abandoned"
-                    goal["abandoned_at"] = now_str
-                    goal["abandon_reason"] = "自動整理: 目標上限超過"
-                    goals["abandoned"].append(goal)
-                    abandoned_count += 1
+        for section in ("progress_updates", "goal_reviews", "completed_goals", "abandoned_goals", "new_goals"):
+            items = updates.get(section, [])
+            if not isinstance(items, list):
+                raise ValueError(f"{section}は配列で指定してください。")
+            for item in items:
+                if section == "completed_goals" and isinstance(item, str) and item.strip():
+                    continue  # 旧形式の達成ID配列
+                if not isinstance(item, dict):
+                    raise ValueError(f"{section}の各項目はオブジェクトで指定してください。")
+                text_field(item, "goal" if section == "new_goals" else "goal_id", required=True)
+                if section == "progress_updates":
+                    text_field(item, "note", required=True)
+                elif section == "goal_reviews":
+                    text_field(item, "decision", required=True)
+                    if item["decision"] not in {"continue", "pause", "resume"}:
+                        raise ValueError("decisionはcontinue/pause/resumeで指定してください。")
+                    text_field(item, "reason", required=True)
+                    interval = item.get("review_interval_days", 30)
+                    if type(interval) is not int or not 1 <= interval <= 365:
+                        raise ValueError("再確認間隔は1〜365日で指定してください。")
+                elif section == "completed_goals":
+                    text_field(item, "reflection")
+                elif section == "abandoned_goals":
+                    text_field(item, "reason")
                 else:
-                    remaining_short_term.append(goal)
-            goals["short_term"] = remaining_short_term
-            return goals
+                    if item.get("type", "short_term") not in ("short_term", "long_term"):
+                        raise ValueError("typeはshort_term/long_termで指定してください。")
+                    priority = item.get("priority", 1)
+                    if type(priority) is not int or priority < 1:
+                        raise ValueError("priorityは1以上の整数で指定してください。")
+                    values = item.get("related_values")
+                    if values is not None and (not isinstance(values, list) or
+                                               any(not isinstance(v, str) for v in values)):
+                        raise ValueError("related_valuesは文字列の配列で指定してください。")
+        return updates
 
-        self._update_goals(mutate)
-        return abandoned_count
-    
+    def apply_reflection_updates(self, updates: Dict[str, Any], *, expected_goals=None):
+        """本人が明示した更新を適用。睡眠前snapshotと異なる目標は再読まで保持する。"""
+        updates = self._validate_reflection_updates(updates)
+        expected = deepcopy(expected_goals) if expected_goals is not None else None
+        def apply(goal_id, operation, *args, **kwargs):
+            if expected is not None and goal_id not in expected:
+                print(f"[Goal Review] 未提示の目標IDを変更しません: {goal_id}")
+                return
+            try:
+                result = operation(goal_id, *args, expected_goal=expected.get(goal_id) if expected is not None else None, **kwargs)
+                if expected is not None and result:
+                    expected[goal_id] = deepcopy(result)
+            except ValueError as exc:
+                print(f"[Goal Review] 目標を保持しました: {goal_id}: {exc}")
+
+        for item in updates.get("progress_updates", []):
+            apply(item.get("goal_id", ""), self.update_goal_progress, item.get("note", ""))
+        for item in updates.get("goal_reviews", []):
+            apply(item.get("goal_id", ""), self.review_goal, item.get("decision", ""),
+                  item.get("reason", ""), item.get("review_interval_days", 30))
+        for item in updates.get("completed_goals", []):
+            goal_id = item.get("goal_id", "") if isinstance(item, dict) else item
+            note = item.get("reflection", "") if isinstance(item, dict) else None
+            apply(goal_id, self.complete_goal, note)
+        for item in updates.get("abandoned_goals", []):
+            apply(item.get("goal_id", ""), self.abandon_goal, item.get("reason"))
+        for item in updates.get("new_goals", []):
+            self.add_goal(item.get("goal", ""), item.get("type", "short_term"),
+                          item.get("priority", 1), item.get("related_values"))
+
+    def auto_cleanup_stale_goals(self, days_threshold: int = 30) -> int:
+        """旧呼出元との互換入口。時間だけでは放棄せず、保存も変更しない。"""
+        return 0
+
+    def enforce_goal_limit(self, max_short: int = 10) -> int:
+        """旧呼出元との互換入口。件数だけでは放棄せず、保存も変更しない。"""
+        return 0
+
     def get_goal_statistics(self) -> Dict:
         """
         目標の統計情報を取得する。
@@ -602,8 +695,9 @@ class GoalManager:
         """
         goals = self._load_goals()
         return {
-            "short_term_count": len(goals.get("short_term", [])),
-            "long_term_count": len(goals.get("long_term", [])),
+            "short_term_count": sum(g.get("status") == "active" for g in goals.get("short_term", [])),
+            "long_term_count": sum(g.get("status") == "active" for g in goals.get("long_term", [])),
+            "paused_count": sum(g.get("status") == "paused" for kind in ("short_term", "long_term") for g in goals.get(kind, [])),
             "completed_count": len(goals.get("completed", [])),
             "abandoned_count": len(goals.get("abandoned", []))
         }

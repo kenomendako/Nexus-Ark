@@ -1,0 +1,10 @@
+# 開発では合成値だけを使う。実APIキーや実運用Tokenをこのファイルへ書かないこと。
+PHASE0_VALIDATION_TOKEN="phase0-local-placeholder"
+OWNER_AUTH_TOKEN="phase1-owner-placeholder"
+BUNDLE_SIGNING_KEY="phase1-signing-placeholder"
+GEMINI_PERSONAL_1="phase0-placeholder"
+OPENAI_PERSONAL_1="phase0-placeholder"
+OPENAI_PERSONAL_2="phase0-placeholder"
+ANTHROPIC_PERSONAL_1="phase0-placeholder"
+XAI_PERSONAL_1="phase0-placeholder"
+OPENROUTER_PERSONAL_1="phase0-placeholder"

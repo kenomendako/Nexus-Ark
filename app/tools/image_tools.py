@@ -33,7 +33,7 @@ def image_model_supports_reference(provider: str, model: str) -> bool:
     provider = str(provider or "").strip().lower()
     model = str(model or "").strip().lower()
     if provider == "gemini":
-        return "image" in model
+        return config_manager.is_image_generation_model(model)
     if provider == "openai":
         return "gpt-image" in model
     return False

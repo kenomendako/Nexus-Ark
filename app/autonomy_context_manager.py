@@ -27,12 +27,13 @@ class AutonomyContextManager:
 
     def build_context(self, query: str = "", include_details: bool = False) -> Dict[str, Any]:
         """Return a compact Sense/Orient context for autonomous action."""
+        goals = self._active_goals(limit=5)
         context = {
             "room_name": self.room_name,
             "generated_at": self._now(),
             "query": query or "",
-            "purpose_profile": self._purpose_summary(),
-            "goals": self._active_goals(limit=5),
+            "purpose_profile": self._purpose_summary(presented_goals=goals),
+            "goals": goals,
             "research_threads": self._research_threads(query=query, limit=5),
             "working_memory": self._working_memory_context(include_details=include_details),
             "recent_actions": self._recent_actions(limit=8),
@@ -335,11 +336,11 @@ class AutonomyContextManager:
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def _purpose_summary(self) -> str:
+    def _purpose_summary(self, presented_goals=None) -> str:
         try:
             from purpose_profile_manager import PurposeProfileManager
 
-            return PurposeProfileManager(self.room_name).get_summary_for_prompt(max_items=5).strip()
+            return PurposeProfileManager(self.room_name).get_summary_for_prompt(max_items=5, presented_goals=presented_goals).strip()
         except Exception as e:
             return f"（Purpose Profile取得エラー: {e}）"
 

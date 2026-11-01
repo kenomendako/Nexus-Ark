@@ -36,6 +36,8 @@
   <li><a href="05_autonomy_delegation_atelier.html">自律行動・ウォッチリスト・委任</a></li>
   <li><a href="06_closet_items.html">クローゼット・アイテム</a></li>
   <li><a href="07_external_connections_lite.html">外部接続とNexus Ark Lite</a></li>
+  <li><a href="07a_lite_cloud_setup.html">PCを止めてLiteを使うための準備ガイド</a></li>
+  <li><a href="07b_api_data_reference.html">取得できる情報から探すAPIガイド</a></li>
   <li><a href="08_models_api_costs.html">AIモデル・APIキー・コスト管理</a></li>
   <li><a href="09_notifications_time_calendar_weather.html">通知・時間管理・カレンダー・天気</a></li>
   <li><a href="10_outing_import_export.html">お出かけ・インポート・エクスポート</a></li>
@@ -55,7 +57,7 @@
 <tbody>
 <tr>
 <td>Gemini APIキー</td>
-<td>左サイドバー「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」→「Gemini APIキー」</td>
+<td>左サイドバー「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」→「Gemini（AI Studio）」</td>
 <td>1本以上登録</td>
 </tr>
 <tr>
@@ -66,7 +68,7 @@
 <tr>
 <td>会話モデル</td>
 <td>「⚙️ 設定」→「共通」→「⚡ AIモデルプロバイダ設定（デフォルト）」</td>
-<td>まずGoogle (Gemini Native)</td>
+<td>まずAI Studio（Gemini）</td>
 </tr>
 <tr>
 <td>送信する履歴</td>
@@ -96,7 +98,7 @@
 </tbody>
 </table>
 <h2>APIキー</h2>
-<p>Gemini APIキーは、左サイドバーの「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」→「Gemini APIキー」で追加します。 キー名は管理用の名前です。APIキーの値は端末内の <code>config.json</code> に保存されます。</p>
+<p>Gemini APIキーは、左サイドバーの「⚙️ 設定」→「共通」→「🔑 APIキー / Webhook管理」→「Gemini（AI Studio）」で追加します。 キー名は管理用の名前です。APIキーの値は端末内の <code>config.json</code> に保存されます。</p>
 <p>有料プランのキーを登録した場合は、同じアコーディオン内の「有料プランのキーを選択」でチェックします。 無料キーと有料キーを混ぜる場合、無料キーの制限に達した時だけ有料キーを使う運用にできます。</p>
 <h2>送信するログの量</h2>
 <p>ルームごとの設定は、左サイドバーの「⚙️ 設定」→「個別」→「📡 送信コンテキスト設定」にあります。 「APIへの履歴送信（短期記憶の長さ）」は、直近の会話をどれくらいAIへ送るかの設定です。 長くすると文脈は増えますが、APIコストと待ち時間も増えます。</p>
@@ -112,7 +114,7 @@
 <p>通知は、アラームやAIペルソナからの声かけをPCや外部サービスへ出す機能です。 左サイドバーの「⚙️ 設定」→「共通」→「📢 通知サービス設定」で、アラーム用と通常通知用のサービスを選びます。 PushoverやDiscord Webhookのキーは「🔑 APIキー / Webhook管理」で登録します。</p>
 <p>通知を控えたい時間帯は、中央「自律行動」→「自律行動（このルーム）」→「✨ 自律行動設定（このルーム）」→「🌙 通知禁止時間帯（このルーム）」で設定します。 この時間帯は睡眠時間として扱われ、睡眠時記憶整理のきっかけにもなります。</p>
 <h2>スマホ利用</h2>
-<p>スマホから使う場合は、中央「外部接続」→「API Gateway / Lite」を開きます。 「API設定」でAPI Gatewayを有効化し、Tokenを生成して保存します。 「Nexus Ark Lite 接続情報」に表示されるURLをスマホで開きます。</p>
+<p>スマホから使う場合は、中央「外部接続」→「Lite・お出かけ」→「📱 Nexus Ark Lite」を開き、 「PCをつけたまま使う」から「本体接続の設定」へ進みます。 PCとNexus Arkを起動したまま、接続を有効化し、接続用Tokenを生成して保存します。 「スマホ用URL・接続情報を更新」を押し、「Nexus Ark Lite 接続情報」に表示されるURLをスマホで開きます。 実際に使うホーム画面のLiteの「設定」→「本体への接続」でAPI URLとTokenを入力し、「接続」を押します。 API URLには画面用の末尾<code>/lite</code>を付けません。本体接続でルームと会話が表示されれば完了です。 「🏠 本体接続」は「設定」→「独立モードの接続・準備状況」、接続状態の「接続済み」はメニューで確認できます。</p>
 <p>スマホの録音やPWA通知にはHTTPSが必要になることがあります。 同一LAN、Tailscale HTTPS、Tailscale Funnelなど、本人が管理できる接続経路で使ってください。</p>
       <nav class="guide-page-nav" aria-label="前後のページ">
         <a href="00_getting_started.html">前へ</a>

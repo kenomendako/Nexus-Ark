@@ -1,17 +1,15 @@
+const path = require('node:path');
+const fs = require('node:fs');
+const securityCheck = path.join(__dirname, fs.existsSync(path.join(__dirname, 'app', 'release', 'check_uv_security.cjs'))
+    ? 'app/release/check_uv_security.cjs' : 'release/check_uv_security.cjs');
+const secureUv = 'node "' + securityCheck + '" && ';
 module.exports = {
     run: [
-        // 1. Install uv (if not present)
-        {
-            method: "shell.run",
-            params: {
-                message: "curl -LsSF https://astral.sh/uv/install.sh | sh",
-            }
-        },
         // 2. Sync dependencies
         {
             method: "shell.run",
             params: {
-                message: "uv sync",
+                message: secureUv + "uv sync",
             }
         },
         // 3. Notify success

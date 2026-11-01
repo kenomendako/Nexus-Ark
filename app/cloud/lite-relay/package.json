@@ -1,0 +1,31 @@
+{
+  "name": "@nexus-ark/lite-relay",
+  "version": "0.5.0-phase5",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.23.4 <23 || >=24.22.1 <25 || >=26.12.1 <27"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:pwa-auth": "node --test test-node/*.test.mjs",
+    "test:sw": "node scripts/validate-sw-boundary.mjs",
+    "build:unified-lite": "node scripts/build-unified-lite.mjs",
+    "verify": "npm run check && npm run test && npm run test:pwa-auth && npm run test:sw && npm audit --audit-level=high",
+    "test:watch": "vitest",
+    "dry-run": "wrangler deploy --dry-run --outdir dist"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.20.1",
+    "@cloudflare/workers-types": "5.20261006.1",
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10",
+    "wrangler": "4.149.0"
+  },
+  "overrides": {
+    "sharp": "0.35.5",
+    "undici": "7.29.1"
+  }
+}

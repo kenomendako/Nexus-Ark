@@ -13,21 +13,11 @@ echo This script will install additional components required to run
 echo Local LLMs (GGUF format) on your system.
 echo.
 
-REM Check if uv is installed
-where uv >nul 2>nul
-if %errorlevel% NEQ 0 (
-    echo [INFO] 'uv' tool not found. Trying to install via PowerShell...
-    powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-    set "PATH=%USERPROFILE%\.local\bin;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Roaming\uv\bin;%PATH%"
-)
-
-REM Verify uv again
-where uv >nul 2>nul
-if %errorlevel% NEQ 0 (
-    echo [ERROR] uv installation failed. Please install 'uv' manually.
-    pause
-    exit /b 1
-)
+REM Repair the downloader before any dependency or Python download.
+set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+if not exist "app\release\RepairUpdateCertificates.ps1" exit /b 1
+powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\app\release\RepairUpdateCertificates.ps1"
+if errorlevel 1 exit /b 1
 
 REM Change directory to 'app' if exists (for running the python script)
 if exist "app" (
@@ -42,7 +32,7 @@ if exist "app" (
 
 echo [INFO] Starting setup tool...
 echo.
-REM Use 'uv' to find the path to the Python executable. 
+REM Use 'uv' to find the path to the Python executable.
 REM This bypasses the project venv's site-packages initialization which is crashing on encoding.
 for /f "usebackq tokens=*" %%i in (`uv python find 2^>nul`) do set "PY_EXE=%%i"
 if "%PY_EXE%"=="" set "PY_EXE=python"

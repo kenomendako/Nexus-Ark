@@ -11,86 +11,28 @@ REM Force Python to use UTF-8 mode (Safety net)
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 
-REM Check if uv is installed
-where uv >nul 2>nul
-if %errorlevel% EQU 0 goto :FOUND_UV
-
-echo [INFO] 'uv' tool not found. Installing...
-echo.
-
-REM Install uv via PowerShell
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-REM Add install paths to PATH for this session
-set "PATH=%USERPROFILE%\.local\bin;%USERPROFILE%\.cargo\bin;%USERPROFILE%\AppData\Roaming\uv\bin;%PATH%"
-
-REM Verify installation
-where uv >nul 2>nul
-if %errorlevel% NEQ 0 goto :UV_INSTALL_FAILED
+REM Repair the downloader before any dependency or Python download.
+set "PATH=%USERPROFILE%\.local\bin;%PATH%"
+if not exist "app\release\RepairUpdateCertificates.ps1" goto :UV_INSTALL_FAILED
+powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\app\release\RepairUpdateCertificates.ps1"
+if errorlevel 1 goto :UV_INSTALL_FAILED
 
 :FOUND_UV
 REM Check for app directory
 if not exist "app" goto :MISSING_APP_DIR
-:START_APP
-echo [INFO] uv found. Syncing dependencies...
+if not exist "updater\current\update_host\supervisor.py" goto :MISSING_UPDATE_HOST
+
+echo [INFO] Starting the protected launcher...
+echo [INFO] First startup may take several minutes. Please keep this window open.
 echo.
-echo ============================================================
-echo  NOTE: First-time startup may take several minutes
-echo        while downloading dependencies.
-echo        Please do not close this window.
-echo ============================================================
-echo.
-REM CRITICAL FIX: --no-install-project prevents creating a .pth file with Japanese paths
-uv sync --no-install-project
-if %errorlevel% NEQ 0 goto :SYNC_FAILED
-
-echo [INFO] Starting Application...
-echo.
-
-REM Move to app directory for execution
-cd app
-
-call :CONFIGURE_TAILSCALE_SERVE
-
-REM Invoke python directly. Note: .venv is in the parent directory
-if exist "..\.venv\Scripts\python.exe" (
-    "..\.venv\Scripts\python.exe" nexus_ark.py
-) else (
-    uv run nexus_ark.py
-)
-
+set "PYTHONPATH=%CD%\updater\current"
+uv run --no-project --managed-python --python cpython@3.12.16 python -m update_host.supervisor --root "%CD%"
 set EXIT_CODE=%errorlevel%
 
-REM Return to root for update processing
-cd ..
-
 if %EXIT_CODE% EQU 123 (
-    echo.
-    echo [INFO] Update signal received.
-    REM --- Apply staged update files ---
-    if exist "update_staging" (
-        echo [INFO] Applying update from staging area...
-        REM 2層構造 (update_staging/app/) を優先、なければフラット構造にフォールバック
-        if exist "update_staging\app" (
-            robocopy "update_staging\app" "app" /E /XD characters memories logs metadata backups .venv __pycache__ /XF config.json alarms.json redaction_rules.json .gemini_key_states.json *.log /NFL /NDL /NJH /NJS /R:1 /W:1
-            if exist "app\pyproject.toml" copy /Y "app\pyproject.toml" "."
-        ) else (
-            robocopy "update_staging" "app" /E /XD characters memories logs metadata backups .venv __pycache__ /XF config.json alarms.json redaction_rules.json .gemini_key_states.json *.log /NFL /NDL /NJH /NJS /R:1 /W:1
-            if exist "app\pyproject.toml" copy /Y "app\pyproject.toml" "."
-        )
-        REM robocopy returns 0-7 for success, 8+ for errors
-        if %errorlevel% GEQ 8 (
-            echo [WARNING] Some files could not be copied. Update may be incomplete.
-        ) else (
-            echo [INFO] Update files applied successfully.
-        )
-        rmdir /S /Q "update_staging" 2>nul
-    )
-    echo [INFO] Restarting application...
-    echo.
-    goto :START_APP
+    echo [INFO] Restart requested. Checking the protected update state...
+    goto :FOUND_UV
 )
-
 if %EXIT_CODE% NEQ 0 goto :APP_CRASHED
 
 echo.
@@ -116,10 +58,10 @@ echo.
 pause
 exit /b 1
 
-:SYNC_FAILED
+:MISSING_UPDATE_HOST
 echo.
-echo [ERROR] Failed to sync dependencies.
-echo Please check your internet connection.
+echo [ERROR] The protected update launcher is missing.
+echo Please extract the complete Nexus Ark ZIP again.
 echo.
 pause
 exit /b 1
@@ -130,44 +72,3 @@ echo [ERROR] Application crashed!
 echo.
 pause
 exit /b 1
-
-:CONFIGURE_TAILSCALE_SERVE
-if not "%NEXUS_ARK_START_TAILSCALE_SERVE%"=="1" exit /b 0
-where tailscale >nul 2>nul
-if %errorlevel% NEQ 0 (
-    echo [WARN] tailscale command not found. Skipping Lite HTTPS serve.
-    exit /b 0
-)
-if "%NEXUS_ARK_API_PORT%"=="" set "NEXUS_ARK_API_PORT=8000"
-if "%NEXUS_ARK_API_ENABLED%"=="" set "NEXUS_ARK_API_ENABLED=1"
-set "NEXUS_ARK_LITE_TARGET=http://127.0.0.1:%NEXUS_ARK_API_PORT%"
-set "NEXUS_ARK_TS_STATUS=%TEMP%\nexus_ark_tailscale_serve_status.txt"
-set "NEXUS_ARK_TS_LOG=%TEMP%\nexus_ark_tailscale_serve.txt"
-tailscale serve status > "%NEXUS_ARK_TS_STATUS%" 2>&1
-findstr /C:"%NEXUS_ARK_LITE_TARGET%" "%NEXUS_ARK_TS_STATUS%" >nul 2>nul
-if %errorlevel% EQU 0 (
-    echo [OK] Tailscale HTTPS serve is already configured.
-    call :PRINT_TAILSCALE_LITE_URL
-    exit /b 0
-)
-echo [INFO] Configuring Tailscale HTTPS for Nexus Ark Lite...
-tailscale serve --bg --https=443 "%NEXUS_ARK_LITE_TARGET%" > "%NEXUS_ARK_TS_LOG%" 2>&1
-if %errorlevel% EQU 0 (
-    echo [OK] Tailscale HTTPS serve configured.
-    call :PRINT_TAILSCALE_LITE_URL
-    exit /b 0
-)
-echo [WARN] Tailscale HTTPS serve setup did not complete.
-echo        Check: tailscale serve status
-type "%NEXUS_ARK_TS_LOG%" 2>nul
-exit /b 0
-
-:PRINT_TAILSCALE_LITE_URL
-set "NEXUS_ARK_TS_DNS="
-for /f "usebackq delims=" %%D in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $j = tailscale status --json | ConvertFrom-Json; ($j.Self.DNSName -replace '\\.$','') } catch { '' }"`) do set "NEXUS_ARK_TS_DNS=%%D"
-if not "%NEXUS_ARK_TS_DNS%"=="" (
-    echo Lite HTTPS: https://%NEXUS_ARK_TS_DNS%/lite
-) else (
-    echo Lite HTTPS: https://^<your-device^>.^<tailnet^>.ts.net/lite
-)
-exit /b 0

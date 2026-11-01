@@ -7,7 +7,8 @@
 import os
 import json
 import datetime
-from typing import Dict, List, Optional
+import math
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 import constants
@@ -127,6 +128,105 @@ def get_daily_average(room_name: str, date_str: Optional[str] = None) -> float:
         return 0.5
     
     return round(sum(scores) / len(scores), 3)
+
+
+def _valid_date_string(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.datetime.strptime(value, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return False
+    return parsed.strftime("%Y-%m-%d") == value
+
+
+def _valid_arousal_score(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) and 0.0 <= value <= 1.0 else None
+
+
+def _read_daily_scores(day_data: Any) -> Optional[List[float]]:
+    """新旧形式から、構造を壊さず有効な数値だけを取り出す。"""
+    if not isinstance(day_data, dict):
+        return None
+    if "sessions" in day_data:
+        raw_scores = day_data["sessions"]
+        if not isinstance(raw_scores, list):
+            return None
+        if not raw_scores:
+            return []
+        scores = []
+        for session in raw_scores:
+            if not isinstance(session, dict):
+                continue
+            score = _valid_arousal_score(session.get("arousal"))
+            if score is not None:
+                scores.append(score)
+        return scores if scores else None
+    if "scores" in day_data:
+        raw_scores = day_data["scores"]
+        if not isinstance(raw_scores, list):
+            return None
+        if not raw_scores:
+            return []
+        scores = []
+        for value in raw_scores:
+            score = _valid_arousal_score(value)
+            if score is not None:
+                scores.append(score)
+        return scores if scores else None
+    return None
+
+
+def get_daily_summary(room_name: str, date_str: Optional[str] = None) -> Dict[str, Any]:
+    """指定日の平均・日付・有効件数を読み取り専用で返す。
+
+    ``get_daily_average`` は既存処理との互換性のため、破損時に修復処理を
+    呼び出すローダーを使う。このsummaryは状態GETから利用するため、JSONや
+    日付の異常をファイルへ書き戻さず、取得不能時は件数を ``None`` にする。
+    """
+    if date_str is None:
+        date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    if not _valid_date_string(date_str):
+        return {"average": 0.5, "date": None, "sample_count": None}
+
+    path = get_arousal_file_path(room_name)
+    if not path.exists():
+        return {"average": 0.5, "date": date_str, "sample_count": 0}
+    try:
+        if path.stat().st_size == 0:
+            return {"average": 0.5, "date": None, "sample_count": None}
+    except OSError:
+        return {"average": 0.5, "date": None, "sample_count": None}
+
+    from file_lock_utils import safe_json_read
+
+    try:
+        data = safe_json_read(str(path), default={})
+    except Exception:
+        return {"average": 0.5, "date": None, "sample_count": None}
+    if not isinstance(data, dict):
+        return {"average": 0.5, "date": None, "sample_count": None}
+    if any(not _valid_date_string(day) for day in data):
+        return {"average": 0.5, "date": None, "sample_count": None}
+    if date_str not in data:
+        return {"average": 0.5, "date": date_str, "sample_count": 0}
+
+    scores = _read_daily_scores(data[date_str])
+    if scores is None:
+        return {"average": 0.5, "date": None, "sample_count": None}
+    if not scores:
+        return {"average": 0.5, "date": date_str, "sample_count": 0}
+    return {
+        "average": round(sum(scores) / len(scores), 3),
+        "date": date_str,
+        "sample_count": len(scores),
+    }
 
 
 def get_daily_max(room_name: str, date_str: Optional[str] = None) -> float:

@@ -21,6 +21,7 @@ from episodic_memory_manager import EpisodicMemoryManager
 import summary_manager
 from resolution_memory import is_substantive_reflection
 
+DREAM_FAILURE_PREFIX = "夢想プロセス中にエラーが発生しました:"
 ENTITY_NAME_PROMPT_LIMIT = 300
 
 class DreamingManager:
@@ -386,12 +387,21 @@ class DreamingManager:
 
         # --- [Goal Memory] 現在の目標を取得（IDと共に） ---
         goal_manager = GoalManager(self.room_name)
-        current_goals_text = goal_manager.get_goals_for_reflection()
+        goal_data = goal_manager._load_goals()
+        goal_snapshot = goal_manager.get_prompt_goal_snapshot(max_short=10, max_long=3, goal_data=goal_data)
+        review_candidates = goal_manager.get_review_candidates(goal_data=goal_data) if not skip_goal_update else []
+        current_goals_text = goal_manager.get_goals_for_reflection(goal_snapshot=goal_snapshot)
+        review_prompt = goal_manager.get_review_prompt(review_candidates)
+        if review_prompt:
+            current_goals_text += "\n\n" + review_prompt
+        presented_goals = goal_snapshot["short_term"] + goal_snapshot["long_term"] + review_candidates
 
         purpose_profile_text = ""
         try:
             from purpose_profile_manager import PurposeProfileManager
-            purpose_profile_text = PurposeProfileManager(self.room_name).get_summary_for_prompt(max_items=5)
+            purpose_profile_text = PurposeProfileManager(self.room_name).get_summary_for_prompt(
+                max_items=5, presented_goals=presented_goals
+            )
             if purpose_profile_text:
                 print("  - [Dreaming] Purpose Profileを省察コンテキストに追加しました。")
         except Exception as pe:
@@ -458,8 +468,10 @@ class DreamingManager:
         2.  **深層分析**: 
             - 表面的な言葉だけでなく、その裏にある感情の流れや、信頼関係の深化、あるいは潜在的な課題を考察する。
         3.  **目標の整理**: 
-            - 目標リストを精査し、達成したものは `completed_goals`、断念したものは `abandoned_goals` に振り分ける。
-            - 短期目標は常に最新の状態に更新し、10件以内に保つ。
+            - 自分で達成と判断したものだけ `completed_goals`、手放すと決めたものだけ `abandoned_goals` に記録できます。
+            - 件数や古さだけを理由に目標を終わらせる必要はありません。保存と今回の注意は別です。
+            - 再検討候補を見て、望む時だけ継続・保留・再開をgoal_reviewsに記録できます。未判断なら空配列で保持します。
+            - 保留は放棄でも義務でもなく、期限が来ても自動再開しません。理由はあなた自身の言葉で記録してください。
         4.  **出力生成**: 
             - 分析結果を、**あなたの人格（一人称、口調、相手の呼び方）**に変換して記述する。
 
@@ -488,7 +500,8 @@ class DreamingManager:
                 "progress_updates": [
                     {{"goal_id": "（既存目標のID。進捗があれば）", "note": "（進捗メモ）"}}
                 ],
-                "completed_goals": ["（達成した目標のID。なければ空配列）"],
+                "goal_reviews": [{{"goal_id": "（提示された目標ID）", "decision": "continue / pause / resume のいずれか", "reason": "（今そうしたい理由）", "review_interval_days": 30}}],
+                "completed_goals": [{{"goal_id": "（達成した目標ID）", "reflection": "（実際の学びや気づき。なければ空文字）"}}],
                 "abandoned_goals": [{{"goal_id": "（諦めた目標）", "reason": "（理由）"}}]
             }},
             "open_questions": [
@@ -500,7 +513,7 @@ class DreamingManager:
             ]
         }}
         
-        ※`entity_updates`、`goal_updates`、`open_questions` の各項目が不要な場合は、空のリスト `[]` にしてください。
+        ※`entity_updates`、`open_questions` と `goal_updates` 内の各配列は、不要なら `[]` にしてください。目標更新が一切なければ `goal_updates` は空のオブジェクト `{{}}` にしてください。
         ※`entity_name` はファイル名になるため、簡潔な名称にしてください。
         """
 
@@ -516,6 +529,7 @@ class DreamingManager:
             
             # JSON部分を抽出してパース
             dream_data = self._parse_json_robust(response)
+            valid_goal_review = isinstance(dream_data, dict) and isinstance(dream_data.get("insight"), str) and bool(dream_data["insight"].strip())
             if not dream_data:
                 print("  - [Dreaming] ⚠️ JSONのパースに失敗しました。フォールバックデータを使用します。")
                 # [DEBUG] パース失敗時に生レスポンスを保存
@@ -606,32 +620,16 @@ class DreamingManager:
             
             # --- [Goal Memory] 目標の自動更新 ---
             goal_updates = dream_data.get("goal_updates", {})
-            if goal_updates and not skip_goal_update:
+            goal_review_succeeded = False
+            if not skip_goal_update and valid_goal_review:
                 try:
-                    goal_manager.apply_reflection_updates(goal_updates)
+                    goal_manager.apply_reflection_updates(goal_updates, expected_goals={g["id"]: g for g in presented_goals})
+                    goal_review_succeeded = True
                     print(f"  ✅ {self.room_name}: 省察が完了しました。")
                 except Exception as ge:
                     print(f"  - [Dreaming] 目標更新エラー: {ge}")
             elif skip_goal_update:
                 print("  - [Dreaming] 目標の自動更新はスキップされました（フラグ指定）")
-            
-            # --- [Phase D] 目標の自動整理 ---
-            try:
-                # 30日以上の古い目標を自動放棄
-                stale_count = goal_manager.auto_cleanup_stale_goals(days_threshold=30)
-                if stale_count > 0:
-                    print(f"  - [Dreaming] {stale_count}件の古い目標を自動放棄しました")
-                
-                # 短期目標を10件に制限（日次省察でも実行）
-                excess_count = goal_manager.enforce_goal_limit(max_short=10)
-                if excess_count > 0:
-                    print(f"  - [Dreaming] 目標上限により{excess_count}件を自動放棄しました")
-                
-                # 統計表示
-                stats = goal_manager.get_goal_statistics()
-                print(f"  - [Dreaming] 目標統計: 短期{stats['short_term_count']}/長期{stats['long_term_count']}/達成{stats['completed_count']}/放棄{stats['abandoned_count']}")
-            except Exception as ce:
-                print(f"  - [Dreaming] 目標自動整理エラー: {ce}")
             
             # --- [Arousal Normalization] Arousalインフレ防止 ---
             # 週次/月次省察時に、全エピソードの平均Arousalが閾値を超えていたら減衰を適用
@@ -781,8 +779,10 @@ class DreamingManager:
             except Exception as se:
                 print(f"  - [Shadow] エンティティ抽出エラー: {se}")
             
-            # 省察レベルの記録
-            goal_manager.mark_reflection_done(reflection_level)
+            # 有効な省察が成功した時だけ、未判断候補の再提示間隔を空ける。
+            if goal_review_succeeded:
+                goal_manager.mark_review_presented(review_candidates)
+                goal_manager.mark_reflection_done(reflection_level)
             
             print(f"  - [Dreaming] 夢を見ました（レベル{reflection_level}）。洞察: {dream_data['insight'][:100]}...")
 
@@ -800,7 +800,7 @@ class DreamingManager:
             if log_f:
                 utils.save_message_to_log(log_f, "## SYSTEM:dreaming_error", f"❌ 記憶の整理中にエラーが発生しました: {e}")
 
-            return f"夢想プロセス中にエラーが発生しました: {e}"
+            return f"{DREAM_FAILURE_PREFIX} {e}"
     
     def dream_insight_only(self) -> str:
         """

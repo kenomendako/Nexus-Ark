@@ -2,6 +2,7 @@
 
 import os
 from typing import Any
+from urllib.parse import urlsplit
 from langchain_google_genai import ChatGoogleGenerativeAI, HarmBlockThreshold, HarmCategory
 from langchain_openai import ChatOpenAI
 # from langchain_anthropic import ChatAnthropic # 遅延読み込みに変更
@@ -26,6 +27,8 @@ def _build_anthropic_client_kwargs(
     max_tokens: int = 4096,
     streaming: bool = True,
     model_kwargs: dict[str, Any] | None = None,
+    effort: str | None = None,
+    thinking: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     kwargs = {
         "model_name": model_name,
@@ -39,16 +42,80 @@ def _build_anthropic_client_kwargs(
         print(f"  - [Anthropic] temperature is not sent for {model_name} because this model rejects it.")
     else:
         kwargs["temperature"] = temperature
+    if effort:
+        kwargs["effort"] = effort
+    if thinking:
+        kwargs["thinking"] = thinking
     return kwargs
 
 
 def _is_openai_official_base_url(base_url: str | None) -> bool:
-    return "api.openai.com" in (base_url or "").lower()
+    try:
+        value = (base_url or "").strip()
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        return (parsed.hostname or "").lower() == "api.openai.com"
+    except ValueError:
+        return False
 
 
 def _openai_model_uses_default_sampling(model_name: str, base_url: str | None) -> bool:
     normalized = (model_name or "").lower()
-    return _is_openai_official_base_url(base_url) and normalized.startswith("gpt-5")
+    if not _is_openai_official_base_url(base_url):
+        return False
+    if normalized.startswith("gpt-5"):
+        return True
+    return normalized in {"o3", "o3-mini", "o4-mini"} or normalized.startswith(("o3-", "o4-mini-"))
+
+
+def _openai_client_for_base_url(base_url: str | None):
+    """Select the OpenRouter adapter and request usage on streaming calls."""
+
+    value = (base_url or "").strip()
+    try:
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host == "openrouter.ai":
+        from openrouter_chat import OpenRouterChatOpenAI
+
+        return OpenRouterChatOpenAI, {
+            "use_responses_api": False,
+            "stream_usage": True,
+        }
+    return ChatOpenAI, {}
+
+
+def _usage_route_metadata(client: Any, connection: dict | None = None) -> dict[str, Any]:
+    """Describe the billing route selected by the concrete LLM client."""
+
+    connection = connection if isinstance(connection, dict) else {}
+    backend = str(connection.get("backend") or "").strip().lower()
+    if backend == "vertex":
+        result: dict[str, Any] = {"billing_backend": "vertex", "is_paid": True}
+        if connection.get("location"):
+            result["billing_location"] = str(connection["location"])
+        return result
+    base_url = str(getattr(client, "openai_api_base", "") or "")
+    try:
+        parsed = urlsplit(base_url if "://" in base_url else f"//{base_url}")
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        host = ""
+    if host == "openrouter.ai":
+        return {"billing_backend": "openrouter", "is_paid": True}
+    if base_url:
+        return {"billing_backend": "openai_compatible", "is_paid": True}
+    class_name = client.__class__.__name__.lower()
+    # Claude subscription is a separate sealed route and has no direct API
+    # token price here; only the Anthropic API client is classified as direct.
+    if "anthropic" in class_name:
+        return {"billing_backend": "anthropic", "is_paid": True}
+    if "llama" in class_name or "local" in class_name:
+        return {"billing_backend": "local", "is_paid": False}
+    if "gemini" in class_name or "google" in class_name:
+        return {"billing_backend": "developer"}
+    return {"billing_backend": "unknown"}
 
 
 def _build_chat_openai_kwargs(
@@ -61,6 +128,8 @@ def _build_chat_openai_kwargs(
     max_retries: int = 0,
     streaming: bool = True,
     model_kwargs: dict[str, Any] | None = None,
+    reasoning_effort: str | None = None,
+    extra_body: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     kwargs = {
         "base_url": base_url,
@@ -72,6 +141,10 @@ def _build_chat_openai_kwargs(
     }
     if model_kwargs is not None:
         kwargs["model_kwargs"] = model_kwargs
+    if reasoning_effort:
+        kwargs["reasoning_effort"] = reasoning_effort
+    if extra_body:
+        kwargs["extra_body"] = extra_body
 
     if _openai_model_uses_default_sampling(model_name, base_url):
         print(f"  - [OpenAI] temperature/top_p are not sent for {model_name}; this model uses default sampling.")
@@ -79,6 +152,119 @@ def _build_chat_openai_kwargs(
         kwargs["temperature"] = temperature
         kwargs["top_p"] = top_p
     return kwargs
+
+
+def _resolve_response_reasoning_preference(target: dict[str, str], room_name: str | None):
+    """主応答用設定を遅延解決し、不正値は安全にAPI既定へ戻す。"""
+
+    try:
+        # 設定側の実装を遅延importする。古い設定ファイルで新機能が無い
+        # 場合も、従来どおりプロバイダの既定値で動作させる。
+        from response_reasoning_settings import resolve_preference
+    except (ImportError, ModuleNotFoundError):
+        return None
+
+    try:
+        preference = resolve_preference(target, room_name=room_name)
+    except Exception as exc:
+        print(f"[LLM Factory] response reasoning preference was ignored: {exc}")
+        return None
+    if preference is None:
+        return None
+
+    try:
+        from response_reasoning import validate_preference
+
+        return validate_preference(target, preference)
+    except (TypeError, ValueError, KeyError) as exc:
+        print(f"[LLM Factory] invalid response reasoning preference was ignored: {exc}")
+        # Geminiでも、保存値不正を未登録のlegacy引継ぎと混同しない。
+        return {"effort": "default"}
+
+
+def _response_reasoning_kwargs(target: dict[str, str], room_name: str | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """設定解決とprovider固有kwargs変換を一箇所へまとめる。"""
+
+    preference = _resolve_response_reasoning_preference(target, room_name)
+    if preference is None:
+        return {}, None
+    try:
+        from response_reasoning import preference_to_kwargs
+
+        return preference_to_kwargs(target, preference), preference
+    except (TypeError, ValueError, KeyError) as exc:
+        print(f"[LLM Factory] response reasoning conversion was ignored: {exc}")
+        return {}, None
+
+
+def _apply_gemini_response_reasoning(
+    generation_config: dict[str, Any] | None,
+    preference: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Gemini既存thinking_levelへ主応答設定を橋渡しする。
+
+    Noneは未登録を表し、既存UIのthinking_levelを保つ。defaultは明示的な
+    provider既定値なので、gemini_api側でthinkingConfigを省略するsentinelへ
+    変換する。
+    """
+
+    if preference is None:
+        return generation_config
+    result = dict(generation_config or {})
+    effort = preference.get("effort", "default")
+    result["_response_reasoning_effort"] = effort
+    if effort != "default":
+        result["thinking_level"] = effort
+    return result
+
+
+def _ensure_anthropic_budget_capacity(max_tokens: Any, thinking: dict[str, Any] | None) -> Any:
+    """manual thinking予算が可視出力を食い潰さないよう上限を確保する。"""
+
+    if not isinstance(thinking, dict):
+        return max_tokens
+    budget_tokens = thinking.get("budget_tokens")
+    if not isinstance(budget_tokens, int) or budget_tokens <= 0:
+        return max_tokens
+    try:
+        current = int(max_tokens) if max_tokens is not None else 0
+    except (TypeError, ValueError):
+        current = 0
+    if current <= budget_tokens:
+        adjusted = budget_tokens + 1024
+        print(f"  - [Anthropic] max_tokens={current} is too small for thinking budget; using {adjusted}.")
+        return adjusted
+    return max_tokens
+
+
+def _get_gemini_connection_module():
+    """接続境界を必須として読み込み、認証先の無言切替を防ぐ。"""
+
+    import gemini_connection
+    return gemini_connection
+
+
+def _is_vertex_connection(connection: Any) -> bool:
+    """接続辞書が Vertex 接続かを秘密値へ触れずに判定する。"""
+
+    if not connection:
+        return False
+    module = _get_gemini_connection_module()
+    if module is not None:
+        try:
+            return bool(module.is_vertex(connection=connection))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return str(connection.get("backend", "")).strip().lower() == "vertex" if isinstance(connection, dict) else False
+
+
+def _get_gemini_connection(*, room_name: str | None = None, force_global: bool = False):
+    module = _get_gemini_connection_module()
+    if module is None:
+        return None
+    return module.normalize_connection(
+        module.get_connection(room_name=room_name, force_global=force_global), require_valid=True,
+    )
 
 
 class LLMFactory:
@@ -95,6 +281,8 @@ class LLMFactory:
         internal_role: str = None,  # [Phase 2] "processing", "summarization", "supervisor"
         delegation_model_override: tuple[str, str, str] | None = None,
         gemini_cached_content: str | None = None,
+        response_model: bool = False,
+        gemini_connection_config: dict[str, Any] | None = None,
     ):
         """
         現在の設定(active_provider)に基づいて、適切なLangChain ChatModelインスタンスを生成して返す。
@@ -113,6 +301,9 @@ class LLMFactory:
             internal_role: [Phase 2] 内部処理のロール。"processing", "summarization", "supervisor"のいずれか。
                           指定すると、config.jsonの内部モデル設定に基づいてプロバイダとモデルを自動選択。
             delegation_model_override: 委任実行モデルの三つ組上書き。(provider_cat, model, profile)
+            response_model: 主応答モデルのときだけ対象別推論設定を適用する。内部ロールでは無視する。
+            gemini_connection_config: 応答開始時、または内部実行入口で固定した Gemini 接続辞書。内部用途は
+                                      共通接続を優先し、Vertex の接続切替を防ぐ。
         """
         config_manager.load_config() 
         
@@ -137,25 +328,36 @@ class LLMFactory:
             sanitized_model_name = utils.sanitize_model_name(effective_model_name or "")
 
             # 3. プロバイダごとの分岐処理
-            if active_provider == "google" or active_provider == "Google (Gemini)":
+            if active_provider in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+                # 内部用途はルーム個別設定を使わず、共通接続を固定する。Vertex の場合は
+                # Developer API キーを混ぜないため、以下の従来キー処理を完全に迂回する。
+                gemini_connection = (
+                    _get_gemini_connection(force_global=True)
+                    if gemini_connection_config is None else
+                    _get_gemini_connection_module().normalize_connection(gemini_connection_config, require_valid=True)
+                )
+                is_vertex = _is_vertex_connection(gemini_connection)
                 # [2026-02-21 FIX] プロバイダ直接指定時でも、キーが枯渇していれば自動フォールバックを試みる
-                if api_key:
+                if api_key and not is_vertex:
                     key_name_temp = config_manager.get_key_name_by_value(api_key)
                     if key_name_temp and config_manager.is_key_exhausted(key_name_temp, model_name=sanitized_model_name):
                         print(f"--- [LLM Factory] (Role: {internal_role}) Provided API key '{key_name_temp}' is exhausted. Switching to rotation. ---")
                         api_key = None
 
-                if not api_key:
+                if not api_key and not is_vertex:
                     # [2026-02-01 FIX] 内部処理(internal_role)ではルーム個別設定ではなく共通設定のAPIキーを優先する
                     api_key = config_manager.get_active_gemini_api_key(None, model_name=sanitized_model_name)
-                if not api_key:
+                if not api_key and not is_vertex:
                     raise ValueError("Google provider requires an API key. No valid key found.")
-                return gemini_api.get_configured_llm(
-                    model_name=sanitized_model_name,
-                    api_key=api_key,
-                    generation_config=generation_config or {},
-                    cached_content=None,
-                )
+                configured_kwargs = {
+                    "model_name": sanitized_model_name,
+                    "api_key": None if is_vertex else api_key,
+                    "generation_config": generation_config or {},
+                    "cached_content": None,
+                }
+                if gemini_connection is not None:
+                    configured_kwargs["connection"] = gemini_connection
+                return gemini_api.get_configured_llm(**configured_kwargs)
             elif active_provider == "local":
                 local_model_path = config_manager.LOCAL_MODEL_PATH
                 if local_model_path:
@@ -205,7 +407,8 @@ class LLMFactory:
                 if active_provider == "openai_official":
                     base_url = "https://api.openai.com/v1"
                 
-                return ChatOpenAI(**_build_chat_openai_kwargs(
+                chat_client, client_extra = _openai_client_for_base_url(base_url)
+                return chat_client(**_build_chat_openai_kwargs(
                     base_url=base_url,
                     api_key=openai_setting.get("api_key") or "dummy",
                     model_name=sanitized_model_name,
@@ -213,7 +416,7 @@ class LLMFactory:
                     top_p=openai_setting.get("top_p", top_p),
                     max_tokens=openai_setting.get("max_tokens"),
                     streaming=True
-                ))
+                ), **client_extra)
             else:
                 # 互換性維持: active_provider がプロファイルの可能性（旧形式）
                 openai_setting = config_manager.get_openai_setting_by_name(active_provider)
@@ -248,7 +451,8 @@ class LLMFactory:
                 elif provider_name == "Moonshot AI" or "moonshot" in base_url:
                     if target_temp != 1.0: target_temp = 1.0
 
-                return ChatOpenAI(**_build_chat_openai_kwargs(
+                chat_client, client_extra = _openai_client_for_base_url(base_url)
+                return chat_client(**_build_chat_openai_kwargs(
                     base_url=base_url,
                     api_key=openai_api_key,
                     model_name=sanitized_model_name,
@@ -257,7 +461,7 @@ class LLMFactory:
                     max_tokens=max_tokens,
                     max_retries=max_retries,
                     streaming=True
-                ))
+                ), **client_extra)
         
         # --- 以下は既存ロジック（internal_role未指定時） ---
         
@@ -276,43 +480,82 @@ class LLMFactory:
             active_provider = "google"
 
         # --- Google Gemini (Native) ---
-        if active_provider == "google" or active_provider == "Google (Gemini)":
+        if active_provider in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
             key_name_for_log = "Unknown"
+
+            # 主応答はルーム接続を取得する。ストリーム入口から接続辞書を渡された場合は
+            # それを使い、同一ターン中に設定再読込で Vertex/Developer が入れ替わらないようにする。
+            gemini_connection = None if force_google else gemini_connection_config
+            if gemini_connection is None:
+                gemini_connection = _get_gemini_connection(
+                    room_name=room_name,
+                    force_global=force_google,
+                )
+            gemini_connection = _get_gemini_connection_module().normalize_connection(
+                gemini_connection, require_valid=True,
+            )
+            is_vertex = _is_vertex_connection(gemini_connection)
             
             # [2026-02-21 FIX] 既にAPIキーが渡されていても、枯渇している場合は自動補完（ローテーション）に委ねる
-            if api_key:
+            if api_key and not is_vertex:
                 key_name_temp = config_manager.get_key_name_by_value(api_key)
                 if key_name_temp and config_manager.is_key_exhausted(key_name_temp, model_name=internal_model_name):
                     print(f"--- [LLM Factory] Provided API key '{key_name_temp}' is exhausted for '{internal_model_name}'. Falling back to rotation. ---")
                     api_key = None
 
             # api_key が未指定なら自動補完
-            if not api_key:
+            if not api_key and not is_vertex:
                 api_key = config_manager.get_active_gemini_api_key(room_name, model_name=internal_model_name)
                 # 設定から取得した場合、そのコンテキストでの名前も取得
                 key_name = config_manager.get_active_gemini_api_key_name(room_name, model_name=internal_model_name)
                 if key_name:
                     key_name_for_log = key_name
-            else:
+            elif not is_vertex:
                 # 既にAPIキーが渡されている場合、値から逆引きして名前を特定
                 key_name_for_log = config_manager.get_key_name_by_value(api_key)
 
-            if not api_key:
+            if not api_key and not is_vertex:
                 raise ValueError("Google provider requires an API key. No valid key found.")
 
             # マスクされたキーを作成 (例: AIza...5678)
-            masked_key = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "***"
+            masked_key = f"{api_key[:4]}...{api_key[-4:]}" if api_key and len(api_key) > 8 else "***"
             
             print(f"--- [LLM Factory] Initializing Gemini Model ---")
             print(f"  - Model: {internal_model_name}")
-            print(f"  - API Key: {key_name_for_log} ({masked_key})")
+            if not is_vertex:
+                print(f"  - API Key: {key_name_for_log} ({masked_key})")
+            else:
+                print("  - Connection: Vertex (credentials remain in connection boundary)")
                 
-            return gemini_api.get_configured_llm(
-                model_name=internal_model_name,
-                api_key=api_key,
-                generation_config=generation_config,
-                cached_content=gemini_cached_content,
-            )
+            response_generation_config = generation_config
+            if response_model:
+                from response_reasoning import make_target
+
+                try:
+                    from response_reasoning_settings import make_gemini_target
+
+                    target = make_gemini_target(
+                        internal_model_name,
+                        room_name,
+                        connection=gemini_connection,
+                    )
+                except (ImportError, AttributeError, TypeError):
+                    target = make_target("google", internal_model_name)
+                _, response_preference = _response_reasoning_kwargs(target, room_name)
+                response_generation_config = _apply_gemini_response_reasoning(
+                    generation_config,
+                    response_preference,
+                )
+
+            configured_kwargs = {
+                "model_name": internal_model_name,
+                "api_key": None if is_vertex else api_key,
+                "generation_config": response_generation_config,
+                "cached_content": None if is_vertex else gemini_cached_content,
+            }
+            if gemini_connection is not None:
+                configured_kwargs["connection"] = gemini_connection
+            return gemini_api.get_configured_llm(**configured_kwargs)
 
         # --- Local GGUF (llama-cpp-python) ---
         elif active_provider == "local":
@@ -436,7 +679,23 @@ class LLMFactory:
             print(f"  - Base URL: {base_url}")
             print(f"  - Model: {internal_model_name}")
 
-            return ChatOpenAI(**_build_chat_openai_kwargs(
+            reasoning_kwargs: dict[str, Any] = {}
+            if response_model:
+                from response_reasoning import make_target
+
+                target = make_target(
+                    "openai",
+                    internal_model_name,
+                    base_url=base_url or "",
+                    profile=(openai_setting or {}).get("name") or provider_name or "",
+                )
+                reasoning_kwargs, _ = _response_reasoning_kwargs(target, room_name)
+
+            # 現行SDKが落とすOpenRouterのreasoning_detailsとraw costを
+            # invoke/stream双方で保持し、stream usageを明示的に要求する。
+            chat_client, client_extra = _openai_client_for_base_url(base_url)
+
+            return chat_client(**_build_chat_openai_kwargs(
                 base_url=base_url,
                 api_key=openai_api_key,
                 model_name=internal_model_name,
@@ -445,8 +704,10 @@ class LLMFactory:
                 max_tokens=max_tokens,
                 max_retries=max_retries,
                 streaming=True,
-                model_kwargs=model_kwargs
-            ))
+                model_kwargs=model_kwargs,
+                reasoning_effort=reasoning_kwargs.get("reasoning_effort"),
+                extra_body=reasoning_kwargs.get("extra_body"),
+            ), **client_extra)
 
         # --- Anthropic ---
         elif active_provider == "anthropic":
@@ -478,6 +739,21 @@ class LLMFactory:
                         model_kwargs[k] = v
                 if "max_tokens" in generation_config:
                     max_tokens = generation_config["max_tokens"]
+
+            reasoning_kwargs: dict[str, Any] = {}
+            if response_model:
+                from response_reasoning import make_target
+
+                target = make_target("anthropic", internal_model_name)
+                reasoning_kwargs, _ = _response_reasoning_kwargs(target, room_name)
+                max_tokens = _ensure_anthropic_budget_capacity(
+                    max_tokens,
+                    reasoning_kwargs.get("thinking"),
+                )
+                response_model_kwargs = reasoning_kwargs.get("model_kwargs")
+                if isinstance(response_model_kwargs, dict):
+                    model_kwargs = dict(model_kwargs)
+                    model_kwargs.update(response_model_kwargs)
                     
             from langchain_anthropic import ChatAnthropic
             
@@ -486,11 +762,13 @@ class LLMFactory:
             return ChatAnthropic(**_build_anthropic_client_kwargs(
                 model_name=internal_model_name,
                 api_key=anthropic_api_key,
-                temperature=temperature,
+                temperature=1.0 if reasoning_kwargs.get("thinking") else temperature,
                 max_tokens=max_tokens,
                 max_retries=max_retries,
                 streaming=True,
                 model_kwargs=model_kwargs,
+                effort=reasoning_kwargs.get("effort"),
+                thinking=reasoning_kwargs.get("thinking"),
             ))
 
         # --- Claude Subscription (Agent SDK) ---
@@ -548,10 +826,28 @@ class LLMFactory:
             
         fallback_enabled = settings.get("fallback_enabled", True)
         fallback_order = settings.get("fallback_order", ["google"])
+
+        # Vertex の接続失敗は Developer API や別プロジェクトへ切り替えない。
+        # provider='google' を維持したまま、接続境界の失敗を呼び出し側へ返す。
+        primary_connection = None
+        if primary_provider in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+            if internal_role:
+                primary_connection = _get_gemini_connection(force_global=True)
+            else:
+                primary_connection = kwargs.get("gemini_connection_config")
+                if primary_connection is None:
+                    primary_connection = _get_gemini_connection(room_name=room_name)
+        primary_is_vertex = _is_vertex_connection(primary_connection)
+        if primary_is_vertex:
+            create_kwargs = {**kwargs, "gemini_connection_config": primary_connection}
+            return LLMFactory.create_chat_model(
+                internal_role=internal_role, room_name=room_name,
+                temperature=temperature, **create_kwargs,
+            )
         
         # 試行するプロバイダリストを構築（プライマリ + フォールバック順）
         providers_to_try = [primary_provider]
-        if fallback_enabled:
+        if fallback_enabled and not primary_is_vertex:
             for fb_provider in fallback_order:
                 if fb_provider != primary_provider and fb_provider not in providers_to_try:
                     providers_to_try.append(fb_provider)
@@ -565,11 +861,14 @@ class LLMFactory:
                 config_manager.save_config_if_changed("internal_model_settings", settings)
                 
                 print(f"[LLM Factory] Trying provider: {provider} (Role: {internal_role})")
+                create_kwargs = dict(kwargs)
+                if primary_is_vertex and provider in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+                    create_kwargs.setdefault("gemini_connection_config", primary_connection)
                 model = LLMFactory.create_chat_model(
                     internal_role=internal_role,
                     room_name=room_name,
                     temperature=temperature,
-                    **kwargs
+                    **create_kwargs
                 )
                 
                 # 成功したらプロバイダを元に戻す
@@ -613,7 +912,16 @@ class LLMFactory:
         Returns:
             (response, used_api_key): レスポンスオブジェクトと実際に使用されたAPIキー
         """
-        import time
+        from api.lite_runtime_controls import (
+            LiteRequestStopped,
+            checkpoint_lite_request,
+            get_current_lite_request_scope,
+            mark_lite_external_request_finished,
+            mark_lite_external_request_started,
+            wait_lite_retry,
+        )
+
+        lite_scope = get_current_lite_request_scope()
 
         def _chain_text(exc) -> str:
             # 例外チェーン（__cause__/__context__）全体を文字列化する。
@@ -636,17 +944,28 @@ class LLMFactory:
         
         provider_cat, _, _ = config_manager.get_effective_internal_model(internal_role)
         is_google = provider_cat in ["google", "Google (Gemini)", "Google (Gemini Native)"]
+        gemini_connection = _get_gemini_connection(force_global=True) if is_google else None
+        is_vertex = _is_vertex_connection(gemini_connection)
         
         # 2. 初期APIキーの特定
         # [2026-06-23 FIX] 内部処理(delegation以外)は、呼び出し元がルーム個別キーを渡してきても
         # 常に共通設定のキーから開始する（個別設定の有料キー/ローテーション無効を内部処理に波及させない）。
-        if is_google and internal_role != "delegation":
+        if is_vertex:
+            # Vertex ADC/API-key 接続は Developer API キー台帳と独立している。
+            # APIキー名を作らず、接続辞書だけを全試行で固定する。
+            current_api_key = None
+            current_key_name = "Vertex"
+        elif is_google and internal_role != "delegation":
             api_key = config_manager.get_active_gemini_api_key(None)
+            current_api_key = api_key
+            current_key_name = config_manager.get_key_name_by_value(current_api_key)
         elif is_google and not api_key:
             api_key = config_manager.get_active_gemini_api_key(None)
-            
-        current_api_key = api_key
-        current_key_name = config_manager.get_key_name_by_value(current_api_key)
+            current_api_key = api_key
+            current_key_name = config_manager.get_key_name_by_value(current_api_key)
+        else:
+            current_api_key = api_key
+            current_key_name = config_manager.get_key_name_by_value(current_api_key)
         
         tried_keys = set()
         if current_key_name != "Unknown":
@@ -657,7 +976,7 @@ class LLMFactory:
         sanitized_model_name = utils.sanitize_model_name(effective_model_name or "")
             
         # 全キーを1周試してもダメなら諦めるための最大回数
-        all_keys_count = len(config_manager.GEMINI_API_KEYS)
+        all_keys_count = 0 if is_vertex else len(config_manager.GEMINI_API_KEYS)
         if max_retries is None:
             max_retries = max(5, all_keys_count)
             
@@ -674,8 +993,9 @@ class LLMFactory:
 
         last_error = None
         for attempt in range(max_retries):
+            checkpoint_lite_request(lite_scope)
             # A. 枯渇チェック (Googleのみ)
-            if is_google and config_manager.is_key_exhausted(current_key_name, model_name=sanitized_model_name):
+            if is_google and not is_vertex and config_manager.is_key_exhausted(current_key_name, model_name=sanitized_model_name):
                 if not rotation_enabled:
                     print(f"  [LLM Factory Rotation] Key '{current_key_name}' exhausted and rotation disabled (common setting). Giving up.")
                     raise Exception("APIキーが枯渇しています（共通設定でローテーション無効）。")
@@ -695,33 +1015,66 @@ class LLMFactory:
 
             # B. モデル生成
             try:
+                checkpoint_lite_request(lite_scope)
                 llm = LLMFactory.create_chat_model(
                     api_key=current_api_key,
                     generation_config=generation_config,
                     internal_role=internal_role,
                     room_name=room_name,
                     temperature=temperature,
-                    top_p=top_p
+                    top_p=top_p,
+                    gemini_connection_config=gemini_connection,
                 )
 
                 # C. 実行
                 # 戻り値として (response, used_api_key) を返す
-                response = llm.invoke(prompt)
+                mark_lite_external_request_started(lite_scope)
+                try:
+                    response = llm.invoke(prompt)
+                finally:
+                    mark_lite_external_request_finished(lite_scope)
                 try:
                     import usage_ledger
                     source = "delegation" if internal_role == "delegation" else "internal"
+                    extra_usage = _usage_route_metadata(llm, gemini_connection)
+                    if is_vertex:
+                        connection_id = None
+                        module = _get_gemini_connection_module()
+                        if module is not None:
+                            try:
+                                connection_id = module.connection_id(gemini_connection)
+                            except (AttributeError, TypeError, ValueError):
+                                connection_id = None
+                        extra_usage.update({
+                            "billing_backend": "vertex",
+                            "is_paid": True,
+                        })
+                        if connection_id:
+                            extra_usage["connection_id"] = connection_id
+                    record_kwargs = {
+                        "api_key_name": "" if is_vertex else current_key_name,
+                    }
+                    if extra_usage:
+                        record_kwargs["extra_usage"] = extra_usage
                     usage_ledger.record_response(
                         response,
                         sanitized_model_name,
                         source,
-                        api_key_name=current_key_name,
+                        **record_kwargs,
                     )
                 except Exception:
                     pass
-                return response, current_api_key
+                return response, None if is_vertex else current_api_key
+            except LiteRequestStopped:
+                raise
             except Exception as e:
                 last_error = e
                 err_str = _chain_text(e).upper()
+
+                # Vertex の失敗は同一接続のエラーとして返し、Developer APIキーの
+                # 枯渇判定・有料キー待機・ローテーションへ流さない。
+                if is_vertex:
+                    raise e
                 
                 # 429: 枯渇
                 if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "TOO_MANY_REQUESTS" in err_str:
@@ -731,7 +1084,7 @@ class LLMFactory:
                         config_manager.mark_key_as_exhausted(current_key_name, model_name=sanitized_model_name, limit_type=limit_type)
                     else:
                         print(f"  [LLM Factory] Rate limit error (429) for non-Google provider. Retrying...")
-                    time.sleep(2 * (attempt + 1))
+                    wait_lite_retry(2 * (attempt + 1), lite_scope)
                     continue
                 
                 # 503/502/504/500: 一時的なサーバーエラー または ネットワーク接続エラー
@@ -744,7 +1097,7 @@ class LLMFactory:
                         raise e
                     wait = min(2 * server_error_retries, 8)
                     print(f"  [LLM Factory] Server/Connection error (retry {server_error_retries}/{MAX_SERVER_ERROR_RETRIES}, same key '{current_key_name}', wait {wait}s). Details: {str(e)[:120]}")
-                    time.sleep(wait)
+                    wait_lite_retry(wait, lite_scope)
                     continue
                 else:
                     # その他の致命的なエラー

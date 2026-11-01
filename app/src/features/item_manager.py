@@ -9,6 +9,26 @@ import constants
 # ロガーの設定
 logger = logging.getLogger(__name__)
 
+
+def build_consumed_item_chat_input(item: Dict, amount: int = 1, *, include_amount: bool = False) -> str:
+    """本体とLiteで共用する、アイテム消費後のチャット入力を生成する。"""
+    taste = item.get("taste_profile", {}) or {}
+    physical = item.get("physical_sensation", {}) or item.get("physical", {}) or {}
+    synesthesia = item.get("synesthesia", {}) or {}
+    item_name = item.get("name") or "アイテム"
+    amount_text = f" を {max(1, int(amount or 1))} 個" if include_amount else " を"
+
+    return (
+        f"*{item_name}{amount_text}口に含んだ...*\n"
+        f"{item.get('flavor_text', '') or item.get('description', '')}\n\n"
+        f"(味覚データ: 甘味{taste.get('sweetness')}, 塩味{taste.get('saltiness')}, "
+        f"酸味{taste.get('sourness')}, 苦味{taste.get('bitterness')}, 旨味{taste.get('umami')})\n"
+        f"(物理感覚: 温度{physical.get('temperature')}, 渋み{physical.get('astringency')}, "
+        f"とろみ{physical.get('viscosity')}, 重み{physical.get('weight')})\n"
+        f"(イメージ: 色 {synesthesia.get('color')} / 感情 {synesthesia.get('emotion')} / "
+        f"情景 {synesthesia.get('landscape')})"
+    )
+
 class ItemManager:
     """
     アイテムデータ（主に食べ物アイテムシステム）の管理を行うクラス。

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import constants
+from file_lock_utils import safe_json_read, safe_json_update, safe_json_write
 from utils import normalized_text_similarity
 from resolution_memory import is_substantive_reflection, save_resolution_insight
 
@@ -75,11 +76,12 @@ class PurposeProfileManager:
         if not self.profile_path.exists():
             return self.ensure_profile()
 
-        with open(self.profile_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        data = safe_json_read(str(self.profile_path), default={})
+        return self._profile_with_defaults(data)
 
+    def _profile_with_defaults(self, data: Dict[str, Any]) -> Dict[str, Any]:
         profile = self.default_profile()
-        profile.update(data if isinstance(data, dict) else {})
+        profile.update(deepcopy(data) if isinstance(data, dict) else {})
         profile["metadata"] = {
             **self.default_profile().get("metadata", {}),
             **(profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}),
@@ -101,8 +103,11 @@ class PurposeProfileManager:
         reason: str = "",
     ) -> Dict[str, Any]:
         """Persona-safe update for active interests and open questions."""
-        profile = self.ensure_profile()
+        self.ensure_profile()
+        expected_profile = safe_json_read(str(self.profile_path), default={})
+        profile = self._profile_with_defaults(expected_profile)
         now = self._now()
+        pruned_items = []
 
         if active_interests is not None:
             before_count = len(profile.get("active_interests", []))
@@ -117,6 +122,7 @@ class PurposeProfileManager:
                 open_questions,
                 now,
                 existing_items=profile.get("open_questions", []),
+                pruned_items=pruned_items,
             )
             after_count = len(normalized_questions)
             if before_count > 0 and after_count < before_count / 2 and not reason.strip():
@@ -133,7 +139,10 @@ class PurposeProfileManager:
 
         profile["updated_at"] = now
         profile.setdefault("metadata", {})["last_persona_update_reason"] = reason or "active purpose update"
-        self._save(profile)
+        self._save(profile, expected_profile=expected_profile)
+        # 別ストアへのフィードバックは保存成功・ロック解放後だけ行う。
+        for item in pruned_items:
+            self._record_open_question_trace(item, trace_kind="pruned", reason="open_questions_limit")
         return profile
 
     def propose_change(self, field: str, proposal: str, reason: str, proposed_by: str = "persona") -> Dict[str, Any]:
@@ -219,38 +228,79 @@ class PurposeProfileManager:
         if not self.profile_path.exists():
             return self.default_profile()
 
-        profile = self.load_profile()
-        now = self._now()
-        changed = False
-        closed_status = status if status in {"completed", "abandoned"} else "closed"
-        goal_key = self._normalize_text_for_dedup(goal_text)
-        new_interests = []
+        goal_data = safe_json_read(str(self.room_dir / "goals.json"), default={})
+        active = goal_data.get("short_term", []) + goal_data.get("long_term", [])
+        ambiguous_legacy_text = any(
+            str(g.get("id", "")) != goal_id and str(g.get("goal", "")).strip() == goal_text.strip()
+            for g in active
+        )
 
-        for item in profile.get("active_interests", []):
-            if not isinstance(item, dict):
-                new_interests.append(item)
-                continue
-            item_goal_id = str(item.get("goal_id", "")).strip()
-            item_source = str(item.get("source", "")).strip()
-            item_key = self._normalize_text_for_dedup(self._item_text(item, ["topic", "question"]))
-            matches_id = bool(goal_id and item_goal_id == goal_id)
-            matches_goal_text = (
-                bool(goal_key and item_source == "goal" and item_key)
-                and self._find_similar_index(goal_key, [item_key]) is not None
-            )
-            if matches_id or matches_goal_text:
-                changed = True
-                continue
-            new_interests.append(item)
+        def mutate(profile):
+            interests = profile.get("active_interests", [])
+            remaining = [
+                item for item in interests
+                if not self._matches_goal_interest(item, goal_id, goal_text)
+                or (ambiguous_legacy_text and not item.get("goal_id"))
+            ]
+            if remaining != interests:
+                profile["active_interests"] = remaining
+                profile["updated_at"] = self._now()
+                metadata = profile.setdefault("metadata", {})
+                metadata["last_goal_sync_at"] = self._now()
+                metadata["last_goal_sync_reason"] = f"goal_{goal_id or 'unknown'}_{status}"
+            return profile
 
-        if changed:
-            profile["active_interests"] = new_interests
-            profile["updated_at"] = now
-            metadata = profile.setdefault("metadata", {})
-            metadata["last_goal_sync_at"] = now
-            metadata["last_goal_sync_reason"] = f"goal_{goal_id or 'unknown'}_{closed_status}"
-            self._save(profile)
-        return profile
+        result = {}
+        def update(data):
+            result.update(mutate(data))
+            return result
+        safe_json_update(str(self.profile_path), update, default=self.default_profile())
+        return result
+
+    @staticmethod
+    def _matches_goal_interest(item, goal_id: str, goal_text: str) -> bool:
+        """別IDや本人が書いた独立した関心を、文章の類似だけで閉じない。"""
+        if not isinstance(item, dict) or item.get("source") != "goal":
+            return False
+        item_id = str(item.get("goal_id") or "").strip()
+        if item_id:
+            return bool(goal_id and item_id == goal_id)
+        return bool(goal_text and str(item.get("topic") or "").strip() == goal_text.strip())
+
+    def _closed_goal_interest_filter(self, *, include_paused: bool = False):
+        """正本の終了記録だけを参照する。欠落や古さから終了を推測しない。"""
+        goals = safe_json_read(str(self.room_dir / "goals.json"), default={})
+        if not isinstance(goals, dict):
+            return lambda item: False
+        active = goals.get("short_term", []) + goals.get("long_term", [])
+        closed = goals.get("completed", []) + goals.get("abandoned", [])
+        if include_paused:
+            closed += [g for g in active if g.get("status") == "paused"]
+            active = [g for g in active if g.get("status") != "paused"]
+        def is_closed(item):
+            if any(self._matches_goal_interest(item, g.get("id", ""), g.get("goal", "")) for g in active):
+                return False
+            return any(self._matches_goal_interest(item, g.get("id", ""), g.get("goal", "")) for g in closed)
+        return is_closed
+
+    def reconcile_closed_goal_interests(self) -> Dict[str, Any]:
+        """過去の同期漏れを睡眠時に修復する。関心や問いの独立記録は残す。"""
+        if not self.profile_path.exists():
+            return self.default_profile()
+        is_closed = self._closed_goal_interest_filter()
+        result = {}
+        def update(profile):
+            interests = profile.get("active_interests", [])
+            remaining = [item for item in interests if not is_closed(item)]
+            if remaining != interests:
+                profile["active_interests"] = remaining
+                profile["updated_at"] = self._now()
+                profile.setdefault("metadata", {})["last_goal_sync_reason"] = "closed_goal_reconciliation"
+                profile["metadata"]["last_goal_sync_at"] = self._now()
+            result.update(profile)
+            return profile
+        safe_json_update(str(self.profile_path), update, default=self.default_profile())
+        return result
 
     def sync_from_question_closure(self, question_text: str, action: str = "resolved") -> Dict[str, Any]:
         """
@@ -309,8 +359,12 @@ class PurposeProfileManager:
 
         安定領域は直接変更せず、週次以上の省察で高優先度の反復関心だけ提案に回す。
         """
-        profile = self.ensure_profile()
+        self.reconcile_closed_goal_interests()
+        self.ensure_profile()
+        expected_profile = safe_json_read(str(self.profile_path), default={})
+        profile = self._profile_with_defaults(expected_profile)
         now = self._now()
+        pruned_items = []
 
         active_interests = list(profile.get("active_interests", []))
         open_questions = list(profile.get("open_questions", []))
@@ -326,6 +380,7 @@ class PurposeProfileManager:
             open_questions,
             now,
             existing_items=profile.get("open_questions", []),
+            pruned_items=pruned_items,
         )
 
         if reflection_level >= 2:
@@ -335,10 +390,20 @@ class PurposeProfileManager:
         metadata["last_sleep_consolidated_at"] = now
         metadata["last_sleep_consolidation_reason"] = reason
         profile["updated_at"] = now
-        self._save(profile)
+        self._save(profile, expected_profile=expected_profile)
+        # 別ストアへのフィードバックは保存成功・ロック解放後だけ行う。
+        for item in pruned_items:
+            self._record_open_question_trace(item, trace_kind="pruned", reason="open_questions_limit")
         return profile
 
-    def get_summary_for_prompt(self, max_items: int = 5) -> str:
+    def get_current_profile(self) -> Dict[str, Any]:
+        """通常の注意・動機用ビュー。終了・保留した目標のコピーだけを除く。"""
+        profile = self.load_profile()
+        excluded = self._closed_goal_interest_filter(include_paused=True)
+        profile["active_interests"] = [i for i in profile.get("active_interests", []) if not excluded(i)]
+        return profile
+
+    def get_summary_for_prompt(self, max_items: int = 5, *, presented_goals: Optional[List[Dict[str, Any]]] = None) -> str:
         profile = self.ensure_profile()
 
         def bullet_list(values: Any, key: str = "") -> List[str]:
@@ -359,7 +424,21 @@ class PurposeProfileManager:
 
         sections = ["\n### Purpose Profile（目的意識）"]
         stable = bullet_list(profile.get("stable_interests"))
-        active = bullet_list(profile.get("active_interests"), "topic")
+        is_closed = self._closed_goal_interest_filter(include_paused=True)
+        # 終了済みを候補から除外し、表示上限内の完全な複製だけを省く。
+        # 重複の分を後順位で埋めず、入力情報量を不用意に増やさない。
+        active_candidates = [item for item in profile.get("active_interests", []) if not is_closed(item)][:max_items]
+        active = bullet_list([
+            item for item in active_candidates
+            if not any(
+                isinstance(item, dict)
+                and item.get("source") == "goal"
+                and item.get("goal_id") == goal.get("id")
+                and bool(goal.get("id"))
+                and str(item.get("topic") or "").strip() == str(goal.get("goal") or "").strip()
+                for goal in (presented_goals or [])
+            )
+        ], "topic")
         questions = bullet_list(profile.get("open_questions"), "question")
         preferred = bullet_list(profile.get("preferred_behaviors"))
         avoid = bullet_list(profile.get("avoid_behaviors"))
@@ -416,6 +495,7 @@ class PurposeProfileManager:
         return self._merge_similar_items(
             normalized,
             key_candidates=["topic", "question"],
+            preserve_goal_identity=True,
         )[:PURPOSE_ACTIVE_INTERESTS_MAX]
 
     def _normalize_open_questions(
@@ -423,6 +503,7 @@ class PurposeProfileManager:
         items: List[Dict[str, Any]],
         now: str,
         existing_items: Optional[List[Dict[str, Any]]] = None,
+        pruned_items: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         normalized = self._normalize_items(items, now)
         self._normalize_question_priorities(normalized, existing_items or [])
@@ -432,7 +513,7 @@ class PurposeProfileManager:
             fill_fields=["context"],
             priority_default=PURPOSE_QUESTION_DEFAULT_PRIORITY,
         )
-        return self._limit_open_questions(deduped)
+        return self._limit_open_questions(deduped, pruned_items=pruned_items)
 
     def _merge_similar_items(
         self,
@@ -440,6 +521,7 @@ class PurposeProfileManager:
         key_candidates: List[str],
         fill_fields: Optional[List[str]] = None,
         priority_default: float = 0.0,
+        preserve_goal_identity: bool = False,
     ) -> List[Dict[str, Any]]:
         merged: List[Dict[str, Any]] = []
         normalized_keys: List[str] = []
@@ -453,7 +535,15 @@ class PurposeProfileManager:
             if not norm_key:
                 continue
 
-            duplicate_index = self._find_similar_index(norm_key, normalized_keys)
+            if preserve_goal_identity:
+                # 目標のコピーと本人の関心、別目標のコピーは、終了・保留の単位が異なる。
+                identity = self._goal_interest_identity(item)
+                eligible = [i for i, prior in enumerate(merged)
+                            if self._goal_interest_identity(prior) == identity]
+                match = self._find_similar_index(norm_key, [normalized_keys[i] for i in eligible])
+                duplicate_index = eligible[match] if match is not None else None
+            else:
+                duplicate_index = self._find_similar_index(norm_key, normalized_keys)
             if duplicate_index is None:
                 merged.append(dict(item))
                 normalized_keys.append(norm_key)
@@ -478,6 +568,13 @@ class PurposeProfileManager:
             ),
             reverse=True,
         )
+
+    @staticmethod
+    def _goal_interest_identity(item):
+        if item.get("source") == "goal":
+            # IDのない旧コピーも、明示ID付きの目標へ勝手に結び付けない。
+            return ("goal", str(item.get("goal_id") or "").strip())
+        return ("independent", "")
 
     def _normalize_question_priorities(
         self,
@@ -596,7 +693,7 @@ class PurposeProfileManager:
             metadata=metadata,
         )
 
-    def _limit_open_questions(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _limit_open_questions(self, items: List[Dict[str, Any]], *, pruned_items: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         sorted_items = sorted(
             items,
             key=lambda item: (
@@ -613,7 +710,10 @@ class PurposeProfileManager:
             f"{trimmed_count}件を切り捨てました。"
         )
         for item in sorted_items[PURPOSE_OPEN_QUESTIONS_MAX:]:
-            self._record_open_question_trace(item, trace_kind="pruned", reason="open_questions_limit")
+            if pruned_items is not None:
+                pruned_items.append(item)
+            else:
+                self._record_open_question_trace(item, trace_kind="pruned", reason="open_questions_limit")
         return sorted_items[:PURPOSE_OPEN_QUESTIONS_MAX]
 
     def _collect_research_thread_interests(self) -> List[Dict[str, Any]]:
@@ -779,7 +879,10 @@ class PurposeProfileManager:
         }
         proposals = profile.setdefault("proposed_changes", [])
         added = 0
+        excluded_goal = self._closed_goal_interest_filter(include_paused=True)
         for interest in profile.get("active_interests", []):
+            if excluded_goal(interest):
+                continue
             topic = str(interest.get("topic", "")).strip()
             if not topic:
                 continue
@@ -879,11 +982,18 @@ class PurposeProfileManager:
         self._save(profile)
         return profile
 
-    def _save(self, profile: Dict[str, Any]) -> None:
+    def _save(self, profile: Dict[str, Any], *, expected_profile: Optional[Dict[str, Any]] = None) -> None:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         normalized = self._normalize_profile(profile)
-        with open(self.profile_path, "w", encoding="utf-8") as f:
-            json.dump(normalized, f, ensure_ascii=False, indent=2)
+        if expected_profile is None:
+            safe_json_write(str(self.profile_path), normalized)
+            return
+
+        def update(current):
+            if current != expected_profile:
+                raise ValueError("Purpose Profileが別の処理で更新されました。再読してやり直してください。")
+            return normalized
+        safe_json_update(str(self.profile_path), update, default={})
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -18,6 +18,8 @@ Googleカレンダー連携のためのOAuth 2.0認証ヘルパー。
 import os
 from typing import Optional, List, Dict, Any, Tuple
 
+from tls_security import create_tls_context
+
 # Googleはcalendarスコープに加えて openid 等を返すことがあり、oauthlib がデフォルトで
 # 「Scope has changed」例外を投げる。手動コードフローでは無害なため緩和する。
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
@@ -252,7 +254,7 @@ def revoke_token(token: str) -> bool:
             _REVOKE_URI, data=data,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=create_tls_context()) as resp:
             return 200 <= resp.status < 300
     except Exception as e:  # noqa: BLE001
         print(f"--- [GoogleAuth] トークン失効リクエストに失敗（保存削除は継続）: {e} ---")

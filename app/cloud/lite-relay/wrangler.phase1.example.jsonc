@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nexus-ark-lite-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-15",
+  "compatibility_flags": ["global_fetch_strictly_public", "enable_request_signal"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "nexus-ark-lite-relay",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none",
+    "run_worker_first": ["/v1/*"]
+  },
+  "triggers": {
+    "crons": ["17 3 * * *", "*/5 * * * *"]
+  },
+  "secrets": {
+    "required": ["OWNER_AUTH_TOKEN", "BUNDLE_SIGNING_KEY", "GEMINI_PERSONAL_1"]
+  },
+  "vars": {
+    "APP_MODE": "phase1-single-persona",
+    "BUILD_ID": "phase1-local-build",
+    "TRAVEL_GEMINI_MODEL": "REPLACE_WITH_SELECTED_GEMINI_MODEL",
+    "PHASE0_GEMINI_MODEL": "disabled",
+    "PHASE0_OPENAI_MODEL": "disabled",
+    "PHASE0_ANTHROPIC_MODEL": "disabled",
+    "PHASE0_XAI_MODEL": "disabled",
+    "PHASE0_OPENROUTER_MODEL": "disabled"
+  }
+}

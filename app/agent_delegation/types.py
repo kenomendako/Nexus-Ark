@@ -59,7 +59,7 @@ class AgentBackend(Protocol):
         self,
         spec: AgentTaskSpec,
         *,
-        runner: Any = None,
+        control: Any = None,
         sdk_factory: Callable[[], Any] | None = None,
         client_factory: Callable[..., Any] | None = None,
     ) -> AgentRunResult:

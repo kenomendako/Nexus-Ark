@@ -1,6 +1,8 @@
 # === [CRITICAL FIX FOR EMBEDDED PYTHON] ===
 # This block MUST be at the absolute top of the file.
 import sys
+sys.dont_write_bytecode = True
+
 import os
 import base64
 import psutil
@@ -57,11 +59,135 @@ print("--- [Nexus Ark] ライブラリを読み込み中... (初回は2〜3分�
 # --- [ここまでが新しいブロック] ---
 
 
+
+def wire_response_reasoning_events(demo, global_panel, room_panel, global_inputs, room_inputs):
+    """応答推論パネルの読込と明示保存を、既存のモデル選択へ接続する。"""
+    from ui_handlers import response_reasoning as reasoning_handlers
+
+    gr.on(
+        triggers=[component.change for component in global_inputs],
+        fn=reasoning_handlers.load_global,
+        inputs=global_inputs, outputs=global_panel["outputs"],
+        show_progress="hidden", api_visibility="private",
+        trigger_mode="always_last",
+    )
+    gr.on(
+        triggers=[component.change for component in room_inputs],
+        fn=reasoning_handlers.load_room,
+        inputs=room_inputs, outputs=room_panel["outputs"],
+        show_progress="hidden", api_visibility="private",
+        trigger_mode="always_last",
+    )
+    global_panel["refresh"].click(
+        fn=reasoning_handlers.load_global,
+        inputs=global_inputs, outputs=global_panel["outputs"],
+        show_progress="hidden", api_visibility="private",
+    )
+    room_panel["refresh"].click(
+        fn=reasoning_handlers.load_room,
+        inputs=room_inputs, outputs=room_panel["outputs"],
+        show_progress="hidden", api_visibility="private",
+    )
+    global_panel["effort"].change(
+        fn=reasoning_handlers.update_budget,
+        inputs=[global_panel["effort"], global_panel["state"]],
+        outputs=[global_panel["budget"]],
+        show_progress="hidden", api_visibility="private",
+    )
+    room_panel["effort"].change(
+        fn=reasoning_handlers.update_budget,
+        inputs=[room_panel["effort"], room_panel["state"]],
+        outputs=[room_panel["budget"]],
+        show_progress="hidden", api_visibility="private",
+    )
+    global_panel["save"].click(
+        fn=reasoning_handlers.save_global,
+        inputs=global_inputs + [global_panel["effort"], global_panel["budget"], global_panel["state"]],
+        outputs=global_panel["outputs"],
+        show_progress="hidden", api_visibility="private",
+    )
+    room_panel["save"].click(
+        fn=reasoning_handlers.save_room,
+        inputs=room_inputs + [room_panel["effort"], room_panel["budget"], room_panel["state"]],
+        outputs=room_panel["outputs"],
+        show_progress="hidden", api_visibility="private",
+    )
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _outing_mode_visibility_js(mode: str) -> str:
+    """お出かけ本文の初回DOM生成中も、クリック直後から進行状況を表示する。"""
+    panel_ids = {
+        "setup": "outing_lite_setup",
+        "independent": "outing_lite_independent",
+        "export": "outing_export_panel",
+        "import": "outing_import_panel",
+    }
+    mode_labels = {
+        "setup": "Nexus Ark Lite",
+        "independent": "Lite独立モード",
+        "export": "外部AIへ持ち出す",
+        "import": "外部AIから帰宅",
+    }
+    target_id = panel_ids[mode]
+    serialized_ids = json.dumps(list(panel_ids.values()), ensure_ascii=False)
+    serialized_target = json.dumps(target_id, ensure_ascii=False)
+    serialized_label = json.dumps(mode_labels[mode], ensure_ascii=False)
+    return f"""() => {{
+        const panelIds = {serialized_ids};
+        const targetId = {serialized_target};
+        const modeLabel = {serialized_label};
+        const feedback = document.querySelector(
+            "#outing_mode_loading_feedback .outing-mode-loading-message"
+        );
+        if (feedback) {{
+            feedback.textContent = `「${{modeLabel}}」を開いています… 初回は数秒かかる場合があります。`;
+            feedback.hidden = false;
+        }}
+        window.__nexusOutingModeRequest = targetId;
+        if (window.__nexusOutingModeTimer) {{
+            window.clearInterval(window.__nexusOutingModeTimer);
+        }}
+        for (const panelId of panelIds) {{
+            const panel = document.getElementById(panelId);
+            if (!panel) continue;
+            const shouldShow = panelId === targetId;
+            panel.classList.toggle("hide", !shouldShow);
+            panel.classList.toggle("hidden", !shouldShow);
+            if (shouldShow) {{
+                panel.style.removeProperty("display");
+            }} else {{
+                panel.style.setProperty("display", "none", "important");
+            }}
+        }}
+        let attempts = 0;
+        const waitForPanel = window.setInterval(() => {{
+            attempts += 1;
+            if (window.__nexusOutingModeRequest !== targetId) {{
+                window.clearInterval(waitForPanel);
+                return;
+            }}
+            const target = document.getElementById(targetId);
+            if (target) {{
+                target.classList.remove("hide", "hidden");
+                target.style.removeProperty("display");
+                if (feedback) feedback.hidden = true;
+                window.clearInterval(waitForPanel);
+            }} else if (attempts >= 100) {{
+                if (feedback) {{
+                    feedback.textContent = "表示に時間がかかっています。もう一度ボタンを押してください。";
+                }}
+                window.clearInterval(waitForPanel);
+            }}
+        }}, 100);
+        window.__nexusOutingModeTimer = waitForPanel;
+    }}"""
 
 
 def _ensure_localhost_no_proxy():
@@ -169,6 +295,20 @@ def _open_local_browser_later(port: int) -> None:
         print(f"--- [Browser Warning] ブラウザ起動スレッドを開始できませんでした: {e} ---")
 
 
+def _start_update_trial_ready_monitor(port: int) -> None:
+    """原子更新trial時だけ、HTTP ready後の成功marker監視を開始する。"""
+    if os.environ.get("NEXUS_ARK_UPDATE_TRIAL") != "1":
+        return
+    try:
+        from update_host.trial import start_trial_ready_monitor
+
+        start_trial_ready_monitor(Path(script_dir), port)
+        print("--- [Update Trial] 起動成功markerの監視を開始しました ---")
+    except Exception as exc:
+        print(f"--- [Update Trial Error] marker監視を開始できません: {exc} ---")
+        raise
+
+
 def _style_tag_to_css(style_text: str) -> str:
     """gr.HTML用の<style>...</style>文字列をlaunch(css=...)用のCSSへ変換する。"""
     if not isinstance(style_text, str):
@@ -188,9 +328,10 @@ import shutil
 import utils
 import json
 import gradio as gr
+from emotion_ui import build_emotion_panel
 import traceback
 import pandas as pd
-import config_manager, room_manager, alarm_manager, ui_handlers, constants, onboarding_manager, timers
+import config_manager, room_manager, alarm_manager, ui_handlers, constants, onboarding_manager, timers, lite_travel
 ui_handlers.log_memory_diagnostics("app_imports:after_core_imports")
 try:
     import discord_manager
@@ -879,7 +1020,7 @@ try:
                             )
                             with gr.Accordion("🔑 APIキー / Webhook管理", open=False):
                                 gr.Markdown("<small>💾 APIキーとWebhookは各保存ボタンで保存します。有料キーの指定は変更時に自動保存されます。</small>")
-                                with gr.Accordion("Gemini APIキー", open=True):
+                                with gr.Accordion("Gemini（AI Studio）", open=False):
                                     gemini_key_name_input = gr.Textbox(label="キーの名前（管理用の半角英数字）", placeholder="例: my_personal_key")
                                     gemini_key_value_input = gr.Textbox(label="APIキーの値", type="password")
                                     with gr.Row():
@@ -899,6 +1040,9 @@ try:
                                         value=config_manager.CONFIG_GLOBAL.get("paid_api_key_names", []),
                                         interactive=True
                                     )
+                                from gemini_connection_ui import build_vertex_key_management_panel
+                                vertex_key_management_panel = build_vertex_key_management_panel()
+
                                 # [新規追加] OpenAI 公式
                                 with gr.Accordion("OpenAI 公式 APIキー", open=False) as openai_official_api_key_group:
                                     gr.Markdown("💡 **OpenAI APIキー**: [platform.openai.com](https://platform.openai.com/api-keys) で取得してください。\n\n※保存すると「OpenAI」プロファイルとして登録・更新されます。")
@@ -1091,29 +1235,27 @@ try:
                                 open_usage_detail_button = gr.Button("📊 詳細をポップアップで表示", variant="primary", size="sm")
                                 refresh_usage_summary_button = gr.Button("🔄 最新の状態に更新", variant="secondary", size="sm")
 
-                            with gr.Accordion("⚡ AIモデルプロバイダ設定（デフォルト）", open=False):
+                            with gr.Accordion("⚡ AIモデルプロバイダ設定（デフォルト）", open=False) as common_provider_accordion:
                                 gr.Markdown("<small>💾 Google設定は変更時に自動保存されます。OpenAI互換・Anthropic・Claudeサブスク・ローカル設定は各保存ボタンを押してください。</small>")
                                 gr.Markdown("会話に使用するAIモデルのプロバイダを切り替えます。")
 
-                                current_provider = config_manager.get_active_provider()
+                                from ui_handlers import provider_connections as provider_connection_handlers
+                                current_provider = provider_connection_handlers.service.provider_choice()
 
                                 provider_radio = gr.Radio(
-                                    choices=[
-                                        ("Google (Gemini Native)", "google"),
-                                        ("OpenAI互換 (OpenRouter / Groq / Ollama / Zhipu AI)", "openai"),
-                                        ("Anthropic (Claude)", "anthropic"),
-                                        ("ローカル (GGUF直接ロード)", "local")
-                                    ],
+                                    choices=provider_connection_handlers.PROVIDER_CHOICES,
                                     value=current_provider,
-                                    label="アクティブなプロバイダ",
+                                    label="共通の接続先",
+                                    elem_id="global_provider_connection",
                                     interactive=True
                                 )
 
+                                from gemini_connection_ui import build_gemini_connection_panel
+
                                 # --- Google設定エリア ---
-                                with gr.Group(visible=(current_provider == "google")) as google_settings_group:
+                                with gr.Group(visible=(current_provider in {"google", "vertex"})) as google_settings_group:
                                     gr.Markdown(
-                                        "💡 ここで設定したAPIキーは、内部処理でも使用されます。\n\n"
-                                        "💡 ルームごとのモデル・APIキー設定は、「個別」タブから行えます。"
+                                        "内部処理のGeminiも共通の接続先を使います。ルームの応答は「個別」で変更できます。"
                                     )
                                     model_dropdown = gr.Dropdown(
                                         choices=config_manager.AVAILABLE_MODELS_GLOBAL,
@@ -1129,30 +1271,36 @@ try:
                                             constants.THINKING_LEVEL_OPTIONS[constants.DEFAULT_THINKING_LEVEL]
                                         ),
                                         label="Thinking レベル (Gemini 3系)",
+                                        visible=False,  # 互換値は保持し、操作は統一推論パネルへ集約。
                                         info="思考モデルの予算を指定します。高いほど深い推論が可能ですが、待ち時間や不安定化のリスクも増えます。",
                                         interactive=True,
                                         allow_custom_value=True
                                     )
                                     with gr.Row():
                                         fetch_gemini_models_button = gr.Button("📥 モデルリスト取得", variant="secondary", size="sm")
-                                    api_key_dropdown = gr.Dropdown(
-                                        label="使用するGemini APIキー",
-                                        choices=config_manager.get_api_key_choices_for_ui(),
-                                        value=config_manager.CONFIG_GLOBAL.get("last_api_key_name"),
-                                        interactive=True, allow_custom_value=True)
-                                    api_test_button = gr.Button("API接続をテスト", variant="secondary")
-                                    # [Phase 1.5] ローテーション設定
-                                    settings_rotation_checkbox = gr.Checkbox(
-                                        label="APIキー自動ローテーションを有効にする",
-                                        value=config_manager.CONFIG_GLOBAL.get("enable_api_key_rotation", True),
-                                        interactive=True,
-                                        info="レート制限 (429) 発生時、自動的に他の有効なキーに切り替えます。"
-                                    )
+                                    with gr.Group(elem_id="global_ai_studio_settings",
+                                                  elem_classes=[] if current_provider == "google" else ["gemini-connection-hidden"]) as global_ai_studio_settings:
+                                        api_key_dropdown = gr.Dropdown(
+                                            label="使用するGemini APIキー（Developer API）",
+                                            elem_id="global_ai_studio_key",
+                                            choices=config_manager.get_api_key_choices_for_ui(),
+                                            value=config_manager.CONFIG_GLOBAL.get("last_api_key_name"),
+                                            interactive=True, allow_custom_value=True)
+                                        api_test_button = gr.Button("API接続をテスト", variant="secondary")
+                                        # [Phase 1.5] ローテーション設定
+                                        settings_rotation_checkbox = gr.Checkbox(
+                                            label="APIキー自動ローテーションを有効にする",
+                                            value=config_manager.CONFIG_GLOBAL.get("enable_api_key_rotation", True),
+                                            interactive=True,
+                                            info="Developer APIでレート制限 (429) が発生した場合、他の有効なキーに切り替えます。"
+                                        )
 
-
+                                    global_gemini_connection_panel = build_gemini_connection_panel()
 
                                 # --- OpenAI互換設定エリア ---
                                 with gr.Group(visible=(current_provider == "openai")) as openai_settings_group:
+                                    gr.Markdown("OpenAI・OpenRouter・Groqなどの接続プロファイルを選びます。",
+                                                elem_id="global_openai_provider_hint")
                                     openai_profiles = [s["name"] for s in config_manager.get_openai_settings_list()]
                                     current_openai_profile = config_manager.get_active_openai_profile_name()
                                     _current_openai_setting = config_manager.get_active_openai_setting() or {}
@@ -1286,6 +1434,9 @@ try:
                                         precision=0
                                     )
                                     save_common_local_config_button = gr.Button("ローカル設定を保存", variant="primary")
+
+                                from response_reasoning_ui import build_response_reasoning_panel
+                                global_reasoning_panel = build_response_reasoning_panel()
 
                             with gr.Accordion("🔧 内部処理モデル設定", open=False):
                                 gr.Markdown("<small>💾 変更後、ブロック末尾の「設定を保存」を押してください。</small>")
@@ -1452,7 +1603,7 @@ try:
                                             ("multilingual-e5-small", "intfloat/multilingual-e5-small"),
                                             ("text-embedding-3-small (OpenAI)", "text-embedding-3-small"),
                                             ("text-embedding-3-large (OpenAI)", "text-embedding-3-large"),
-                                            ("gemini-embedding-2-preview (最新・推奨 / Google)", "gemini-embedding-2-preview"),
+                                            ("gemini-embedding-2 (最新・推奨 / Google)", "gemini-embedding-2"),
                                             ("gemini-embedding-001 (旧推奨・8月廃止予定 / Google)", "gemini-embedding-001")
                                         ],
                                         value=_internal_settings.get("embedding_model", "intfloat/multilingual-e5-large"),
@@ -1850,20 +2001,15 @@ try:
                             )
 
                             # --- [Phase 3] 個別設定用AIモデルプロバイダ設定 (一番上に配置) ---
-                            with gr.Accordion("⚡ AIモデルプロバイダ設定（このルーム）", open=False):
+                            with gr.Accordion("⚡ AIモデルプロバイダ設定（このルーム）", open=False) as room_provider_accordion:
                                 gr.Markdown("<small>✓ 変更はこのルームに自動保存されます。</small>")
-                                gr.Markdown("このルームで使用するAIプロバイダを設定します。「共通設定に従う」を選ぶとデフォルト設定が適用されます。")
+                                gr.Markdown("このルームの応答に使う接続先を選びます。内部処理のGeminiは共通設定を使います。")
 
                                 room_provider_radio = gr.Radio(
-                                    choices=[
-                                        ("共通設定に従う", "default"),
-                                        ("Google (Gemini Native)", "google"),
-                                        ("OpenAI互換 (OpenRouter / Groq / Moonshot / Zhipu AI / Ollama)", "openai"),
-                                        ("Anthropic (Claude)", "anthropic"),
-                                        ("ローカル (GGUF直接ロード)", "local")
-                                    ],
+                                    choices=provider_connection_handlers.ROOM_PROVIDER_CHOICES,
                                     value="default",
-                                    label="このルームで使用するプロバイダ",
+                                    label="このルームの応答に使う接続先",
+                                    elem_id="room_provider_connection",
                                     interactive=True
                                 )
 
@@ -1880,67 +2026,75 @@ try:
                                     with gr.Row():
                                         room_fetch_gemini_models_button = gr.Button("📥 モデルリスト取得", variant="secondary", size="sm")
 
-                                    room_api_key_dropdown = gr.Dropdown(
-                                        choices=config_manager.get_api_key_choices_for_ui(),
-                                        label="このルームで使用するAPIキー",
-                                        info="共通設定で登録したAPIキーから選択します。",
-                                        interactive=True, allow_custom_value=True)
-                                    # [Phase 1.5] 個別ローテーション設定
-                                    room_rotation_dropdown = gr.Dropdown(
-                                        choices=[("共通設定に従う", None), ("有効", True), ("無効", False)],
-                                        value=None,
-                                        label="このルームでローテーションを有効にする",
-                                        interactive=True, allow_custom_value=False)
+                                    with gr.Group(elem_id="room_ai_studio_settings",
+                                                  elem_classes=[] if provider_connection_handlers.service.provider_choice(effective_initial_room) == "google" else ["gemini-connection-hidden"]) as room_ai_studio_settings:
+                                        room_api_key_dropdown = gr.Dropdown(
+                                            choices=config_manager.get_api_key_choices_for_ui(),
+                                            label="このルームで使用するAPIキー",
+                                            elem_id="room_ai_studio_key",
+                                            info="Developer API用。共通設定で登録したAPIキーから選択します。",
+                                            interactive=True, allow_custom_value=True)
+                                        # [Phase 1.5] 個別ローテーション設定
+                                        room_rotation_dropdown = gr.Dropdown(
+                                            choices=[("共通設定に従う", None), ("有効", True), ("無効", False)],
+                                            value=None,
+                                            label="このルームでローテーションを有効にする",
+                                            interactive=True, allow_custom_value=False)
 
-                                    room_thinking_level_dropdown = gr.Dropdown(
-                                        choices=list(constants.THINKING_LEVEL_OPTIONS.values()),
-                                        label="Thinking レベル (Gemini 3系)",
-                                        info="思考モデルの予算を指定します。高いほど深い推論が可能ですが、待ち時間が長くなります。",
-                                        interactive=True, allow_custom_value=True)
+                                        room_thinking_level_dropdown = gr.Dropdown(
+                                            choices=list(constants.THINKING_LEVEL_OPTIONS.values()),
+                                            label="Thinking レベル (Gemini 3系)",
+                                            visible=False,  # 互換値は保持し、操作は統一推論パネルへ集約。
+                                            info="思考モデルの予算を指定します。高いほど深い推論が可能ですが、待ち時間が長くなります。",
+                                            interactive=True, allow_custom_value=True)
 
-                                    _initial_gemini_explicit_cache = ui_handlers.load_room_gemini_explicit_cache_settings(effective_initial_room)
-                                    with gr.Accordion("Gemini Explicit キャッシュ（有料・実験）", open=False):
-                                        open_explicit_cache_guide_btn = gr.Button(
-                                            "📖 詳しい説明を見る", variant="secondary", size="sm"
-                                        )
-                                        room_gemini_explicit_cache_enabled_checkbox = gr.Checkbox(
-                                            label="このルームでExplicitキャッシュを使う",
-                                            value=bool(_initial_gemini_explicit_cache[0].get("value", False)),
-                                            interactive=True,
-                                        )
-                                        room_gemini_explicit_cache_pause_button = gr.Button(
-                                            "一時停止（TTLまで保持）", variant="secondary", size="sm"
-                                        )
-                                        with gr.Row():
-                                            room_gemini_explicit_cache_ttl_slider = gr.Slider(
-                                                minimum=5,
-                                                maximum=60,
-                                                step=5,
-                                                label="TTL（分）",
-                                                value=int(_initial_gemini_explicit_cache[1].get("value", 30)),
+                                        _initial_gemini_explicit_cache = ui_handlers.load_room_gemini_explicit_cache_settings(effective_initial_room)
+                                        with gr.Accordion("Gemini Explicit キャッシュ（有料・実験）", open=False):
+                                            open_explicit_cache_guide_btn = gr.Button(
+                                                "📖 詳しい説明を見る", variant="secondary", size="sm"
+                                            )
+                                            room_gemini_explicit_cache_enabled_checkbox = gr.Checkbox(
+                                                label="このルームでExplicitキャッシュを使う",
+                                                value=bool(_initial_gemini_explicit_cache[0].get("value", False)),
                                                 interactive=True,
                                             )
-                                            room_gemini_explicit_cache_tool_limit_slider = gr.Slider(
-                                                minimum=3,
-                                                maximum=20,
-                                                step=1,
-                                                label="焼き込みツール上限",
-                                                value=int(_initial_gemini_explicit_cache[2].get("value", 12)),
-                                                interactive=True,
+                                            room_gemini_explicit_cache_pause_button = gr.Button(
+                                                "一時停止（TTLまで保持）", variant="secondary", size="sm"
                                             )
-                                        gr.Markdown(
-                                            "ON時は静的プロンプトと使用頻度上位のツールをGemini Explicit Cacheへ保存します。"
-                                            "保存料が発生するため、同じルームで短時間に続けて会話する場合向けです。"
-                                        )
-                                        room_gemini_explicit_cache_status = gr.Markdown(
-                                            value=_initial_gemini_explicit_cache[3].get("value", "現在の状態: OFF"),
-                                            elem_classes=["settings-save-status"],
-                                        )
+                                            with gr.Row():
+                                                room_gemini_explicit_cache_ttl_slider = gr.Slider(
+                                                    minimum=5,
+                                                    maximum=60,
+                                                    step=5,
+                                                    label="TTL（分）",
+                                                    value=int(_initial_gemini_explicit_cache[1].get("value", 30)),
+                                                    interactive=True,
+                                                )
+                                                room_gemini_explicit_cache_tool_limit_slider = gr.Slider(
+                                                    minimum=3,
+                                                    maximum=20,
+                                                    step=1,
+                                                    label="焼き込みツール上限",
+                                                    value=int(_initial_gemini_explicit_cache[2].get("value", 12)),
+                                                    interactive=True,
+                                                )
+                                            gr.Markdown(
+                                                "ON時は静的プロンプトと使用頻度上位のツールをGemini Explicit Cacheへ保存します。"
+                                                "保存料が発生するため、同じルームで短時間に続けて会話する場合向けです。"
+                                            )
+                                            room_gemini_explicit_cache_status = gr.Markdown(
+                                                value=_initial_gemini_explicit_cache[3].get("value", "現在の状態: OFF"),
+                                                elem_classes=["settings-save-status"],
+                                            )
 
-
+                                    room_gemini_connection_panel = build_gemini_connection_panel(
+                                        scope="room", room_name=effective_initial_room,
+                                    )
 
                                 # --- OpenAI互換設定グループ ---
-                                with gr.Column(visible=False) as room_openai_settings_group:
+                                with gr.Group(visible=False) as room_openai_settings_group:
+                                    gr.Markdown("OpenAI・OpenRouter・Groqなどの接続プロファイルを選びます。",
+                                                elem_id="room_openai_provider_hint")
                                     # プロファイル選択
                                     room_openai_profile_dropdown = gr.Dropdown(
                                         choices=[s["name"] for s in config_manager.get_openai_settings_list()],
@@ -2030,6 +2184,10 @@ try:
                                         "（ルームごとに別のGGUFファイルを指定する機能は現在準備中です）"
                                     )
 
+                                room_reasoning_panel = build_response_reasoning_panel(
+                                    scope="room", room_name=effective_initial_room,
+                                )
+
                             with gr.Accordion("🖼️ 情景描写設定", open=False):
                                 gr.Markdown("<small>✓ 変更はこのルームに自動保存されます。</small>")
                                 enable_scenery_system_checkbox = gr.Checkbox(
@@ -2084,10 +2242,15 @@ try:
                                 gr.Markdown("<small>💾 逐次表示設定は自動保存されます。スタイル・文字サイズ・行間はプレビューのみで、「デザイン」→「ルーム別デザイン」の保存ボタンを押すまで保存されません。</small>")
                                 with gr.Group():
                                     gr.Markdown("##### 逐次表示設定")
-                                    enable_typewriter_effect_checkbox = gr.Checkbox(label="タイプライター風の逐次表示を有効化", interactive=True)
+                                    enable_typewriter_effect_checkbox = gr.Checkbox(
+                                        label="タイプライター風の逐次表示を有効化",
+                                        value=True,
+                                        interactive=True,
+                                    )
                                     streaming_speed_slider = gr.Slider(
-                                        minimum=0.0, maximum=0.1, step=0.005, value=constants.DEFAULT_STREAMING_SPEED,
-                                        label="表示速度", info="値が小さいほど速く、大きいほどゆっくり表示されます。(0.0で最速)",
+                                        minimum=0.0, maximum=0.1, step=0.001, value=constants.DEFAULT_STREAMING_SPEED,
+                                        label="1文字あたりの待ち時間（秒）",
+                                        info="値が小さいほど速く、大きいほどゆっくり表示されます。0は一括表示です。この設定は表示演出の待ち時間で、AIの生成速度は変わりません。",
                                         interactive=True
                                     )
 
@@ -2545,12 +2708,52 @@ try:
                             correction_confirmed_state = gr.Textbox(visible=False)
 
                 # --- アップデート設定 ---
-                with gr.Accordion("🔄 アップデート・再起動", open=False):
+                with gr.Accordion("🔄 アップデート・再起動", open=False) as app_update_accordion:
                     gr.Markdown(f"**現在のバージョン:** v{constants.APP_VERSION}")
-                    update_check_button = gr.Button("アップデートを確認", variant="secondary")
+                    update_check_button = gr.Button("本体とスマホ版の更新を確認", variant="secondary")
                     update_status_markdown = gr.Markdown("ボタンを押すと最新バージョンを確認します。")
+                    with gr.Group(visible=False) as app_update_host_group:
+                        app_update_host_status = gr.Markdown("")
+                        app_update_host_migration_button = gr.Button(
+                            "新しい更新方式へ移行", variant="primary", interactive=False,
+                        )
+                    app_update_host_confirmed = gr.Textbox(visible=False, interactive=False)
                     with gr.Group(visible=False) as update_download_group:
                         update_apply_button = gr.Button("アップデートをダウンロードして適用", variant="primary")
+                    with gr.Group(visible=True) as app_browser_runtime_group:
+                        gr.Markdown("### ブラウザ機能の準備（Windows）")
+                        app_browser_runtime_status = gr.Markdown(
+                            "ブラウザ機能の状態を確認します。結果表示まで少しお待ちください。"
+                        )
+                        app_browser_runtime_check_button = gr.Button(
+                            "ブラウザ機能の準備を確認", variant="secondary"
+                        )
+                        app_browser_runtime_apply_button = gr.Button(
+                            "署名済みブラウザ用Nodeを準備",
+                            variant="primary",
+                            visible=False,
+                            interactive=False,
+                        )
+
+                    with gr.Group(visible=False) as app_lite_update_group:
+                        app_lite_update_status = gr.Markdown("")
+                        app_lite_update_button = gr.Button(
+                            "スマホ版Liteも更新", variant="secondary", interactive=False,
+                        )
+                        with gr.Group(visible=False) as app_lite_auth_recovery_group:
+                            gr.Markdown(
+                                "Cloudflare公式画面で、既存のLite用クラウドを管理するアカウントに"
+                                "接続してください。接続後に更新先を確認します。"
+                            )
+                            app_lite_auth_recovery_button = gr.Button(
+                                "Cloudflare管理認証を再接続", variant="primary",
+                            )
+                        gr.Markdown("本体にも更新がある場合は、先に本体を更新してください。スマホ側の再登録は不要です。")
+                    app_lite_update_offer = gr.State({})
+                    app_lite_update_confirmation = gr.Textbox(visible=False, interactive=False)
+                    app_lite_update_confirmed = gr.Textbox(visible=False, interactive=False)
+                    app_lite_auth_recovery_confirmation = gr.Textbox(visible=False, interactive=False)
+                    app_lite_auth_recovery_confirmed = gr.Textbox(visible=False, interactive=False)
 
                     restart_app_button = gr.Button("🔁 アプリを再起動", variant="secondary")
                     # confirmの結果を受ける通信路（自己リセット式・gradio_notes.md #19）
@@ -2724,10 +2927,25 @@ try:
                         with gr.TabItem("📍 一時的現在地", id="temp_location_tab") as temp_location_tab:
                             gr.Markdown("📍 今いる場所・景色をペルソナと共有")
 
+                            temp_location_applied_status = gr.Textbox(
+                                label="一時的現在地の状態",
+                                value="一時的現在地: 未適用（写真なし）",
+                                interactive=False, lines=1,
+                            )
+                            temp_location_name_input = gr.Textbox(
+                                label="場所名（任意）",
+                                placeholder="例: 駅に向かう並木道",
+                                info="保存名やAI向け補足とは別の表示名です。テキスト適用時に反映します。",
+                                lines=1,
+                                interactive=True,
+                                elem_id="temp_location_name_input",
+                            )
+
                             # 一時的現在地の画像表示
                             # [Gradio 6] show_fullscreen_button=False は非推奨のため、buttons=[] で代替
                             temp_scenery_image_display = gr.Image(
-                                label="現在の場所のビジュアル", interactive=False, height=200, show_label=False, buttons=[]
+                                label="現在の場所のビジュアル", type="filepath", interactive=False,
+                                height=200, show_label=False, buttons=[]
                             )
                             # 現在の情景テキスト表示
                             temp_scenery_display = gr.Textbox(
@@ -2744,8 +2962,9 @@ try:
                                     interactive=True, height=180
                                 )
                                 temp_user_hint_textbox = gr.Textbox(
-                                    label="補足情報（任意）",
+                                    label="補足情報（AI向け・任意）",
                                     placeholder="例: 駅に向かう並木道",
+                                    info="AIに渡す情景の補足です。場所名とは別に扱います。",
                                     lines=1, interactive=True
                                 )
                                 generate_temp_scenery_button = gr.Button(
@@ -2773,6 +2992,7 @@ try:
                                 save_location_name_input = gr.Textbox(
                                     label="保存名",
                                     placeholder="例: 駅に向かう並木道",
+                                    info="一覧から呼び出す保存名です。現在地の場所名とは別に扱います。",
                                     lines=1, interactive=True
                                 )
                                 save_location_button = gr.Button("💾 現在の情景を保存", variant="secondary")
@@ -2781,7 +3001,7 @@ try:
                                     lines=1, visible=True
                                 )
 
-        with gr.Tabs(selected="chat", elem_id="top_level_tabs", key="top_level_tabs"):
+        with gr.Tabs(selected="chat", elem_id="top_level_tabs", key="top_level_tabs") as top_level_tabs:
             with gr.TabItem("チャット", id="chat", key="top_tab_chat"):
                 # サブタブ構造: 会話表示 / RAWログエディタ
                 with gr.Tabs():
@@ -2795,7 +3015,7 @@ try:
                                 1.  **Google AI Studio** などで **Gemini APIキー** を取得してください。
                                 2.  左カラムの **「⚙️ 設定」** を開きます。
                                 3.  **「共通」** タブ内の **「🔑 APIキー / Webhook管理」** を開きます。
-                                4.  **「Gemini APIキー」** の項目に、キーの名前（管理用のあだ名）と、取得したAPIキーの値を入力し、**「Geminiキーを保存」** ボタンを押してください。
+                                4.  **「Gemini（AI Studio）」** を開き、キーの名前（管理用の半角英数字）と、取得したAPIキーの値を入力し、**「新しいキーを追加」** ボタンを押してください。
 
                                 設定が完了すると、このメッセージは消え、チャットが利用可能になります。
                                 """,
@@ -3461,6 +3681,32 @@ try:
                         with gr.Accordion("🧠 ワーキングメモリ (動的コンテキスト)", open=False):
                             gr.Markdown("ペルソナの現在の状態、プラン、話題ごとのコンテキストが保持されるスペースです。")
 
+                            (
+                                _initial_wm_cleanup_visible,
+                                _initial_wm_cleanup_message,
+                                _initial_wm_cleanup_fingerprint,
+                            ) = ui_handlers.get_working_memory_cleanup_notice(
+                                effective_initial_room
+                            )
+                            working_memory_cleanup_notice_state = gr.State(
+                                _initial_wm_cleanup_fingerprint
+                            )
+                            with gr.Group(
+                                visible=_initial_wm_cleanup_visible
+                            ) as working_memory_cleanup_notice_group:
+                                working_memory_cleanup_notice = gr.Markdown(
+                                    _initial_wm_cleanup_message
+                                )
+                                with gr.Row():
+                                    working_memory_start_fresh_button = gr.Button(
+                                        "新しい作業メモを開始",
+                                        variant="primary",
+                                    )
+                                    working_memory_keep_current_button = gr.Button(
+                                        "そのまま使う",
+                                        variant="secondary",
+                                    )
+
                             active_working_memory_status = gr.Markdown("現在使用中のスロットを確認中...", label="アクティブスロット")
                             with gr.Row():
                                 working_memory_slot_dropdown = gr.Dropdown(
@@ -3482,6 +3728,9 @@ try:
                                 max_lines=30,
                                 autoscroll=True,
                                 placeholder="ワーキングメモリは空です"
+                            )
+                            working_memory_edit_state = gr.State(
+                                {"room_name": "", "slot_name": "", "content_version": 0}
                             )
                             with gr.Row():
                                 save_working_memory_button = gr.Button("保存", variant="primary")
@@ -3597,6 +3846,10 @@ try:
                 gr.Markdown("## 記憶・ノート\nルームの根幹をなす記憶ファイルとノートを、ここで直接編集できます。")
                 with gr.Tabs():
                     with gr.TabItem("記憶"):
+                        # 本文と同じ応答で読込元を更新する。軽量起動では未読込のまま保持する。
+                        system_prompt_editor_room = gr.State(None)
+                        core_memory_editor_room = gr.State(None)
+                        gr.Markdown("編集対象は左のルーム選択で確認してください。新規作成後は対象ルームを選び直してから編集します。")
                         # --- システムプロンプト (Accordion) ---
                         with gr.Accordion("📜 システムプロンプト (ペルソナ設定)", open=False) as system_prompt_accordion:
                             reload_prompt_button = gr.Button("🔄 最新の状態に更新", variant="secondary")
@@ -3963,8 +4216,8 @@ try:
                                         interactive=False, info="アクティブな目標に比例"
                                     )
                                     devotion_level_display = gr.Slider(
-                                        label="関係性維持 (Relatedness)", minimum=0, maximum=1, value=0,
-                                        interactive=False, info="ペルソナ感情に比例"
+                                        label="関係への思い (Relatedness)", minimum=0, maximum=1, value=0,
+                                        interactive=False, info="本人が記録した関係の気がかり・望みに基づく"
                                     )
 
                             dominant_drive_display = gr.Textbox(
@@ -3993,7 +4246,10 @@ try:
 
                             open_questions_status = gr.Markdown("---")
 
+                            emotion_panel = build_emotion_panel()
+
                             gr.Markdown("#### 📈 感情モニタリング")
+                            gr.Markdown("このグラフは各応答の感情タグの履歴です。上の持続中の感情一覧とは別に記録します。")
                             # [Gradio 6] 起動互換性のため width, interactive を削除。デフォルトサイズを使用。
                             user_emotion_history_plot = gr.ScatterPlot(
                                 x="timestamp",
@@ -4087,7 +4343,7 @@ try:
                                     gr.Markdown("### 🔍 記憶索引 (RAG) の再構築")
                                     memory_reindex_button = gr.Button("記憶の索引を更新", variant="secondary")
                                     full_reindex_button = gr.Button("🗑️ 索引を初期化して再構築", variant="stop")
-                                    gr.Markdown("<small>⚠️ エンベディングモデル変更時はこちらを使用してください（記憶・ナレッジ・現行ログを現在モデルで作り直し、完了前に整合性を検証します）</small>")
+                                    gr.Markdown("<small>⚠️ 旧preview索引は、全件再構築をしなくても登録済み文書をローカルのキーワード検索で参照できます。意味検索と索引更新を戻したい場合だけ、この操作を選んでください。旧索引を保護・検証してから作り直します。Embedding APIの利用料金と時間がかかる場合があります。会話と記憶の原本は削除しません。</small>")
                                     memory_reindex_status = gr.Textbox(label="記憶索引ステータス", interactive=False)
 
                                 with gr.Column():
@@ -4113,45 +4369,62 @@ try:
 
                         # --- 創作ノートアコーディオン ---
                         with gr.Accordion("🎨 創作ノート", open=False):
+                            creative_note_kind = gr.State("creative")
+                            creative_note_edit_state = gr.State(None)
+                            creative_note_raw_state = gr.State(None)
                             gr.Markdown("ペルソナの創作活動専用スペースです。詩、物語、アイデアスケッチなど。")
+                            gr.Markdown(
+                                f"ノートが{constants.NOTES_MAX_SIZE_BYTES // 1024}KB以上になると、次回の追記時などに過去分を別ファイルへ保存します。"
+                                "記録は削除されず、この一覧から引き続き閲覧できます。"
+                            )
+                            creative_notes_summary = gr.Markdown(
+                                "「🔄 一覧を更新」を押すと、過去分を含む記録を読み込みます。",
+                                elem_id="creative_notes_summary",
+                            )
                             with gr.Row():
-                                creative_notes_file_dropdown = gr.Dropdown(label="対象ファイル", choices=[constants.CREATIVE_NOTES_FILENAME], value=constants.CREATIVE_NOTES_FILENAME, scale=3, allow_custom_value=True)
-                                refresh_creative_file_list_button = gr.Button("🔄 一覧を更新", scale=1)
-                                refresh_creative_notes_button = gr.Button("🔄 読み込む", variant="primary", scale=1)
+                                refresh_creative_notes_button = gr.Button("🔄 一覧を更新", variant="primary", scale=1)
                                 show_latest_creative_button = gr.Button("📄 最新", variant="secondary", scale=1)
 
                             with gr.Row():
-                                creative_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
-                                creative_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
+                                creative_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=False)
+                                creative_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=False)
 
                             with gr.Row():
                                 with gr.Column(scale=1):
                                     creative_entry_dropdown = gr.Dropdown(
-                                        label="エントリを選択",
+                                        label="記録を選択",
                                         choices=[],
                                         interactive=True,
-                                        info="最新のエントリが上に表示されます", allow_custom_value=True)
+                                        info="過去分も含め、新しい記録から表示します", allow_custom_value=False)
                                 with gr.Column(scale=2):
                                     reload_creative_notes_button = gr.Button("🔄 最新の状態に更新", variant="secondary")
                                     gr.Markdown("<small>※ 編集中の未保存内容は失われます。</small>")
                                     creative_notes_editor = gr.Textbox(
-                                        label="エントリの内容",
+                                        label="記録の内容",
                                         interactive=True,
                                         elem_id="creative_notes_editor_code",
                                         lines=15,
                                         max_lines=20,
-                                        placeholder="エントリを選択するか、「RAW編集」で直接編集してください"
+                                        placeholder="一覧を更新し、記録を選択してください"
                                     )
 
                             with gr.Row():
-                                save_creative_notes_button = gr.Button("選択エントリを保存", variant="secondary")
+                                save_creative_notes_button = gr.Button("選択した記録を保存", variant="secondary")
 
 
-                            with gr.Accordion("📝 RAW編集（全文）", open=False):
-                                reload_creative_raw_button = gr.Button("🔄 最新の状態に更新", variant="secondary")
+                            with gr.Accordion("📝 ファイル単位の編集（詳細）", open=False) as creative_notes_details:
+                                gr.Markdown("ファイルごとに全文を編集できます。このファイル選択は、上の記録一覧には影響しません。")
+                                with gr.Row():
+                                    creative_notes_file_dropdown = gr.Dropdown(
+                                        label="編集するファイル", choices=[constants.CREATIVE_NOTES_FILENAME],
+                                        value=constants.CREATIVE_NOTES_FILENAME, scale=3,
+                                        allow_custom_value=False,
+                                    )
+                                    refresh_creative_file_list_button = gr.Button("🔄 ファイル一覧を更新", scale=1)
+                                reload_creative_raw_button = gr.Button("🔄 ファイルを読み込む", variant="secondary")
                                 gr.Markdown("<small>※ 編集中の未保存内容は失われます。</small>")
                                 creative_notes_raw_editor = gr.Textbox(
-                                    label="creative_notes.md 全文",
+                                    label="ファイルの全文",
                                     interactive=True,
                                     lines=15,
                                     max_lines=25,
@@ -4160,48 +4433,65 @@ try:
                                     placeholder="ファイル全体を直接編集できます"
                                 )
                                 with gr.Row():
-                                    save_creative_raw_button = gr.Button("RAW全文を保存", variant="primary")
+                                    save_creative_raw_button = gr.Button("ファイル全文を保存", variant="primary")
 
                         # --- 研究・分析ノートアコーディオン ---
                         with gr.Accordion("🔬 研究・分析ノート", open=False):
+                            research_note_kind = gr.State("research")
+                            research_note_edit_state = gr.State(None)
+                            research_note_raw_state = gr.State(None)
                             gr.Markdown("Web巡回ツールによる分析結果や洞察が蓄積されるスペースです。AIが自律的に更新します。")
+                            gr.Markdown(
+                                f"ノートが{constants.NOTES_MAX_SIZE_BYTES // 1024}KB以上になると、次回の追記時などに過去分を別ファイルへ保存します。"
+                                "記録は削除されず、この一覧から引き続き閲覧できます。"
+                            )
+                            research_notes_summary = gr.Markdown(
+                                "「🔄 一覧を更新」を押すと、過去分を含む記録を読み込みます。",
+                                elem_id="research_notes_summary",
+                            )
                             with gr.Row():
-                                research_notes_file_dropdown = gr.Dropdown(label="対象ファイル", choices=[constants.RESEARCH_NOTES_FILENAME], value=constants.RESEARCH_NOTES_FILENAME, scale=3, allow_custom_value=True)
-                                refresh_research_file_list_button = gr.Button("🔄 一覧を更新", scale=1)
-                                refresh_research_notes_button = gr.Button("🔄 読み込む", variant="primary", scale=1)
+                                refresh_research_notes_button = gr.Button("🔄 一覧を更新", variant="primary", scale=1)
                                 show_latest_research_button = gr.Button("📄 最新", variant="secondary", scale=1)
 
                             with gr.Row():
-                                research_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
-                                research_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=True)
+                                research_year_filter = gr.Dropdown(label="年で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=False)
+                                research_month_filter = gr.Dropdown(label="月で絞り込む", choices=["すべて"], value="すべて", scale=1, allow_custom_value=False)
 
                             with gr.Row():
                                 with gr.Column(scale=1):
                                     research_entry_dropdown = gr.Dropdown(
-                                        label="エントリを選択",
+                                        label="記録を選択",
                                         choices=[],
                                         interactive=True,
-                                        info="最新のエントリが上に表示されます", allow_custom_value=True)
+                                        info="過去分も含め、新しい記録から表示します", allow_custom_value=False)
                                 with gr.Column(scale=2):
                                     reload_research_notes_button = gr.Button("🔄 最新の状態に更新", variant="secondary")
                                     gr.Markdown("<small>※ 編集中の未保存内容は失われます。</small>")
                                     research_notes_editor = gr.Textbox(
-                                        label="エントリの内容",
+                                        label="記録の内容",
                                         interactive=True,
                                         elem_id="research_notes_editor_code",
                                         lines=15,
                                         max_lines=20,
-                                        placeholder="エントリを選択するか、「RAW編集」で直接編集してください"
+                                        placeholder="一覧を更新し、記録を選択してください"
                                     )
 
                             with gr.Row():
-                                save_research_notes_button = gr.Button("選択エントリを保存", variant="secondary")
+                                save_research_notes_button = gr.Button("選択した記録を保存", variant="secondary")
 
-                            with gr.Accordion("📝 RAW編集（全文）", open=False):
-                                reload_research_raw_button = gr.Button("🔄 最新の状態に更新", variant="secondary")
+                            with gr.Accordion("📝 ファイル単位の編集（詳細）", open=False) as research_notes_details:
+                                gr.Markdown("ファイルごとに全文を編集できます。このファイル選択は、上の記録一覧には影響しません。")
+                                with gr.Row():
+                                    research_notes_file_dropdown = gr.Dropdown(
+                                        label="編集するファイル", choices=[constants.RESEARCH_NOTES_FILENAME],
+                                        value=constants.RESEARCH_NOTES_FILENAME, scale=3,
+                                        allow_custom_value=False,
+                                    )
+                                    refresh_research_file_list_button = gr.Button("🔄 ファイル一覧を更新", scale=1)
+                                reload_research_raw_button = gr.Button("🔄 ファイルを読み込む", variant="secondary")
                                 gr.Markdown("<small>※ 編集中の未保存内容は失われます。</small>")
                                 research_notes_raw_editor = gr.Textbox(
-                                    label="research_notes.md 全文",
+                                    label="ファイルの全文",
                                     interactive=True,
                                     lines=15,
                                     max_lines=25,
@@ -4210,7 +4500,7 @@ try:
                                     placeholder="ファイル全体を直接編集できます"
                                 )
                                 with gr.Row():
-                                    save_research_raw_button = gr.Button("RAW全文を保存", variant="primary")
+                                    save_research_raw_button = gr.Button("ファイル全文を保存", variant="primary")
 
                             with gr.Accordion("🧵 Research Threads（継続研究スレッド）", open=False):
                                 refresh_research_threads_button = gr.Button("🔄 一覧を更新", variant="primary")
@@ -5566,7 +5856,7 @@ try:
 
             # ===== 外部接続タブ =====
             with gr.TabItem("外部接続", id="external_connections", key="top_tab_external_connections"):
-                with gr.Tabs(selected="external_twitter"):
+                with gr.Tabs(selected="external_twitter") as external_connection_tabs:
                     with gr.TabItem("Twitter (X)", id="external_twitter", key="external_tab_twitter"):
                         _initial_room_config_for_twitter = room_manager.get_room_config(effective_initial_room) or {}
                         _initial_twitter_settings = (
@@ -5587,8 +5877,9 @@ try:
                                     label="承認待ち下書き",
                                     headers=["ID", "時刻", "画像", "下書き内容", "警告"],
                                     datatype=["str", "str", "str", "str", "str"],
-                                    interactive=False,
-                                    wrap=True,
+                                    interactive=True,
+                                    static_columns=[0, 1, 2, 3, 4],
+                                    wrap=False,
                                 )
                                 twitter_draft_warnings = gr.Markdown("")
                                 twitter_reply_preview = gr.Markdown("※ 選択されていません")
@@ -5876,76 +6167,13 @@ try:
                                     wrap=True,
                                 )
 
-                    with gr.TabItem("API Gateway / Lite", id="external_api_gateway", key="external_tab_api_gateway"):
-                        gr.Markdown("## API Gateway / Nexus Ark Lite")
-                        _api_gateway_settings = config_manager.CONFIG_GLOBAL.get("api_gateway_settings", {}) or {}
-                        external_api_status = gr.Markdown("API状態: 待機中")
-
-                        with gr.Accordion("個人用の使い方", open=True):
-                            gr.Markdown(value=ui_handlers.build_api_gateway_personal_use_guide())
-
-                        with gr.Accordion("API設定", open=False):
-                            with gr.Row():
-                                external_api_enabled_checkbox = gr.Checkbox(
-                                    label="API Gatewayを有効化",
-                                    value=bool(_api_gateway_settings.get("enabled", False)),
-                                    interactive=True,
-                                    scale=1,
-                                )
-                                external_api_host_input = gr.Textbox(
-                                    label="Host",
-                                    value=_api_gateway_settings.get("host", "0.0.0.0"),
-                                    interactive=True,
-                                    scale=2,
-                                )
-                                external_api_port_input = gr.Number(
-                                    label="Port",
-                                    value=int(_api_gateway_settings.get("port", 8000) or 8000),
-                                    precision=0,
-                                    interactive=True,
-                                    scale=1,
-                                )
-                            with gr.Row():
-                                external_api_require_auth_checkbox = gr.Checkbox(
-                                    label="Token認証",
-                                    value=bool(_api_gateway_settings.get("require_auth", True)),
-                                    interactive=True,
-                                    scale=1,
-                                )
-                                external_api_auto_tailscale_checkbox = gr.Checkbox(
-                                    label="起動時にTailscale HTTPSを自動設定",
-                                    value=bool(_api_gateway_settings.get("auto_start_tailscale_serve", False)),
-                                    interactive=True,
-                                    scale=2,
-                                )
-                                external_api_auth_token_input = gr.Textbox(
-                                    label="接続用Token",
-                                    value=_api_gateway_settings.get("auth_token", ""),
-                                    type="password",
-                                    interactive=True,
-                                    scale=3,
-                                )
-                                external_api_token_generate_button = gr.Button("Token生成", variant="secondary", scale=1)
-                                external_api_token_show_button = gr.Button("保存済みTokenを表示", variant="secondary", scale=1)
-                            external_api_token_copy_output = gr.Textbox(
-                                label="PWA入力用Token（一時表示）",
-                                value="",
-                                interactive=False,
-                                lines=1,
-                                placeholder="「保存済みTokenを表示」を押すと、PWAへコピーするTokenを表示します。",
-                            )
-                            with gr.Row():
-                                external_api_save_button = gr.Button("API設定を保存", variant="primary")
-                                external_api_refresh_button = gr.Button("接続情報を更新", variant="secondary")
-                                external_tailscale_button = gr.Button("Tailscale HTTPS設定を実行", variant="secondary")
-
-                        with gr.Accordion("安全診断", open=False):
-                            external_api_security_diagnostics = gr.Markdown(
-                                value=ui_handlers.build_api_gateway_security_diagnostics()
-                            )
-
-                        with gr.Accordion("Nexus Ark Lite 接続情報", open=True):
-                            external_lite_connection_help = gr.Markdown("接続情報は「接続情報を更新」で取得します。")
+                    with gr.TabItem("API・外部ツール", id="external_api_tools", key="external_tab_api_tools"):
+                        gr.Markdown(
+                            "## API・外部ツール\n"
+                            "自作ツールや外部サービスからNexus Arkへ接続するための、詳しい情報をまとめています。"
+                        )
+                        with gr.Accordion("外部ツール連携について（詳しい方向け）", open=True):
+                            gr.Markdown(value=ui_handlers.build_api_gateway_external_use_guide())
 
                         with gr.Accordion("利用可能なAPI一覧・外部連携リファレンス", open=False):
                             external_api_docs = gr.Markdown(value=ui_handlers.build_api_gateway_external_docs())
@@ -5993,6 +6221,1280 @@ try:
                             )
                             external_event_test_button = gr.Button("現在のルームへイベントを記録", variant="primary")
                             external_event_result = gr.Markdown("")
+
+                    with gr.TabItem(
+                        "Lite・お出かけ",
+                        id="external_api_gateway",
+                        key="external_tab_api_gateway",
+                        elem_id="outing_tab",
+                    ):
+                        gr.Markdown("## Nexus Ark Lite・お出かけ")
+                        gr.Markdown(
+                            "Nexus Ark Liteは、スマホやタブレットのブラウザから使えるアプリです。"
+                            "スマホのNexus Ark Liteアプリとしてホーム画面に追加できます"
+                            "（インストール対応Webアプリ（PWA））。"
+                            "本体接続・独立モード、"
+                            "外部AIへの持ち出し・帰宅を、この画面で設定できます。"
+                        )
+                        with gr.Row():
+                            external_open_lite_outing = gr.Button("📱 Nexus Ark Lite", variant="primary")
+                            external_open_outing_export = gr.Button("📤 外部AIへ持ち出す", variant="secondary")
+                            external_open_outing_import = gr.Button("🏠 外部AIから帰宅", variant="secondary")
+                        gr.HTML(
+                            '<p class="outing-mode-loading-message" hidden aria-live="polite"></p>',
+                            elem_id="outing_mode_loading_feedback",
+                        )
+                        gr.Markdown(
+                            "**Liteの操作メニュー** — 初めての方は「初回設定・接続管理」から使い方を選びます。"
+                            "スマホからの帰宅も使う方は、本体接続の設定を、実際に使うホーム画面のLiteで確認してください。"
+                            "準備済みの方は「お出かけを準備」「帰宅・統合」へ進めます。"
+                        )
+                        with gr.Row():
+                            lite_daily_shortcut = gr.Button("お出かけを準備", variant="primary")
+                            lite_return_shortcut = gr.Button("帰宅・統合", variant="secondary")
+                            lite_management_shortcut = gr.Button("初回設定・接続管理", variant="secondary")
+
+                        with gr.Column(
+                            visible=False,
+                            elem_id="outing_lite_independent",
+                            elem_classes=["outing-mode-panel"],
+                        ) as outing_lite_daily_group:
+                            with gr.Row():
+                                lite_outing_back_to_setup = gr.Button(
+                                    "← Liteの使い方・接続設定へ戻る", variant="secondary"
+                                )
+                                lite_outing_home_connection_shortcut = gr.Button(
+                                    "本体との接続を設定・確認", variant="secondary",
+                                    elem_id="lite_home_connection_shortcut",
+                                )
+                            gr.Markdown(
+                                "## PCを止めている間も、スマホで会話する\n"
+                                "ペルソナを最大3人までスマホへ連れて行き、帰宅後に会話をこの本体へ戻せます。"
+                                "この画面では、上から **接続確認 → お出かけ前の準備 → 出発 → 帰宅** の順に進みます。"
+                            )
+                            gr.Markdown(
+                                "**帰宅方法を先に確認:** スマホの「署名付き帰宅」を使うには、"
+                                "このPCを起動し、ホーム画面のLiteの「設定」→「本体への接続」で接続できる必要があります。"
+                                "上の「本体との接続を設定・確認」から手順を開けます。"
+                                "本体接続を設定しなくても独立モードは利用でき、帰宅はこのPCの「帰宅・統合」から行えます。"
+                            )
+                            with gr.Accordion("この画面に出てくる言葉", open=False):
+                                gr.Markdown(
+                                    "- **Lite用クラウド（Cloudflare Worker）**: PCを止めている間、スマホとの接続を受け持つ自分専用の窓口です。\n"
+                                    "- **お出かけ前データ（snapshot）**: ペルソナの今の状態を、出発前に暗号化して用意するコピーです。\n"
+                                    "- **帰宅データ（bundle）**: Liteで増えた会話を、安全に本体へ戻すための署名付きファイルです。\n"
+                                    "- **本体では休んでもらう（単一存在 / exclusive）**: 帰宅まで本体側の発話・自律行動・記憶変更を止めます。通常はこちらです。\n"
+                                    "- **本体にも残す（並行存在 / parallel）**: 本体とLiteの両方で活動し、帰宅時に別々の経験として残します。"
+                                )
+
+                            lite_travel_progress = gr.HTML(
+                                ui_handlers.build_lite_outing_progress("needs_connection")
+                            )
+                            lite_travel_snapshot_state = gr.State(None)
+                            lite_travel_standby_snapshot_state = gr.State(None)
+                            _lite_room_choices = room_manager.get_room_list_for_ui()
+                            _lite_focus_choices, _lite_initial_focus = ui_handlers.build_lite_outing_focus(
+                                effective_initial_room, _lite_room_choices
+                            )
+                            gr.Markdown(
+                                "### 状態確認と次の操作\n"
+                                "まず **現在の状態に更新** を押してください。確認後は、上の「次にすること」に沿って進めます。  \n"
+                                "下のペルソナ欄は状態確認・帰宅用です。**一緒に行く人は「2. お出かけ前の準備」で選びます。**"
+                            )
+                            lite_travel_focus_persona = gr.Dropdown(
+                                label="状態・帰宅を確認するペルソナ",
+                                choices=_lite_focus_choices,
+                                value=_lite_initial_focus,
+                                interactive=True,
+                                info="本体のチャット選択とは別です。帰宅する人を選んで「現在の状態に更新」を押します。同じお出かけの人はまとめて帰宅します。",
+                            )
+                            lite_travel_status = gr.Markdown(
+                                ui_handlers.build_lite_travel_status(effective_initial_room),
+                                elem_classes=["lite-outing-presence"],
+                            )
+                            lite_travel_refresh_status = gr.Button("現在の状態に更新", variant="primary")
+                            lite_travel_refresh_feedback = gr.Markdown(
+                                "未更新です。保存済み設定だけを表示しています。出発前は「現在の状態に更新」を押してから準備を始めてください。"
+                            )
+                            gr.Markdown("#### 操作結果（最後に押したボタンの結果）")
+                            lite_travel_operation_result = gr.Markdown("まだ操作していません。操作が終わるとここに結果が表示されます。")
+
+                            with gr.Group(elem_classes=["lite-outing-stage"], visible=True) as lite_travel_connection_group:
+                                gr.Markdown("### 1. 接続確認\n最初に、4つの準備状況とペルソナの現在地をまとめて確認します。")
+                                lite_travel_connectivity_card = gr.HTML(
+                                    ui_handlers.build_lite_connectivity_wizard(
+                                        "existing",
+                                        refresh_remote=False,
+                                        refresh_action_label="現在の状態に更新",
+                                        surface="outing",
+                                    )
+                                )
+                                lite_travel_open_worker_settings = gr.Button(
+                                    "初回設定・接続管理", variant="secondary"
+                                )
+                                with gr.Accordion("接続設定・スマホ再登録（必要なとき）", open=False):
+                                    gr.Markdown(
+                                        "初回設定、AIサービス設定、端末の確認・解除、QR付き再登録、保守は "
+                                        "**外部接続 → Lite・お出かけ** で行います。"
+                                    )
+                                    lite_travel_pair_button = gr.Button("スマホ用の短期コードを発行", variant="secondary")
+                                    lite_travel_pairing_result = gr.Markdown("")
+
+                            with gr.Group(
+                                elem_classes=["lite-outing-stage"], visible=False
+                            ) as lite_travel_standby_group:
+                                gr.Markdown(
+                                    "### 2. お出かけ前の準備\n"
+                                    "一緒に行くペルソナを1〜3人選びます。準備済みでも、ここで人・AI・情報量を選び直せます。"
+                                    "変更がなければ下の「3. 出発」へ進めます。変更した場合は送る内容を確認し直してください。"
+                                )
+                                _lite_preferences = ui_handlers.build_lite_outing_preferences(effective_initial_room, _lite_room_choices)
+                                lite_travel_personas = gr.CheckboxGroup(
+                                    choices=_lite_room_choices,
+                                    value=_lite_preferences["selected_rooms"],
+                                    label="一緒に持ち出すペルソナ（1〜3人）",
+                                )
+                                with gr.Accordion("本体にも残す（詳しい設定）", open=False):
+                                    gr.Markdown(
+                                        "お出かけ中も、PCのNexus Arkで会話や自律行動を続けるペルソナを選びます。"
+                                        "本体での活動にはPCのNexus Arkが起動している必要があります。"
+                                        "Liteの独立モードでも会話できますが、両方の会話はリアルタイムには同期されません。"
+                                        "Liteでの経験は帰宅時に本体へ取り込みます。"
+                                        "選ばなかったペルソナは、帰宅まで本体での活動を休みます。"
+                                    )
+                                    lite_travel_parallel_personas = gr.CheckboxGroup(
+                                        choices=_lite_room_choices,
+                                        value=_lite_preferences["parallel_rooms"],
+                                        label="本体にも残すペルソナ（上で選んだ中から）",
+                                    )
+                                _lite_daily_settings = lite_travel.get_settings()
+                                _lite_daily_profile = str(
+                                    _lite_daily_settings.get("credential_profile_id") or ""
+                                )
+                                _lite_daily_model = str(_lite_daily_settings.get("model_id") or "")
+                                if not _lite_daily_model:
+                                    _lite_daily_model = lite_travel.get_lite_initial_model_candidate(
+                                        lite_travel.infer_provider_from_profile_id(_lite_daily_profile)
+                                    )
+                                gr.Markdown(
+                                    "#### 今回使うAI\n"
+                                    "出発時に使い始めるAIサービスとモデルです。外出中もLiteから変更できます。"
+                                )
+                                with gr.Row():
+                                    lite_daily_credential_profile_id = gr.Dropdown(
+                                        label="AIサービス／接続",
+                                        choices=ui_handlers.build_lite_ai_connection_choices(
+                                            _lite_daily_profile
+                                        ),
+                                        value=_lite_daily_profile or None,
+                                        interactive=True,
+                                    )
+                                    lite_daily_model_id = gr.Dropdown(
+                                        label="AIモデル",
+                                        choices=ui_handlers.build_lite_travel_model_choices(
+                                            _lite_daily_profile,
+                                            _lite_daily_model,
+                                        ),
+                                        value=_lite_daily_model or None,
+                                        filterable=True,
+                                        interactive=True,
+                                        allow_custom_value=True,
+                                        info="一覧から選ぶか、利用するモデル名を直接入力できます。",
+                                    )
+                                lite_daily_ai_status = gr.Markdown(
+                                    f"現在の設定: {_lite_daily_model or 'AIモデルを選んでください。'}"
+                                )
+                                lite_daily_ai_save = gr.Button(
+                                    "今回使うAIを保存", variant="secondary"
+                                )
+                                with gr.Accordion("持ち出す情報を選ぶ", open=True):
+                                    gr.Markdown(
+                                        "**システムプロンプトは会話に必須のため、常に含まれます。** "
+                                        "迷った時は「おすすめ」のままで大丈夫です。"
+                                    )
+                                    lite_travel_snapshot_preset = gr.Radio(
+                                        label="持ち出す量",
+                                        choices=[
+                                            ("おすすめ", "recommended"),
+                                            ("最小限（システムプロンプトのみ）", "minimal"),
+                                            ("自分で選ぶ", "custom"),
+                                        ],
+                                        value="custom" if _lite_preferences["restored"] else "recommended",
+                                    )
+                                    lite_travel_snapshot_preset_status = gr.Markdown(
+                                        "前回準備した選択を復元しました。内容を確認して続けてください。" if _lite_preferences["restored"]
+                                        else "おすすめ: コアメモリ、エピソード記憶、直近の会話をバランスよく持ち出します。"
+                                    )
+                                    with gr.Accordion("内容を確認・細かく調整", open=False):
+                                        lite_travel_include_core_memory = gr.Checkbox(
+                                            label="コアメモリを含める",
+                                            value=_lite_preferences["include_core_memory"],
+                                            interactive=_lite_preferences["restored"],
+                                            info="ペルソナのコアメモリを持ち出します。",
+                                        )
+                                        lite_travel_include_episodic_memory = gr.Checkbox(
+                                            label="エピソード記憶を含める",
+                                            value=_lite_preferences["include_episodic_memory"],
+                                            interactive=_lite_preferences["restored"],
+                                            info="昨日までに整理されたエピソード記憶を持ち出します。",
+                                        )
+                                        lite_travel_episodic_memory_days = gr.Slider(
+                                            minimum=0,
+                                            maximum=30,
+                                            value=_lite_preferences["episodic_memory_days"],
+                                            step=1,
+                                            interactive=_lite_preferences["restored"] and _lite_preferences["include_episodic_memory"],
+                                            label="エピソード記憶を含める日数（今日を除く）",
+                                            info="2なら昨日と一昨日が対象です。",
+                                        )
+                                        lite_travel_recent_message_limit = gr.Slider(
+                                            minimum=0,
+                                            maximum=40,
+                                            value=_lite_preferences["recent_message_limit"],
+                                            step=5,
+                                            interactive=_lite_preferences["restored"],
+                                            label="直近の会話を含める件数（ペルソナごと）",
+                                            info="最近の会話の続きから話したい時に使います。",
+                                        )
+                                gr.Markdown("**次に押すボタン:** PC停止に備えるコピーを更新します。出発や課金は始まりません。")
+                                lite_travel_prepare_standby = gr.Button(
+                                    "1. Lite用クラウドへ送る内容を確認", variant="primary"
+                                )
+                                lite_travel_standby_preview = gr.Markdown("送信前の確認: 未作成")
+                                with gr.Accordion("確認する本文（snapshot JSON）", open=False):
+                                    lite_travel_standby_snapshot_json = gr.Code(
+                                        label="送信予定のsnapshot（読み取り専用）",
+                                        language="json",
+                                        interactive=False,
+                                        lines=12,
+                                    )
+                                lite_travel_confirm_standby = gr.Button(
+                                    "2. 確認した内容をLite用クラウドへ準備",
+                                    variant="secondary",
+                                    interactive=False,
+                                )
+                                lite_travel_standby_status = gr.Markdown("この画面での送信操作: 未実行。すでに有効な準備データがあれば再送は不要です。")
+
+                            with gr.Group(
+                                elem_classes=["lite-outing-stage"], visible=False
+                            ) as lite_travel_departure_group:
+                                gr.Markdown(
+                                    "### 3. 出発\n"
+                                    "まず出発内容を作り、表示された内容を確認してから出発します。出発は自動では行いません。"
+                                )
+                                lite_travel_build_snapshot = gr.Button(
+                                    "選んだペルソナの出発内容を作る", variant="primary"
+                                )
+                                lite_travel_departure_summary = gr.Markdown("出発前の確認: 未作成")
+                                with gr.Accordion("技術情報（snapshot JSON）", open=False):
+                                    lite_travel_snapshot_json = gr.Code(
+                                        label="生成済みsnapshot（読み取り専用）",
+                                        language="json",
+                                        interactive=False,
+                                        lines=12,
+                                    )
+                                lite_travel_start_button = gr.Button(
+                                    "表示内容を確認して出発する",
+                                    variant="secondary",
+                                    interactive=False,
+                                )
+
+                            with gr.Group(
+                                elem_classes=["lite-outing-stage"], visible=False
+                            ) as lite_travel_return_group:
+                                gr.Markdown(
+                                    "### 4. 帰宅\n"
+                                    "Liteで増えた会話を先に確認し、問題がなければ本体へ戻します。帰宅も自動では行いません。"
+                                )
+                                lite_travel_return_preview_button = gr.Button(
+                                    "帰宅する内容を確認", variant="primary"
+                                )
+                                lite_travel_return_preview = gr.Markdown("帰宅内容: 未確認")
+                                lite_travel_online_return_button = gr.Button(
+                                    "確認した内容を本体へ戻す",
+                                    variant="secondary",
+                                    interactive=False,
+                                )
+                                with gr.Accordion("オンライン帰宅できないとき（ファイルで復旧）", open=False):
+                                    gr.Markdown("帰宅データ（署名付きbundle）を書き出し、本体で署名を確認して取り込みます。")
+                                    lite_travel_export_button = gr.Button("1. 帰宅データを書き出す", variant="secondary")
+                                    lite_travel_bundle_file = gr.File(
+                                        label="帰宅データ（署名付きbundle / 書き出し後は自動選択）",
+                                        file_types=[".json"],
+                                        interactive=True,
+                                    )
+                                    lite_travel_import_button = gr.Button("2. 署名を確認して本体へ戻す", variant="primary")
+                                with gr.Accordion("帰宅後の追加設定（通常は不要）", open=False):
+                                    lite_travel_route_proposals = gr.CheckboxGroup(
+                                        choices=[], value=[], label="次回のお出かけ設定へ反映するペルソナ",
+                                    )
+                                    lite_travel_apply_routes = gr.Button("選んだ会話経路を次回へ反映", variant="secondary")
+                                    lite_travel_route_apply_status = gr.Markdown("会話経路の反映: 未実行")
+
+                            with gr.Accordion("保守・復旧操作（問題があるときだけ）", open=False):
+                                gr.Markdown(
+                                    "ここは通常のお出かけでは使いません。削除や緊急帰還は元に戻せない場合があるため、"
+                                    "状況を確認してから実行してください。"
+                                )
+                                lite_travel_delete_content = gr.Button("Lite用クラウド上の会話本文を削除", variant="stop")
+                                lite_travel_emergency_reason = gr.Textbox(
+                                    label="緊急帰還の理由",
+                                    placeholder="Lite用クラウドへ接続できない等。分岐可能性として記録されます。",
+                                )
+                                lite_travel_emergency_button = gr.Button("緊急帰還して本体を再開", variant="stop")
+
+                        with gr.Column(
+                            visible=True,
+                            elem_id="outing_lite_setup",
+                            elem_classes=["outing-mode-panel"],
+                        ) as outing_lite_setup_group:
+                            _api_gateway_settings = config_manager.CONFIG_GLOBAL.get("api_gateway_settings", {}) or {}
+
+                            with gr.Accordion("Nexus Ark Liteを使い始める", open=True):
+                                gr.HTML(value=ui_handlers.build_api_gateway_personal_use_guide())
+                                with gr.Row():
+                                    lite_start_connected_button = gr.Button(
+                                        "PCをつけたまま使う",
+                                        variant="secondary",
+                                    )
+                                    lite_start_independent_button = gr.Button(
+                                        "PCを止めても使う",
+                                        variant="primary",
+                                    )
+                                open_lite_cloud_quick_guide_btn = gr.Button(
+                                    "「PCを止めても使う」の詳しい説明", variant="secondary"
+                                )
+
+                            with gr.Accordion(
+                                "本体接続の設定",
+                                open=False,
+                                elem_id="lite_connected_setup_flow",
+                            ) as lite_connected_setup_accordion:
+                                gr.Markdown(
+                                    "### 1. 用途\n"
+                                    "PCで起動中のNexus Ark本体へスマホやタブレットから接続し、"
+                                    "本体と同じ会話・記憶・機能を使うモードです。スマホから独立モードの帰宅を行う時にも使います。\n\n"
+                                    "**設定する場所:** スマホのホーム画面からNexus Ark Liteを開き、"
+                                    "「設定」→「本体への接続」を使います。ブラウザのLiteとホーム画面のLiteで、"
+                                    "設定が共有されない場合があります。実際に使う方で接続を確認してください。\n\n"
+                                    "### 2. 必要条件\n"
+                                    "PCの電源とNexus Arkを起動したままにし、スマホを **同じWi-Fi** に接続するか、"
+                                    "PCとスマホの両方で **Tailscale** に接続します。PCがスリープ・終了するとLiteも切断されます。\n\n"
+                                    "### 3. 接続用Tokenを準備\n"
+                                    "**接続用Token** はこの本体へ入るための合言葉です。"
+                                    "Token認証は通常ONのまま使い、Tokenを他人へ送ったり、公開画面やスクリーンショットへ載せたりしないでください。"
+                                    "未設定なら「Token生成」を押し、接続方法を選んでから設定を保存します。"
+                                    "設定済みなら「保存済みTokenを表示」からコピーでき、作り直す必要はありません。"
+                                    "画面を開くURLと、LiteのAPI URL欄へ入力するURLは、下の接続情報で用途別に確認できます。"
+                                )
+                                with gr.Row():
+                                    external_api_enabled_checkbox = gr.Checkbox(
+                                        label="本体接続を有効にする（API Gateway）",
+                                        value=bool(_api_gateway_settings.get("enabled", False)),
+                                        interactive=True,
+                                        scale=1,
+                                    )
+                                    external_api_require_auth_checkbox = gr.Checkbox(
+                                        label="Token認証を使う（推奨・通常はON）",
+                                        value=bool(_api_gateway_settings.get("require_auth", True)),
+                                        interactive=True,
+                                        scale=1,
+                                    )
+                                with gr.Row():
+                                    external_api_auth_token_input = gr.Textbox(
+                                        label="接続用Token（スマホ用の合言葉）",
+                                        value=_api_gateway_settings.get("auth_token", ""),
+                                        type="password",
+                                        interactive=True,
+                                        scale=3,
+                                    )
+                                    external_api_token_generate_button = gr.Button("Token生成", variant="secondary", scale=1)
+                                    external_api_token_show_button = gr.Button("保存済みTokenを表示", variant="secondary", scale=1)
+                                external_api_token_copy_output = gr.Textbox(
+                                    label="スマホへコピーするToken（一時表示）",
+                                    value="",
+                                    interactive=False,
+                                    lines=1,
+                                    placeholder="「保存済みTokenを表示」を押すと、PWAへコピーするTokenを表示します。",
+                                )
+                                with gr.Accordion("接続先の詳細（通常は変更不要）", open=False):
+                                    gr.Markdown(
+                                        "通常は **Host `0.0.0.0` / Port `8000`** のまま使います。"
+                                        "別のアプリとPortが重なる場合や、詳しい案内を受けた場合だけ変更してください。"
+                                    )
+                                    with gr.Row():
+                                        external_api_host_input = gr.Textbox(
+                                            label="Host",
+                                            value=_api_gateway_settings.get("host", "0.0.0.0"),
+                                            interactive=True,
+                                            scale=2,
+                                        )
+                                        external_api_port_input = gr.Number(
+                                            label="Port",
+                                            value=int(_api_gateway_settings.get("port", 8000) or 8000),
+                                            precision=0,
+                                            interactive=True,
+                                            scale=1,
+                                        )
+                                gr.Markdown(
+                                    "### 4. 同じWi-FiとHTTPSの選び方\n"
+                                    "- **同じWi-Fi**: 最初に試しやすい方法です。表示された `http://192.168...` のURLをスマホで開きます。\n"
+                                    "- **Tailscale HTTPS**: Liteのインストール、音声入力、通知も使う場合の推奨方法です。"
+                                    "PCとスマホへTailscaleを導入してログインしてから設定します。\n\n"
+                                    "公共Wi-Fiや、ルーターでインターネットへ直接公開する使い方は避けてください。"
+                                )
+                                external_api_auto_tailscale_checkbox = gr.Checkbox(
+                                    label="次回起動時もTailscale HTTPSを自動設定",
+                                    value=bool(_api_gateway_settings.get("auto_start_tailscale_serve", False)),
+                                    interactive=True,
+                                )
+                                with gr.Row():
+                                    external_api_save_button = gr.Button("本体接続の設定を保存", variant="primary")
+                                    external_tailscale_button = gr.Button("Tailscale HTTPS設定を実行", variant="secondary")
+                                    external_api_refresh_button = gr.Button("スマホ用URL・接続情報を更新", variant="secondary")
+                                external_api_status = gr.Markdown(
+                                    "API状態: 待機中。設定の保存・HTTPS設定の結果はここに表示します。",
+                                    elem_id="lite_home_connection_result",
+                                )
+                                with gr.Accordion("Nexus Ark Lite 接続情報", open=True):
+                                    external_lite_connection_help = gr.Markdown(
+                                        "設定を保存し、「スマホ用URL・接続情報を更新」を押すと、ここに本体URLが表示されます。"
+                                    )
+                                    external_lite_qr_image = gr.HTML(
+                                        ui_handlers.build_api_gateway_lite_qr_html()
+                                    )
+                                gr.Markdown(
+                                    "### 5. スマホで接続を確認\n"
+                                    "ホーム画面から使うNexus Ark Liteを開き、「設定」→「本体への接続」で、"
+                                    "上の接続情報の **API URL（末尾に /lite を付けない）** と接続用Tokenを入力して"
+                                    "「接続」を押し、本体のルーム一覧や会話が表示されれば完了です。"
+                                    "**🏠 本体接続** は「設定」→「独立モードの接続・準備状況」、"
+                                    "**接続済み** は接続メニューで確認できます。"
+                                    "このPCに「API Gateway: 有効」と出るだけでは、スマホから接続できたことにはなりません。"
+                                    "同じWi-Fiで開けない時は、Windowsの確認画面でNexus ArkまたはPythonの"
+                                    " **プライベートネットワーク** 通信だけを許可してください。\n\n"
+                                    "### 6. 普段の使い方\n"
+                                    "次回からはPCでNexus Arkを起動して、同じスマホのブラウザまたはホーム画面へ追加したLiteを開きます。"
+                                    "本体URLとTokenはその端末に保存されるため、通常は再入力不要です。接続先を変えた時やTokenを作り直した時だけ更新してください。"
+                                )
+
+                            _lite_travel_settings = config_manager.CONFIG_GLOBAL.get("lite_travel_settings", {}) or {}
+                            _lite_connectivity_initial_flow = ui_handlers.build_lite_connectivity_initial_flow()
+                            with gr.Accordion(
+                                "PCを止めても使うための初回設定",
+                                open=False,
+                                elem_id="lite_independent_setup_flow",
+                            ) as lite_independent_setup_accordion:
+                                _lite_cloud_setup_initial = ui_handlers.build_lite_cloud_setup_initial_view(
+                                    _lite_travel_settings
+                                )
+                                lite_cloud_setup_state = gr.State(_lite_cloud_setup_initial[0])
+                                gr.Markdown(
+                                    "### 1. Liteの準備を確認\n"
+                                    "表示されたボタンを押して、このPCの準備状態を確認してください。"
+                                )
+                                with gr.Accordion("Liteの準備ツール", open=True):
+                                    gr.Markdown(
+                                        "Lite独立モードを使う準備ができているか確認します。"
+                                    )
+                                    lite_runtime_status = gr.Markdown(
+                                        "### Liteの準備ツール: 未確認\n\n「状態を確認」を押してください。"
+                                    )
+                                    lite_runtime_status_button = gr.Button(
+                                        "状態を確認", variant="primary"
+                                    )
+                                    with gr.Accordion("確認した内容", open=False):
+                                        lite_runtime_details = gr.Markdown(
+                                            "まだ診断していません。診断はローカルのファイルを読むだけで、Cloudflareを変更しません。"
+                                        )
+                                    with gr.Group(visible=False) as lite_runtime_repair_group:
+                                        gr.Markdown(
+                                            "「次の手順を確認」を押すと、続けて押すボタンが"
+                                            "すぐ下に表示されます。"
+                                        )
+                                        lite_runtime_repair_check_button = gr.Button(
+                                            "次の手順を確認", variant="secondary"
+                                        )
+                                        lite_runtime_repair_result = gr.Markdown("")
+                                        lite_runtime_repair_apply_button = gr.Button(
+                                            "署名済み更新で修復", variant="primary", visible=False
+                                        )
+                                gr.Markdown("#### Cloudflareアカウントを選ぶ")
+                                gr.Markdown(
+                                    "既存のCloudflareアカウントを使うか、新しいアカウントを作成して接続します。"
+                                )
+                                gr.Markdown(
+                                    "**別の／新しいアカウントを使う**  \n"
+                                    "Cloudflare公式画面が別タブで開きます。初めて作る場合は"
+                                    "「Sign up（新規登録）」、すでに持っている場合は"
+                                    "「Sign in（ログイン）」を選びます。"
+                                    "「Authorize（接続を許可）」は、登録・ログイン後の接続許可画面で押します。"
+                                )
+                                lite_cloud_setup_login_confirm = gr.Checkbox(
+                                    label="ブラウザでCloudflareへの接続を許可する",
+                                    value=False,
+                                )
+                                lite_cloud_setup_login_hint = gr.Markdown(
+                                    "先に上の接続許可をチェックしてください。"
+                                )
+                                lite_cloud_setup_login_button = gr.Button(
+                                    "別の／新しいアカウントで接続",
+                                    variant="secondary",
+                                    interactive=False,
+                                )
+                                lite_cloud_setup_login_status = gr.Markdown("アカウントの追加・切替: この画面では未実行（保存済みのLite接続とは別の操作です）")
+                                lite_cloud_setup_summary = gr.Markdown(_lite_cloud_setup_initial[1])
+                                with gr.Group(
+                                    visible=bool(
+                                        _lite_cloud_setup_initial[20].get("visible", False)
+                                    )
+                                ) as lite_cloud_setup_check_group:
+                                    lite_cloud_setup_check_button = gr.Button(
+                                        value=_lite_cloud_setup_initial[3].get(
+                                            "value", "Cloudflareの接続・アカウントを確認"
+                                        ),
+                                        variant=_lite_cloud_setup_initial[3].get(
+                                            "variant", "primary"
+                                        ),
+                                        visible=True,
+                                        interactive=bool(
+                                            _lite_cloud_setup_initial[3].get("interactive", True)
+                                        ),
+                                    )
+                                with gr.Group(
+                                    visible=bool(
+                                        _lite_cloud_setup_initial[18].get("visible", False)
+                                    )
+                                ) as lite_cloud_setup_account_group:
+                                    gr.Markdown(
+                                        "**表示中のアカウントを使う**  \n"
+                                        "ここに表示されるのは、Cloudflareにすでにあるアカウントです。"
+                                    )
+                                    with gr.Row():
+                                        lite_cloud_setup_account = gr.Dropdown(
+                                            label="利用するCloudflareアカウント",
+                                            choices=_lite_cloud_setup_initial[4].get("choices", []),
+                                            value=_lite_cloud_setup_initial[4].get("value"),
+                                            visible=True,
+                                            interactive=bool(
+                                                _lite_cloud_setup_initial[4].get("interactive", True)
+                                            ),
+                                        )
+                                        lite_cloud_setup_confirm_account_button = gr.Button(
+                                            "このアカウントで続ける",
+                                            variant=_lite_cloud_setup_initial[5].get(
+                                                "variant", "primary"
+                                            ),
+                                            visible=True,
+                                            interactive=bool(
+                                                _lite_cloud_setup_initial[5].get(
+                                                    "interactive", False
+                                                )
+                                            ),
+                                        )
+                                with gr.Group(
+                                    visible=bool(
+                                        _lite_cloud_setup_initial[17].get("visible", False)
+                                    )
+                                ) as lite_cloud_setup_manual_account_group:
+                                    gr.Markdown(
+                                        "**アカウント候補を取得できない時だけ使う復旧欄**  \n"
+                                        "Cloudflare公式Dashboardで対象を開き、表示名とaccount IDを照合してください。"
+                                        "account IDはこのPC内の診断にだけ使い、コマンド引数へ出しません。"
+                                    )
+                                    lite_cloud_setup_manual_account_name = gr.Textbox(
+                                        label="Cloudflare公式画面のアカウント表示名",
+                                        placeholder="例: 自分専用のLite用アカウント",
+                                    )
+                                    lite_cloud_setup_manual_account_id = gr.Textbox(
+                                        label="Cloudflare公式画面で照合したaccount ID",
+                                        type="password",
+                                    )
+                                    lite_cloud_setup_manual_account_confirm = gr.Checkbox(
+                                        label=(
+                                            "表示名とaccount IDが一致し、D1／KV／Workerが全0件、"
+                                            "workers.devが未登録であることを公式Dashboardで確認しました"
+                                        ),
+                                        value=False,
+                                    )
+                                    lite_cloud_setup_manual_account_button = gr.Button(
+                                        "照合したアカウントを読み取り確認",
+                                        variant="primary",
+                                    )
+                                with gr.Group(
+                                    visible=bool(
+                                        _lite_cloud_setup_initial[19].get("visible", False)
+                                    )
+                                ) as lite_cloud_setup_mode_group:
+                                    with gr.Row():
+                                        lite_cloud_setup_new_button = gr.Button(
+                                            "新しいLite用クラウドの作成内容を確認",
+                                            variant=_lite_cloud_setup_initial[6].get(
+                                                "variant", "secondary"
+                                            ),
+                                            visible=True,
+                                            interactive=bool(
+                                                _lite_cloud_setup_initial[6].get(
+                                                    "interactive", False
+                                                )
+                                            ),
+                                        )
+                                        lite_cloud_setup_import_button = gr.Button(
+                                            "準備済みのLite用クラウドを接続",
+                                            variant=_lite_cloud_setup_initial[7].get(
+                                                "variant", "primary"
+                                            ),
+                                            visible=True,
+                                            interactive=bool(
+                                                _lite_cloud_setup_initial[7].get(
+                                                    "interactive", False
+                                                )
+                                            ),
+                                        )
+                                with gr.Group(
+                                    visible=bool(_lite_cloud_setup_initial[8].get("visible", False))
+                                ) as lite_cloud_setup_plan_group:
+                                    lite_cloud_setup_plan_summary = gr.Markdown(
+                                        _lite_cloud_setup_initial[9].get("value", "")
+                                    )
+                                    gr.Markdown(ui_handlers.build_lite_cloud_setup_release_gate_notice())
+                                    gr.Markdown(
+                                        "**CloudflareのSubdomainを確認**  \n"
+                                        "[Cloudflare Dashboard](https://dash.cloudflare.com/) を開き、"
+                                        "左側メニューから **Build → Compute → Workers & Pages** へ進みます。"
+                                        "画面右側の **Account details → Subdomain** に表示された値を、"
+                                        "そのまま下へ入力してください。"
+                                    )
+                                    lite_cloud_setup_worker_url = gr.Textbox(
+                                        label="Cloudflareに表示されたSubdomain（必須）",
+                                        value=_lite_cloud_setup_initial[10].get("value", ""),
+                                        visible=True,
+                                        interactive=bool(
+                                            _lite_cloud_setup_initial[10].get("interactive", True)
+                                        ),
+                                        placeholder="例: my-subdomain.workers.dev",
+                                        info="末尾が workers.dev の表示をそのまま入力できます。"
+                                        "完全なLite URLが分かる場合は、https:// から入力することもできます。",
+                                    )
+                                    lite_cloud_setup_prepare_confirm = gr.Checkbox(
+                                        label=ui_handlers.build_lite_cloud_setup_prepare_consent_label(),
+                                        value=bool(
+                                            _lite_cloud_setup_initial[11].get("value", False)
+                                        ),
+                                        visible=True,
+                                        interactive=bool(
+                                            _lite_cloud_setup_initial[11].get("interactive", True)
+                                        ),
+                                    )
+                                    lite_cloud_setup_prepare_button = gr.Button(
+                                        value=_lite_cloud_setup_initial[12].get(
+                                            "value", "確認した計画で準備を開始"
+                                        ),
+                                        variant=_lite_cloud_setup_initial[12].get(
+                                            "variant", "secondary"
+                                        ),
+                                        visible=True,
+                                        interactive=bool(
+                                            _lite_cloud_setup_initial[12].get("interactive", False)
+                                        ),
+                                    )
+                                with gr.Group(
+                                    visible=bool(
+                                        _lite_cloud_setup_initial[13].get("visible", False)
+                                    )
+                                ) as lite_cloud_setup_publish_group:
+                                    lite_cloud_setup_publish_summary = gr.Markdown(
+                                        _lite_cloud_setup_initial[14].get("value", "")
+                                    )
+                                    lite_cloud_setup_publish_confirm = gr.Checkbox(
+                                        label="公開URL・残る資源・料金の可能性を確認し、このLite用クラウドを公開することに同意します",
+                                        value=bool(
+                                            _lite_cloud_setup_initial[15].get("value", False)
+                                        ),
+                                        visible=True,
+                                        interactive=bool(
+                                            _lite_cloud_setup_initial[15].get("interactive", True)
+                                        ),
+                                    )
+                                    lite_cloud_setup_publish_button = gr.Button(
+                                        value=_lite_cloud_setup_initial[16].get(
+                                            "value", "Lite用クラウドを公開して接続を確認"
+                                        ),
+                                        variant=_lite_cloud_setup_initial[16].get(
+                                            "variant", "secondary"
+                                        ),
+                                        visible=True,
+                                        interactive=bool(
+                                            _lite_cloud_setup_initial[16].get("interactive", False)
+                                        ),
+                                    )
+                                with gr.Accordion("接続確認の詳しい情報（必要な時だけ）", open=False):
+                                    lite_cloud_setup_details = gr.Markdown(_lite_cloud_setup_initial[2])
+                                gr.Markdown("---")
+                                gr.Markdown(
+                                    "### 2. AIサービスとモデルを選ぶ\n"
+                                    "「1. Liteの準備を確認」でLite用クラウドの公開・接続確認が完了してから、"
+                                    "Liteで使うAIサービスとモデルを選びます。"
+                                    "Cloudflareへのログインだけでは、まだ準備は完了していません。"
+                                )
+                                with gr.Accordion(
+                                    "本体に保存済みのAIサービスをLiteでも使えるようにする",
+                                    open=True,
+                                ):
+                                    gr.Markdown(
+                                        "APIキーの再入力は不要です。PCを止めても使えるよう、選んだ1件を"
+                                        "あなたのLite用クラウドへ安全に保存します。"
+                                    )
+                                    gr.Markdown(
+                                        "予備を登録する場合は、下の「登録する接続」で予備枠を選びます。"
+                                        "旅行前に日次とお出かけ全体の予算を確認してください。"
+                                        "Geminiは同一Google project内で無料枠が共通です。"
+                                    )
+                                    _lite_travel_initial_keys = lite_travel.get_local_key_choices("gemini")
+                                    _lite_travel_initial_key_state = (
+                                        ui_handlers.build_lite_provider_key_setup_state(
+                                            "gemini", _lite_travel_initial_keys
+                                        )
+                                    )
+                                    _lite_travel_initial_registration_choices = (
+                                        ui_handlers.build_lite_provider_registration_choices("gemini")
+                                    )
+                                    _lite_travel_initial_registration_binding = (
+                                        _lite_travel_initial_registration_choices[0][1]
+                                        if _lite_travel_initial_registration_choices
+                                        else None
+                                    )
+                                    with gr.Row():
+                                        lite_travel_secret_provider = gr.Dropdown(
+                                            label="AIサービス",
+                                            choices=[
+                                                ("Gemini", "gemini"),
+                                                ("OpenAI", "openai"),
+                                                ("Anthropic", "anthropic"),
+                                                ("xAI", "xai"),
+                                                ("OpenRouter", "openrouter"),
+                                            ],
+                                            value="gemini",
+                                            interactive=True,
+                                        )
+                                        lite_travel_local_key_reference = gr.Dropdown(
+                                            label="本体に保存済みのAPIキー",
+                                            choices=_lite_travel_initial_keys,
+                                            value=_lite_travel_initial_keys[0][1] if _lite_travel_initial_keys else None,
+                                            interactive=True,
+                                        )
+                                    lite_travel_secret_registration_target = gr.Dropdown(
+                                        label="登録する接続",
+                                        choices=_lite_travel_initial_registration_choices,
+                                        value=_lite_travel_initial_registration_binding,
+                                        interactive=True,
+                                        info="通常用または予備の接続先を1件選び、下の保存ボタンを押すたびにその1件だけを保存します。",
+                                    )
+                                    lite_travel_local_key_status = gr.Markdown(
+                                        _lite_travel_initial_key_state["status"]
+                                    )
+                                    with gr.Accordion("詳細設定（通常は変更不要）", open=False):
+                                        with gr.Row():
+                                            lite_travel_secret_binding = gr.Dropdown(
+                                                label="Cloudflare Secretの保存名",
+                                                choices=[
+                                                    binding
+                                                    for _label, binding in _lite_travel_initial_registration_choices
+                                                ],
+                                                value=_lite_travel_initial_registration_binding,
+                                                interactive=False,
+                                            )
+                                            lite_travel_secret_profile_id = gr.Textbox(
+                                                label="Lite内部のAI接続ID",
+                                                value="gemini-personal-1",
+                                                interactive=True,
+                                            )
+                                            lite_travel_secret_display_name = gr.Textbox(
+                                                label="Liteに表示する名前",
+                                                value="Gemini（個人用1）",
+                                                interactive=True,
+                                            )
+                                    lite_travel_secret_confirm = gr.Checkbox(
+                                        label="選んだ保存済みキー1件を、自分のLite用クラウドへ保存することを確認しました",
+                                        value=False,
+                                    )
+                                    lite_travel_secret_register_button = gr.Button(
+                                        _lite_travel_initial_key_state["button_label"],
+                                        variant="secondary",
+                                        interactive=_lite_travel_initial_key_state["interactive"],
+                                    )
+                                    lite_travel_secret_status = gr.Markdown("")
+                                    with gr.Accordion("登録済み接続に本体のキー名を表示する", open=False):
+                                        gr.Markdown(
+                                            "上のキーと登録先を、その接続へ登録した時と同じ組合せで選びます。"
+                                            "本体のキー名と、Geminiでは本体の有料設定／無料設定を表示へ反映します。"
+                                            "実際の課金状態を確認するものではありません。キー値の再送や接続の変更は行いません。"
+                                        )
+                                        lite_travel_profile_label_confirm = gr.Checkbox(
+                                            label="選んだ本体キーが、この接続に登録したキーと同じだと確認しました",
+                                            value=False,
+                                        )
+                                        lite_travel_profile_label_button = gr.Button(
+                                            "キー名の表示だけを更新",
+                                            variant="secondary",
+                                            interactive=_lite_travel_initial_key_state["interactive"],
+                                        )
+
+                                with gr.Accordion("Lite用クラウドの接続情報（通常は変更不要）", open=False):
+                                    gr.Markdown("初回設定で自動保存されます。接続を修復する場合以外は変更不要です。キーは公開・共有しないでください。")
+                                    lite_travel_worker_url = gr.Textbox(
+                                        label="Lite用クラウドのURL（Worker URL）",
+                                        value=_lite_travel_settings.get("worker_url", ""),
+                                        placeholder="https://your-worker.example.workers.dev",
+                                    )
+                                    with gr.Row():
+                                        lite_travel_owner_token = gr.Textbox(
+                                            label="本体確認キー（OWNER Token）",
+                                            value=_lite_travel_settings.get("owner_token", ""),
+                                            type="password",
+                                        )
+                                        lite_travel_signing_key = gr.Textbox(
+                                            label="帰宅データ確認キー（署名鍵）",
+                                            value=_lite_travel_settings.get("bundle_signing_key", ""),
+                                            type="password",
+                                        )
+                                    lite_travel_wrangler_config_path = gr.Textbox(
+                                        label="詳細設定ファイル（通常は変更不要）",
+                                        value=_lite_travel_settings.get("wrangler_config_path", "cloud/lite-relay/wrangler.phase2.jsonc"),
+                                    )
+                                with gr.Row():
+                                    _lite_travel_initial_profile = str(
+                                        _lite_travel_settings.get("credential_profile_id", "gemini-personal-1") or ""
+                                    )
+                                    lite_travel_credential_profile_id = gr.Dropdown(
+                                        label="使用するAIサービス／接続",
+                                        choices=ui_handlers.build_lite_ai_connection_choices(
+                                            _lite_travel_initial_profile
+                                        ),
+                                        value=_lite_travel_initial_profile or None,
+                                        interactive=True,
+                                    )
+                                    _lite_travel_initial_model = str(_lite_travel_settings.get("model_id", "") or "")
+                                    if not _lite_travel_initial_model:
+                                        _lite_travel_initial_model = lite_travel.get_lite_initial_model_candidate(
+                                            lite_travel.infer_provider_from_profile_id(_lite_travel_initial_profile)
+                                        )
+                                    lite_travel_model_id = gr.Dropdown(
+                                        label="最初に使うAIモデル（必須）",
+                                        choices=ui_handlers.build_lite_travel_model_choices(
+                                            _lite_travel_initial_profile,
+                                            _lite_travel_initial_model,
+                                        ),
+                                        value=_lite_travel_initial_model or None,
+                                        filterable=True,
+                                        interactive=True,
+                                        allow_custom_value=True,
+                                        info="普段と同じモデルを一覧から選ぶか、最新のモデル名を直接入力できます。",
+                                    )
+                                lite_travel_model_fetch_profile = gr.State(_lite_travel_initial_profile)
+                                lite_travel_model_fetch_stage = gr.State({})
+                                lite_travel_refresh_models_button = gr.Button(
+                                    "最新のモデル一覧を取得",
+                                    variant="secondary",
+                                    size="sm",
+                                )
+                                lite_travel_ai_connection_status = gr.Markdown(
+                                    "本体に保存済みの候補を表示しています。初回や接続先を選び直した後は、"
+                                    "「最新のモデル一覧を取得」を押すと、このキーで使えるモデルを確認できます。"
+                                )
+                                lite_travel_use_custom_model = gr.State(False)
+                                lite_travel_custom_model_id = gr.State("")
+                                with gr.Row():
+                                    lite_travel_retention_days = gr.Dropdown(
+                                        label="帰宅後、Lite用クラウドに会話本文を残す期間",
+                                        choices=[
+                                            ("帰宅時にすぐ削除（0日）", 0),
+                                            ("帰宅後7日で削除", 7),
+                                            ("帰宅後30日で削除", 30),
+                                        ],
+                                        value=int(_lite_travel_settings.get("retention_days", 7)),
+                                        interactive=True,
+                                    )
+                                gr.Markdown(
+                                    "この期間は、帰宅後の会話本文を復旧用に残す長さです。"
+                                    "「お出かけ前データ」の保存期間とは別です。"
+                                )
+                                with gr.Accordion("料金と応答の詳細設定（通常は変更不要）", open=False):
+                                    with gr.Row():
+                                        lite_travel_daily_budget = gr.Number(
+                                            label="1日の利用上限（USD）",
+                                            value=_lite_travel_settings.get("budget_daily_limit_usd", 1.0),
+                                            minimum=0,
+                                        )
+                                        lite_travel_session_budget = gr.Number(
+                                            label="1回のお出かけ上限（USD）",
+                                            value=_lite_travel_settings.get("budget_session_limit_usd", 0.5),
+                                            minimum=0,
+                                        )
+                                        lite_travel_budget_warning_ratio = gr.Slider(
+                                            label="上限の何割で警告するか",
+                                            minimum=0.1,
+                                            maximum=1.0,
+                                            step=0.05,
+                                            value=float(_lite_travel_settings.get("budget_warning_ratio", 0.8)),
+                                        )
+                                    with gr.Row():
+                                        lite_travel_max_output_tokens = gr.Number(
+                                            label="1回答の最大長（空欄は自動）",
+                                            value=_lite_travel_settings.get("budget_max_output_tokens"),
+                                            minimum=1,
+                                            maximum=65536,
+                                            precision=0,
+                                            info="通常は空欄のまま、選んだモデルに長さを任せます。必要な場合だけ上限を指定します。",
+                                        )
+                                        lite_travel_budget_timezone = gr.Textbox(
+                                            label="1日の区切りに使う地域",
+                                            value=_lite_travel_settings.get("budget_timezone", "Asia/Tokyo"),
+                                        )
+                                        lite_travel_cache_policy = gr.Dropdown(
+                                            label="応答を効率化する仕組み",
+                                            choices=[
+                                                ("自動（おすすめ）", "auto"),
+                                                ("使用しない", "off"),
+                                                ("Geminiの明示キャッシュ", "gemini_explicit"),
+                                            ],
+                                            value=_lite_travel_settings.get("cache_policy", "auto"),
+                                        )
+                                    lite_travel_allow_unknown_price = gr.State(True)
+                                lite_travel_settings_save = gr.Button("AIと独立お出かけ設定を保存", variant="primary")
+                                lite_travel_settings_status = gr.Markdown("設定: 未確認")
+
+                                with gr.Accordion("詳しい診断・端末管理（問題がある時だけ）", open=False):
+                                    gr.Markdown(
+                                        "ここから下は、詳しい診断や端末の解除を行う時だけ使います。"
+                                        "技術用語を含むため、通常の利用では変更しないでください。"
+                                    )
+                                    lite_phase5_diagnostics_button = gr.Button("Lite用クラウドを詳しく診断", variant="secondary")
+                                    lite_phase5_diagnostic_export_button = gr.Button("共有用診断を生成", variant="secondary")
+                                    lite_phase5_diagnostics_status = gr.Markdown("詳しい診断: 未実行")
+                                    with gr.Row():
+                                        lite_phase5_devices_button = gr.Button("接続済みスマホを確認", variant="secondary")
+                                        lite_phase5_revoke_all_confirm = gr.Checkbox(label="すべてのスマホ接続解除を確認", value=False)
+                                        lite_phase5_revoke_all_button = gr.Button("すべてのスマホ接続を解除", variant="stop")
+                                    lite_phase5_devices_status = gr.Markdown("接続済みスマホ: 未取得")
+                                    with gr.Row():
+                                        lite_phase5_device_id = gr.Textbox(label="解除するスマホのID")
+                                        lite_phase5_revoke_device_confirm = gr.Checkbox(label="このスマホの接続解除を確認", value=False)
+                                        lite_phase5_revoke_device_button = gr.Button("このスマホの接続を解除", variant="stop")
+                                    with gr.Row():
+                                        lite_phase5_retention_preview_button = gr.Button("削除期限を迎えたデータを確認", variant="secondary")
+                                        lite_phase5_retention_run_button = gr.Button("期限を迎えた本文を削除", variant="stop")
+                                    lite_phase5_retention_status = gr.Markdown("保存期限の処理: 未実行")
+
+                            with gr.Accordion(
+                                "接続確認とスマホ登録",
+                                open=False,
+                                visible=True,
+                                elem_id="lite_independent_connectivity_flow",
+                            ) as lite_independent_connectivity_accordion:
+                                gr.Markdown(
+                                    "### 3. 接続確認とスマホ登録\n"
+                                    "4状態を確認して、スマホを登録します。"
+                                )
+                                with gr.Row():
+                                    lite_connectivity_flow = gr.Radio(
+                                        label="今回の目的",
+                                        choices=[
+                                            ("初回設定", "initial"),
+                                            ("既存接続の確認", "existing"),
+                                            ("端末を再登録", "re_pair"),
+                                        ],
+                                        value=_lite_connectivity_initial_flow,
+                                        interactive=True,
+                                    )
+                                    lite_connectivity_refresh_button = gr.Button(
+                                        "4状態を確認", variant="primary"
+                                    )
+                                lite_connectivity_card = gr.HTML(
+                                    value=ui_handlers.build_lite_connectivity_wizard(
+                                        _lite_connectivity_initial_flow,
+                                        refresh_remote=False,
+                                        refresh_action_label="4状態を確認",
+                                    )
+                                )
+                                with gr.Accordion(
+                                    "Lite用クラウドを更新",
+                                    open=False,
+                                    # 初期DOMを保持し、後から開いた時にも子の手順・ボタンを描画する。
+                                    visible="hidden",
+                                    elem_id="lite_worker_update_guide",
+                                ) as lite_worker_update_guide:
+                                    gr.Markdown(
+                                        "### 次にすること：Lite用クラウドを更新\n"
+                                        "左サイドバーの **🔄 アップデート・再起動** で"
+                                        "「本体とスマホ版の更新を確認」を押し、"
+                                        "**スマホ版Liteも更新** から実行できます。"
+                                        "保存領域名や更新計画の入力は不要です。"
+                                    )
+                                    with gr.Accordion("詳細・復旧手順", open=False):
+                                        gr.Markdown(
+                                            "接続設定を復旧する場合の手順です。保存領域名は接続設定から自動入力します。"
+                                            "空欄の場合はCloudflare Dashboardの「Storage & databases」→"
+                                            "「D1 SQL Database」に表示される **Name** を確認してください。**UUIDではありません。**"
+                                        )
+                                        _lite_update_preflight_text, _lite_update_preflight_ready = (
+                                            ui_handlers.build_lite_update_preflight_view()
+                                        )
+                                        lite_update_preflight_status = gr.Markdown(_lite_update_preflight_text)
+                                        with gr.Row():
+                                            lite_phase5_database_name = gr.Textbox(
+                                                label="1. 更新する保存領域（自動入力）",
+                                                value=ui_handlers.build_lite_update_database_name(),
+                                                placeholder="例: nexus-ark-lite-relay（UUIDではありません）",
+                                                info="通常は変更不要です。空欄の場合だけCloudflareのD1一覧にあるNameを確認してください。",
+                                            )
+                                            lite_phase5_plan_button = gr.Button(
+                                                "2. 安全更新計画を作成",
+                                                variant="primary" if _lite_update_preflight_ready else "secondary",
+                                                interactive=_lite_update_preflight_ready,
+                                            )
+                                        with gr.Accordion("3. 作成された更新計画を確認", open=False):
+                                            lite_phase5_operation = gr.Code(
+                                                label="再開可能な更新操作（秘密値なし）",
+                                                language="json", interactive=False, lines=10,
+                                            )
+                                        lite_phase5_update_confirm = gr.Checkbox(
+                                            label="復旧点を取得してから保存領域とLite用クラウドを更新し、自動では元に戻さないことを確認しました",
+                                            value=False,
+                                        )
+                                        lite_phase5_run_button = gr.Button(
+                                            "4. 確認した更新計画を実行", variant="secondary", interactive=False,
+                                        )
+                                        lite_phase5_update_status = gr.Markdown(
+                                            "まず「2. 安全更新計画を作成」を押してください。計画作成だけではクラウドを変更しません。"
+                                        )
+                                        gr.Markdown("更新成功後は4状態を再診断します。失敗時は自動で元へ戻さず、復旧点を表示します。")
+                                with gr.Group(visible=False) as lite_connectivity_retention_group:
+                                    lite_connectivity_retention_prompt = gr.Markdown("")
+                                    with gr.Row():
+                                        lite_connectivity_retention_delete_button = gr.Button(
+                                            "期限切れ本文を削除して状態を更新",
+                                            variant="stop",
+                                        )
+                                        lite_connectivity_retention_dismiss_button = gr.Button(
+                                            "今は削除しない",
+                                            variant="secondary",
+                                        )
+                                lite_pairing_code_ttl_minutes = gr.Dropdown(
+                                    choices=[("5分", 5), ("15分", 15), ("30分", 30)],
+                                    value=15,
+                                    label="登録用コードの有効期限",
+                                    info="発行時に適用します。標準は15分です。ペアリング後の端末認証の期限とは別です。",
+                                    allow_custom_value=False,
+                                )
+                                with gr.Row():
+                                    lite_connectivity_pair_button = gr.Button(
+                                        "短期ペアリングコードを発行", variant="secondary"
+                                    )
+                                    lite_connectivity_prepare_button = gr.Button(
+                                        "現在のルームのデータを直接準備（選択画面を省略）",
+                                        variant="secondary",
+                                        visible=False,
+                                    )
+                                gr.Markdown(
+                                    "発行したコードは、実際に持ち出すスマホのNexus Ark Liteアプリ（PWA）で入力します。"
+                                    "スマホ側の **設定 → 独立モードの準備** を開き、Lite用クラウドURLの下にある"
+                                    " **ペアリングコード** 欄へ入力して「ペアリング」を押してください。"
+                                    "お出かけ前データの細かな選択は、次の日常画面で行えます。"
+                                )
+                                lite_connectivity_action_status = gr.Markdown("操作結果: 未実行")
+                                lite_connectivity_pairing_handoff = gr.HTML("")
+                                lite_connectivity_open_travel_button = gr.Button(
+                                    "4. お出かけの準備へ進む",
+                                    variant="primary",
+                                )
+
+                            with gr.Accordion("安全診断", open=False):
+                                external_api_security_diagnostics = gr.Markdown(
+                                    value=ui_handlers.build_api_gateway_security_diagnostics()
+                                )
+
+                        with gr.Column(
+                            visible=False,
+                            elem_id="outing_export_panel",
+                            elem_classes=["outing-mode-panel"],
+                        ) as outing_export_group:
+                            gr.Markdown(
+                                "## 外部AIへ持ち出す\n"
+                                "Gemini・ChatGPT・Claudeなどで会話を続ける文面を作ります。\n\n"
+                                "1. **読み込む** — 現在のペルソナ情報を集めます。  \n"
+                                "2. **内容を確認する** — 個人情報や渡したくない記憶を削除できます。  \n"
+                                "3. **文面をコピーする** — 外部AIの最初のメッセージ欄へ貼り付けます。"
+                            )
+
+                            # --- 読み込みボタン ---
+                            with gr.Row():
+                                outing_load_button = gr.Button("🔄 読み込む", variant="primary", scale=1)
+                                outing_total_char_count = gr.Markdown("📝 合計文字数: ---")
+
+                            # --- セクション別アコーディオン ---
+                            # システムプロンプト
+                            with gr.Accordion("📜 システムプロンプト", open=False):
+                                outing_system_prompt_text = gr.Textbox(
+                                    label="システムプロンプト", lines=8, max_lines=20, interactive=True,
+                                    placeholder="「🔄 読み込む」で読み込まれます"
+                                )
+                                with gr.Row():
+                                    outing_system_prompt_chars = gr.Markdown("文字数: ---")
+                                    outing_system_prompt_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
+                                    outing_system_prompt_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
+
+                            # コアメモリ（永続記憶）
+                            with gr.Accordion("🧠 コアメモリ（永続記憶）", open=False):
+                                outing_permanent_text = gr.Textbox(
+                                    label="永続記憶", lines=8, max_lines=20, interactive=True,
+                                    placeholder="「🔄 読み込む」で読み込まれます"
+                                )
+                                with gr.Row():
+                                    outing_permanent_chars = gr.Markdown("文字数: ---")
+                                    outing_permanent_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
+                                    outing_permanent_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
+
+                            # コアメモリ（日記要約）
+                            with gr.Accordion("📔 コアメモリ（日記要約）", open=False):
+                                outing_diary_text = gr.Textbox(
+                                    label="日記要約", lines=8, max_lines=20, interactive=True,
+                                    placeholder="「🔄 読み込む」で読み込まれます"
+                                )
+                                with gr.Row():
+                                    outing_diary_chars = gr.Markdown("文字数: ---")
+                                    outing_diary_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
+                                    outing_diary_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
+
+                            # エピソード記憶
+                            with gr.Accordion("📖 エピソード記憶", open=False):
+                                outing_episode_days_slider = gr.Slider(
+                                    minimum=0, maximum=90, value=7, step=1,
+                                    label="過去N日分", info="0で無効 (最大90日)"
+                                )
+                                outing_episodic_text = gr.Textbox(
+                                    label="エピソード記憶", lines=8, max_lines=20, interactive=True,
+                                    placeholder="「🔄 読み込む」で読み込まれます"
+                                )
+                                with gr.Row():
+                                    outing_episodic_chars = gr.Markdown("文字数: ---")
+                                    outing_episodic_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
+                                    outing_episodic_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
+
+                            # 会話ログ
+                            with gr.Accordion("💬 会話ログ", open=False):
+                                with gr.Row():
+                                    outing_log_mode = gr.Radio(
+                                        choices=["最新N件", "本日分（高度）"],
+                                        value="最新N件",
+                                        label="構成モード",
+                                        scale=1
+                                    )
+                                    outing_log_count_slider = gr.Slider(
+                                        minimum=5, maximum=100, value=20, step=5,
+                                        label="取得件数", scale=1, visible=True
+                                    )
+                                    with gr.Column(visible=False) as outing_log_today_options:
+                                        outing_auto_summary_checkbox = gr.Checkbox(
+                                            label="自動要約を有効化",
+                                            value=False
+                                        )
+                                        outing_log_summary_threshold = gr.Slider(
+                                            minimum=5000, maximum=100000, value=12000, step=1000,
+                                            label="要約閾値",
+                                            info="この文字数を超えると前半を要約します"
+                                        )
+                                with gr.Row():
+                                    outing_logs_include_timestamp = gr.Checkbox(label="タイムスタンプを含む", value=False, scale=1)
+                                    outing_logs_include_model = gr.Checkbox(label="モデル名を含む", value=False, scale=1)
+                                    outing_logs_wrap_tags = gr.Checkbox(label="過去ログをタグで囲む（帰宅時の重複除去用）", value=True, scale=1)
+                                outing_logs_text = gr.Textbox(
+                                    label="会話ログ", lines=8, max_lines=20, interactive=True,
+                                    placeholder="「🔄 読み込む」で読み込まれます"
+                                )
+                                with gr.Row():
+                                    outing_logs_chars = gr.Markdown("文字数: ---")
+                                    outing_logs_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
+                                    outing_logs_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
+
+                            # --- エクスポートプレビュー・実行 ---
+                            gr.Markdown("---")
+                            gr.Markdown("### 📝 エクスポートプレビュー")
+                            with gr.Row():
+                                outing_system_prompt_enabled = gr.Checkbox(label="システムプロンプト", value=True, scale=1)
+                                outing_permanent_enabled = gr.Checkbox(label="永続記憶", value=True, scale=1)
+                                outing_diary_enabled = gr.Checkbox(label="日記要約", value=True, scale=1)
+                                outing_episodic_enabled = gr.Checkbox(label="エピソード記憶", value=True, scale=1)
+                                outing_logs_enabled = gr.Checkbox(label="会話ログ", value=True, scale=1)
+
+                            outing_preview_text = gr.Textbox(
+                                label="エクスポート内容の最終確認・編集",
+                                lines=15, max_lines=30, interactive=True,
+                                placeholder="各セクションを読み込むとここに結合された内容が表示されます",
+                                elem_id="outing_preview_area"
+                            )
+
+                            with gr.Row():
+                                outing_copy_button = gr.Button("📋 文面をコピー", variant="primary", scale=2)
+                                outing_export_button = gr.Button("📤 ファイルに保存", variant="secondary", scale=1)
+                                outing_open_folder_button = gr.Button("📂 フォルダを開く", variant="secondary", scale=1)
+                            outing_download_file = gr.File(label="ダウンロード", visible=False, elem_id="outing_download_file")
+
+                        with gr.Column(
+                            visible=False,
+                            elem_id="outing_import_panel",
+                            elem_classes=["outing-mode-panel"],
+                        ) as outing_import_group:
+                            gr.Markdown(
+                                "## 外部AIから帰宅\n"
+                                "外部AIで増えた会話を確認し、現在のルームへ追記します。"
+                            )
+
+                            # ファイル取り込み
+                            with gr.Accordion("📂 ファイルから取り込み", open=False):
+                                with gr.Column(elem_classes=["outing-accordion-content"]):
+                                    gr.Markdown(
+                                        "ChatGPT・Claudeなどの会話を **MD/TXT** に整え、"
+                                        "発言の先頭を `[user]` と `[AI]` にして読み込みます。"
+                                        "公式サービスのJSON書き出しを直接読む機能ではありません。"
+                                    )
+                                    outing_import_file = gr.File(label="ログファイルをアップロード（MD/TXT）", file_types=[".md", ".txt"])
+                                    with gr.Accordion("発言ヘッダーなどの詳細設定", open=False):
+                                        outing_import_source = gr.Textbox(
+                                            label="お出かけ先の名称",
+                                            value="外部チャットアプリ",
+                                            placeholder="例: Gemini, ChatGPT, Claude",
+                                        )
+                                        outing_import_user_header = gr.Textbox(label="ユーザーの発言ヘッダー", value="[user]", placeholder="例: [user]")
+                                        outing_import_agent_header = gr.Textbox(label="AIの発言ヘッダー", value="[AI]", placeholder="例: [AI]")
+
+                                    with gr.Row():
+                                        outing_import_include_marker = gr.Checkbox(label="システムマーカー（開始・終了アナウンス）を含める", value=True)
+
+                                    with gr.Row():
+                                        outing_import_load_button = gr.Button("1. ファイルを読み込んでプレビュー", variant="secondary")
+
+                                    outing_import_preview_text = gr.Textbox(
+                                        label="インポート内容のプレビュー（ここで編集・調整できます）",
+                                        lines=10, max_lines=25,
+                                        placeholder="ファイルを読み込むとここに内容が表示されます",
+                                        interactive=True,
+                                        visible=False
+                                    )
+
+                                    outing_import_execute_button = gr.Button("2. ログを履歴に統合して帰宅する", variant="primary", visible=False)
+
+                            # URL取り込み (Gemini)
+                            with gr.Accordion("♊ Gemini共有URLから取り込み", open=False):
+                                with gr.Column(elem_classes=["outing-accordion-content"]):
+                                    gr.Markdown("Geminiの公開共有URLは、そのまま読み込んで内容を確認できます。")
+                                    gemini_import_url = gr.Textbox(label="共有URL", placeholder="https://gemini.google.com/share/...", lines=1)
+                                    with gr.Row():
+                                        gemini_import_include_marker = gr.Checkbox(label="システムマーカーを含める", value=True)
+                                    gemini_import_load_button = gr.Button("1. URLの内容を読み込んでプレビュー", variant="secondary")
+                                    gemini_import_status = gr.Markdown("")
+
+                            outing_import_status = gr.Markdown("ステータス: 待機中")
 
                     with gr.TabItem("Roblox", id="external_roblox", key="external_tab_roblox", visible=False):
                         gr.Markdown("## Roblox")
@@ -6546,167 +8048,6 @@ try:
                         with gr.Row():
                             save_raw_button = gr.Button("RAWテキスト全体を保存", variant="primary")
 
-            # ===== 💼 お出かけタブ =====
-            # ===== お出かけタブ =====
-            with gr.TabItem("お出かけ", id="outing", elem_id="outing_tab", key="top_tab_outing"):
-                with gr.Tabs():
-                    # --- Tab 1: エクスポート ---
-                    with gr.TabItem("📤 エクスポート", elem_id="outing_export_tab"):
-                        gr.Markdown("## ペルソナエクスポート\n外部AIツール（Antigravity等）で会話するためのペルソナデータをエクスポートします。")
-
-                        # --- 読み込みボタン ---
-                        with gr.Row():
-                            outing_load_button = gr.Button("🔄 読み込む", variant="primary", scale=1)
-                            outing_total_char_count = gr.Markdown("📝 合計文字数: ---")
-
-                        # --- セクション別アコーディオン ---
-                        # システムプロンプト
-                        with gr.Accordion("📜 システムプロンプト", open=False):
-                            outing_system_prompt_text = gr.Textbox(
-                                label="システムプロンプト", lines=8, max_lines=20, interactive=True,
-                                placeholder="「🔄 読み込む」で読み込まれます"
-                            )
-                            with gr.Row():
-                                outing_system_prompt_chars = gr.Markdown("文字数: ---")
-                                outing_system_prompt_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
-                                outing_system_prompt_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
-
-                        # コアメモリ（永続記憶）
-                        with gr.Accordion("🧠 コアメモリ（永続記憶）", open=False):
-                            outing_permanent_text = gr.Textbox(
-                                label="永続記憶", lines=8, max_lines=20, interactive=True,
-                                placeholder="「🔄 読み込む」で読み込まれます"
-                            )
-                            with gr.Row():
-                                outing_permanent_chars = gr.Markdown("文字数: ---")
-                                outing_permanent_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
-                                outing_permanent_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
-
-                        # コアメモリ（日記要約）
-                        with gr.Accordion("📔 コアメモリ（日記要約）", open=False):
-                            outing_diary_text = gr.Textbox(
-                                label="日記要約", lines=8, max_lines=20, interactive=True,
-                                placeholder="「🔄 読み込む」で読み込まれます"
-                            )
-                            with gr.Row():
-                                outing_diary_chars = gr.Markdown("文字数: ---")
-                                outing_diary_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
-                                outing_diary_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
-
-                        # エピソード記憶
-                        with gr.Accordion("📖 エピソード記憶", open=False):
-                            outing_episode_days_slider = gr.Slider(
-                                minimum=0, maximum=90, value=7, step=1,
-                                label="過去N日分", info="0で無効 (最大90日)"
-                            )
-                            outing_episodic_text = gr.Textbox(
-                                label="エピソード記憶", lines=8, max_lines=20, interactive=True,
-                                placeholder="「🔄 読み込む」で読み込まれます"
-                            )
-                            with gr.Row():
-                                outing_episodic_chars = gr.Markdown("文字数: ---")
-                                outing_episodic_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
-                                outing_episodic_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
-
-                        # 会話ログ
-                        with gr.Accordion("💬 会話ログ", open=False):
-                            with gr.Row():
-                                outing_log_mode = gr.Radio(
-                                    choices=["最新N件", "本日分（高度）"],
-                                    value="最新N件",
-                                    label="構成モード",
-                                    scale=1
-                                )
-                                outing_log_count_slider = gr.Slider(
-                                    minimum=5, maximum=100, value=20, step=5,
-                                    label="取得件数", scale=1, visible=True
-                                )
-                                with gr.Column(visible=False) as outing_log_today_options:
-                                    outing_auto_summary_checkbox = gr.Checkbox(
-                                        label="自動要約を有効化",
-                                        value=False
-                                    )
-                                    outing_log_summary_threshold = gr.Slider(
-                                        minimum=5000, maximum=100000, value=12000, step=1000,
-                                        label="要約閾値",
-                                        info="この文字数を超えると前半を要約します"
-                                    )
-                            with gr.Row():
-                                outing_logs_include_timestamp = gr.Checkbox(label="タイムスタンプを含む", value=False, scale=1)
-                                outing_logs_include_model = gr.Checkbox(label="モデル名を含む", value=False, scale=1)
-                                outing_logs_wrap_tags = gr.Checkbox(label="過去ログをタグで囲む（帰宅時の重複除去用）", value=True, scale=1)
-                            outing_logs_text = gr.Textbox(
-                                label="会話ログ", lines=8, max_lines=20, interactive=True,
-                                placeholder="「🔄 読み込む」で読み込まれます"
-                            )
-                            with gr.Row():
-                                outing_logs_chars = gr.Markdown("文字数: ---")
-                                outing_logs_reload = gr.Button("🔄", variant="secondary", scale=0, min_width=40)
-                                outing_logs_compress = gr.Button("✨ 圧縮", variant="secondary", scale=0)
-
-                        # --- エクスポートプレビュー・実行 ---
-                        gr.Markdown("---")
-                        gr.Markdown("### 📝 エクスポートプレビュー")
-                        with gr.Row():
-                            outing_system_prompt_enabled = gr.Checkbox(label="システムプロンプト", value=True, scale=1)
-                            outing_permanent_enabled = gr.Checkbox(label="永続記憶", value=True, scale=1)
-                            outing_diary_enabled = gr.Checkbox(label="日記要約", value=True, scale=1)
-                            outing_episodic_enabled = gr.Checkbox(label="エピソード記憶", value=True, scale=1)
-                            outing_logs_enabled = gr.Checkbox(label="会話ログ", value=True, scale=1)
-
-                        outing_preview_text = gr.Textbox(
-                            label="エクスポート内容の最終確認・編集",
-                            lines=15, max_lines=30, interactive=True,
-                            placeholder="各セクションを読み込むとここに結合された内容が表示されます",
-                            elem_id="outing_preview_area"
-                        )
-
-                        with gr.Row():
-                            outing_copy_button = gr.Button("📋 文面をコピー", variant="secondary")
-                            outing_export_button = gr.Button("📤 ファイルにエクスポート", variant="primary", scale=2)
-                            outing_open_folder_button = gr.Button("📂 フォルダを開く", variant="secondary", scale=1)
-                        outing_download_file = gr.File(label="ダウンロード", visible=False, elem_id="outing_download_file")
-
-                    # --- Tab 2: 帰宅（インポート） ---
-                    with gr.TabItem("🏠 帰宅 (インポート)", elem_id="outing_import_tab"):
-                        gr.Markdown("## 会話ログの統合\nAntigravity等からエクスポートした会話ログを、現在のルームの履歴に統合（追記）します。")
-
-                        # ファイル取り込み
-                        with gr.Accordion("📂 ファイルから取り込み", open=False):
-                            with gr.Group():
-                                outing_import_file = gr.File(label="ログファイルをアップロード（MD/TXT）", file_types=[".md", ".txt"])
-                                with gr.Row():
-                                    outing_import_source = gr.Textbox(label="お出かけ先の名称", value="Antigravity", placeholder="例: Antigravity, 外出先")
-                                    outing_import_user_header = gr.Textbox(label="ユーザーの発言ヘッダー", value="[user]", placeholder="例: [user]")
-                                    outing_import_agent_header = gr.Textbox(label="AIの発言ヘッダー", value="[AI]", placeholder="例: [AI]")
-
-                                with gr.Row():
-                                    outing_import_include_marker = gr.Checkbox(label="システムマーカー（開始・終了アナウンス）を含める", value=True)
-
-                                with gr.Row():
-                                    outing_import_load_button = gr.Button("1. ファイルを読み込んでプレビュー", variant="secondary")
-
-                                outing_import_preview_text = gr.Textbox(
-                                    label="インポート内容のプレビュー（ここで編集・調整できます）",
-                                    lines=10, max_lines=25,
-                                    placeholder="ファイルを読み込むとここに内容が表示されます",
-                                    interactive=True,
-                                    visible=False
-                                )
-
-                                outing_import_execute_button = gr.Button("2. ログを履歴に統合して帰宅する", variant="primary", visible=False)
-
-                        # URL取り込み (Gemini)
-                        with gr.Accordion("♊ Gemini共有URLから取り込み", open=False):
-                            with gr.Group():
-                                gemini_import_url = gr.Textbox(label="共有URL", placeholder="https://gemini.google.com/share/...", lines=1)
-                                with gr.Row():
-                                    gemini_import_include_marker = gr.Checkbox(label="システムマーカーを含める", value=True)
-                                gemini_import_load_button = gr.Button("1. URLの内容を読み込んでプレビュー", variant="secondary")
-                                gemini_import_status = gr.Markdown("")
-
-                        outing_import_status = gr.Markdown("ステータス: 待機中")
-
             with gr.TabItem("デバッグコンソール", id="debug_console", key="top_tab_debug_console"):
                 gr.Markdown("## デバッグコンソール\nアプリケーションの内部的な動作ログ（ターミナルに出力される内容）をここに表示します。")
                 debug_console_output = gr.Textbox(
@@ -6878,7 +8219,15 @@ try:
             saved_locations_dropdown,
             temp_scenery_image_display,
             scenery_mode_tabs,
-            room_include_knowledge_retrieval_checkbox
+            room_include_knowledge_retrieval_checkbox,
+            temp_location_applied_status,
+            temp_location_name_input,
+            creative_year_filter, creative_month_filter, creative_entry_dropdown,
+            creative_notes_summary, creative_note_edit_state,
+            creative_notes_raw_editor, creative_note_raw_state, creative_notes_details,
+            research_year_filter, research_month_filter, research_entry_dropdown,
+            research_notes_summary, research_note_edit_state,
+            research_notes_raw_editor, research_note_raw_state, research_notes_details,
         ]
 
         initial_load_outputs = [
@@ -6940,7 +8289,9 @@ try:
             # [Added for working memory sync v3]
             working_memory_slot_dropdown,
             working_memory_editor,
-            active_working_memory_status
+            active_working_memory_status,
+            system_prompt_editor_room,
+            core_memory_editor_room,
         ]
         initial_load_output_count = gr.State(len(initial_load_outputs))
 
@@ -6980,7 +8331,9 @@ try:
             # [Added for working memory sync v3]
             active_working_memory_status,
             working_memory_slot_dropdown,
-            working_memory_editor
+            working_memory_editor,
+            system_prompt_editor_room,
+            core_memory_editor_room,
         ]
         full_refresh_output_count = gr.State(len(unified_full_room_refresh_outputs))
 
@@ -7115,11 +8468,52 @@ try:
         # 数が一致することを確認（デバッグ用）
         # print(f"DEBUG: initial_load_outputs len = {len(initial_load_outputs)}")
         initial_load_output_count = gr.State(len(initial_load_outputs))
+        emotion_panel_outputs = [
+            emotion_panel["states"], emotion_panel["selector"], emotion_panel["name"],
+            emotion_panel["description"], emotion_panel["enabled"], emotion_panel["half_life"],
+            emotion_panel["max_age"], emotion_panel["detail"], emotion_panel["save"],
+            emotion_panel["status"], emotion_panel["session"],
+        ]
+        app_lite_update_outputs = [
+            app_lite_update_status, app_lite_update_button, app_lite_update_offer,
+            app_lite_update_confirmation, app_lite_update_confirmed,
+            app_lite_update_group, app_update_accordion,
+            app_lite_auth_recovery_group, app_lite_auth_recovery_confirmation,
+            app_lite_auth_recovery_confirmed,
+        ]
+        app_update_host_outputs = [
+            app_update_host_status, app_update_host_group, app_update_host_migration_button,
+            app_update_host_confirmed, restart_app_button, app_update_accordion,
+        ]
+        app_browser_runtime_outputs = [
+            app_browser_runtime_status, app_browser_runtime_group,
+            app_browser_runtime_apply_button,
+        ]
         demo.load(
             fn=ui_handlers.handle_initial_chat_load,
             inputs=[current_room_name],
             outputs=initial_fast_load_outputs,
             show_progress="hidden"
+        ).then(
+            # 初期fast出力の設定契約を増やさず、一時状態だけ正本から軽量同期する。
+            fn=ui_handlers.get_temp_location_ui_state,
+            inputs=[current_room_name],
+            outputs=[
+                temp_scenery_display,
+                saved_locations_dropdown,
+                temp_scenery_image_display,
+                scenery_mode_tabs,
+                temp_location_applied_status,
+                temp_location_name_input,
+            ],
+            show_progress="hidden",
+        ).then(
+            fn=ui_handlers.handle_load_emotion_panel,
+            inputs=[room_dropdown],
+            outputs=emotion_panel_outputs,
+            show_progress="hidden",
+            api_visibility="private",
+            concurrency_id="emotion_panel", concurrency_limit=1,
         ).then(
             # 起動時もこのルームのカレンダー個別設定を反映（軽量・保存は初期化グレースで抑止）
             fn=ui_handlers.load_room_calendar_settings,
@@ -7228,8 +8622,18 @@ try:
             inputs=None,
             outputs=[api_key_dropdown, paid_keys_checkbox_group],
             show_progress="hidden"
+        ).then(
+            # チャットと保存済み設定を先に表示したあと、接続済みLiteの版だけを照合する。
+            fn=ui_handlers.handle_lite_update_check,
+            inputs=[current_room_name], outputs=app_lite_update_outputs,
+            show_progress="hidden", api_visibility="private",
+            concurrency_id="lite-update-check", concurrency_limit=1,
+        ).then(
+            fn=ui_handlers.handle_app_update_host_check,
+            inputs=None, outputs=app_update_host_outputs,
+            show_progress="hidden", api_visibility="private",
         )
-        # 更新確認や管理系一覧は起動時には走らせず、該当タブ/ボタン操作時だけ実行する。
+        # 本体の更新照会や管理系一覧は、該当タブ/ボタン操作時だけ実行する。
 
         start_session_button.click(
             fn=ui_handlers.handle_start_session,
@@ -7240,6 +8644,33 @@ try:
             fn=ui_handlers.handle_end_session,
             inputs=[current_room_name, active_participants_state],
             outputs=[active_participants_state, session_status_display, participant_checkbox_group]
+        )
+
+        deferred_scenery_state = gr.State(
+            value=ui_handlers.create_deferred_scenery_state(),
+            delete_callback=ui_handlers.close_deferred_scenery_state,
+        )
+        deferred_scenery_timer = gr.Timer(1.0, active=False)
+        deferred_scenery_timer.tick(
+            fn=ui_handlers.handle_deferred_scenery_poll,
+            inputs=[room_dropdown, current_room_name, deferred_scenery_state],
+            outputs=[current_scenery_display, scenery_image_display, style_injector, deferred_scenery_timer],
+            queue=False, show_progress="hidden", api_visibility="private",
+        )
+        room_dropdown.input(
+            fn=ui_handlers.handle_cancel_deferred_scenery,
+            inputs=[deferred_scenery_state], outputs=[deferred_scenery_timer],
+            queue=False, show_progress="hidden", api_visibility="private",
+        )
+        stop_button.click(
+            fn=ui_handlers.handle_cancel_deferred_scenery,
+            inputs=[deferred_scenery_state], outputs=[deferred_scenery_timer],
+            queue=False, show_progress="hidden", api_visibility="private",
+        )
+        refresh_scenery_button.click(
+            fn=ui_handlers.handle_cancel_deferred_scenery,
+            inputs=[deferred_scenery_state], outputs=[deferred_scenery_timer],
+            queue=False, show_progress="hidden", api_visibility="private",
         )
 
         chat_inputs = [
@@ -7261,6 +8692,7 @@ try:
             enable_supervisor_cb, # [v18] Supervisorモード
             group_supervisor_rounds_number,
             translation_cache_state, # [v22] 翻訳不整合対策
+            deferred_scenery_state,
         ]
 
         rerun_inputs = [
@@ -7283,6 +8715,7 @@ try:
             group_supervisor_rounds_number,
             translation_cache_state, # [v22] 翻訳不整合対策
             selected_message_index_state,
+            deferred_scenery_state,
         ]
 
         # 新規送信と再生成で、UI更新の対象（outputs）を完全に一致させる
@@ -7308,8 +8741,9 @@ try:
             inputs=rerun_inputs,
             outputs=unified_streaming_outputs
         ).then(
-            fn=lambda: gr.update(active=True),
-            outputs=[auto_idle_timer]
+            fn=ui_handlers.handle_after_chat_timers,
+            inputs=[deferred_scenery_state],
+            outputs=[auto_idle_timer, deferred_scenery_timer],
         )
 
         # 【v5: 堅牢化】ルーム変更イベントを2段階に分離
@@ -7423,6 +8857,19 @@ try:
             fn=ui_handlers.load_user_memo,
             inputs=[current_room_name],
             outputs=[user_memo_textbox]
+        ).then(
+            # 高速再読込でも別端末からの一時的現在地変更を正本から反映する。
+            fn=ui_handlers.get_temp_location_ui_state,
+            inputs=[current_room_name],
+            outputs=[
+                temp_scenery_display,
+                saved_locations_dropdown,
+                temp_scenery_image_display,
+                scenery_mode_tabs,
+                temp_location_applied_status,
+                temp_location_name_input,
+            ],
+            show_progress="hidden",
         )
 
         # --- 日記アーカイブ機能のイベント接続 ---
@@ -7760,7 +9207,6 @@ try:
             (room_api_history_limit_dropdown, "api_history_limit"),
             (room_thinking_level_dropdown, "thinking_level"),
             (room_episode_memory_days_dropdown, "episode_memory_lookback_days"),
-            (room_provider_radio, "provider"),
             (room_auto_summary_checkbox, "auto_summary_enabled"),
             (room_auto_summary_threshold_slider, "auto_summary_threshold"),
         ]:
@@ -7959,23 +9405,6 @@ try:
         )
 
         # --- [Phase 3] 個別プロバイダ切り替えイベント ---
-        room_provider_radio.input(
-            fn=ui_handlers.handle_room_provider_change,
-            inputs=[room_provider_radio, current_room_name],
-            outputs=[
-                room_google_settings_group,
-                room_openai_settings_group,
-                room_anthropic_settings_group,
-                room_claude_subscription_settings_group,
-                room_local_settings_group,
-                room_claude_subscription_delegation_warning,
-                # Google 選択時は保存ドラフトから再ロード（空化・消失の防止）
-                room_model_dropdown,
-                room_api_key_dropdown,
-                room_rotation_dropdown,
-            ]
-        )
-
         # --- [Phase 3] Anthropic用モデルリスト取得イベント ---
         room_fetch_anthropic_models_button.click(
             fn=ui_handlers.handle_fetch_anthropic_models,
@@ -8219,8 +9648,9 @@ try:
             inputs=chat_inputs,
             outputs=unified_streaming_outputs # ここを変更
         ).then(
-            fn=lambda: gr.update(active=True),
-            outputs=[auto_idle_timer]
+            fn=ui_handlers.handle_after_chat_timers,
+            inputs=[deferred_scenery_state],
+            outputs=[auto_idle_timer, deferred_scenery_timer],
         )
 
         stop_button.click(
@@ -8257,6 +9687,10 @@ try:
             fn=ui_handlers.handle_gradio_voice_auto_submission,
             inputs=[gradio_voice_auto_submit_state] + chat_inputs,
             outputs=unified_streaming_outputs,
+        ).then(
+            fn=ui_handlers.handle_after_chat_timers,
+            inputs=[deferred_scenery_state],
+            outputs=[auto_idle_timer, deferred_scenery_timer],
         )
 
         refresh_scenery_button.click(
@@ -8274,35 +9708,105 @@ try:
 
         # --- 一時的現在地システムのイベント配線 ---
         # タブ選択でモード切り替え
+        # JSが渡す操作意図は通常inputにする（gr.Stateはサーバー値へ置換される）。
+        temp_location_user_tab_intent = gr.Checkbox(value=False, visible=False, interactive=False)
+        # 初期化や正本同期のselectは表示だけ。実際のタブ操作を一度だけ消費する。
+        temp_location_tab_intent_js = r"""(room, unused) => {
+            if (!window.nexusArkTemporaryLocationIntentInstalled) {
+                window.nexusArkTemporaryLocationIntentInstalled = true;
+                document.addEventListener('click', event => {
+                    const tab = event.target.closest?.('[role="tab"]');
+                    if (!event.isTrusted || !tab || tab.getAttribute('aria-selected') === 'true') return;
+                    const label = tab.textContent.trim();
+                    if (['🏠 仮想現在地', '📍 一時的現在地'].includes(label)) {
+                        window.nexusArkTemporaryLocationIntent = {label, at: Date.now()};
+                    }
+                }, true);
+            }
+            const intent = window.nexusArkTemporaryLocationIntent;
+            const explicit = Boolean(intent && intent.label === '__EXPECTED_TAB__' && Date.now() - intent.at < 2000);
+            if (explicit) window.nexusArkTemporaryLocationIntent = null;
+            return [room, explicit];
+        }"""
         virtual_location_tab.select(
             fn=ui_handlers.handle_virtual_location_activate,
+            inputs=[current_room_name, temp_location_user_tab_intent],
+            outputs=None,
+            js=temp_location_tab_intent_js.replace('__EXPECTED_TAB__', '🏠 仮想現在地'),
+        ).then(
+            fn=ui_handlers.get_temp_location_ui_state,
             inputs=[current_room_name],
-            outputs=None
+            outputs=[
+                temp_scenery_display,
+                saved_locations_dropdown,
+                temp_scenery_image_display,
+                scenery_mode_tabs,
+                temp_location_applied_status,
+                temp_location_name_input,
+            ],
+            show_progress="hidden",
         )
         temp_location_tab.select(
             fn=ui_handlers.handle_temp_location_activate,
+            inputs=[current_room_name, temp_location_user_tab_intent],
+            outputs=None,
+            js=temp_location_tab_intent_js.replace('__EXPECTED_TAB__', '📍 一時的現在地'),
+        ).then(
+            fn=ui_handlers.get_temp_location_ui_state,
             inputs=[current_room_name],
-            outputs=None
+            outputs=[
+                temp_scenery_display,
+                saved_locations_dropdown,
+                temp_scenery_image_display,
+                scenery_mode_tabs,
+                temp_location_applied_status,
+                temp_location_name_input,
+            ],
+            show_progress="hidden",
         )
         # 画像から情景テキスト生成
         generate_temp_scenery_button.click(
             fn=ui_handlers.handle_generate_temp_scenery,
-            inputs=[current_room_name, temp_image_upload, api_key_dropdown, temp_user_hint_textbox],
+            inputs=[current_room_name, temp_image_upload, api_key_dropdown, temp_user_hint_textbox, temp_location_name_input],
             outputs=[temp_scenery_display, temp_scenery_edit_textbox, temp_scenery_image_display]
         ).then(
             fn=ui_handlers.handle_refresh_background_css,
             inputs=[current_room_name],
             outputs=[style_injector]
+        ).then(
+            fn=ui_handlers.get_temp_location_ui_state,
+            inputs=[current_room_name],
+            outputs=[
+                temp_scenery_display,
+                saved_locations_dropdown,
+                temp_scenery_image_display,
+                scenery_mode_tabs,
+                temp_location_applied_status,
+                temp_location_name_input,
+            ],
+            show_progress="hidden",
         )
         # テキスト適用
         apply_temp_scenery_button.click(
             fn=ui_handlers.handle_apply_temp_scenery,
-            inputs=[current_room_name, temp_scenery_edit_textbox, temp_scenery_image_display],
+            inputs=[current_room_name, temp_scenery_edit_textbox, temp_scenery_image_display, temp_location_name_input],
             outputs=[temp_scenery_display]
         ).then(
             fn=ui_handlers.handle_refresh_background_css,
             inputs=[current_room_name],
             outputs=[style_injector]
+        ).then(
+            fn=ui_handlers.get_temp_location_ui_state,
+            inputs=[current_room_name],
+            outputs=[
+                temp_scenery_display,
+                saved_locations_dropdown,
+                temp_scenery_image_display,
+                scenery_mode_tabs,
+                temp_location_applied_status,
+                temp_location_name_input,
+            ],
+            show_progress="hidden",
         )
         # 保存
         save_location_button.click(
@@ -8319,6 +9823,18 @@ try:
             fn=ui_handlers.handle_refresh_background_css,
             inputs=[current_room_name],
             outputs=[style_injector]
+        ).then(
+            fn=ui_handlers.get_temp_location_ui_state,
+            inputs=[current_room_name],
+            outputs=[
+                temp_scenery_display,
+                saved_locations_dropdown,
+                temp_scenery_image_display,
+                scenery_mode_tabs,
+                temp_location_applied_status,
+                temp_location_name_input,
+            ],
+            show_progress="hidden",
         )
         # 削除
         delete_location_button.click(
@@ -8329,20 +9845,40 @@ try:
             fn=ui_handlers.handle_refresh_background_css,
             inputs=[current_room_name],
             outputs=[style_injector]
+        ).then(
+            fn=ui_handlers.get_temp_location_ui_state,
+            inputs=[current_room_name],
+            outputs=[
+                temp_scenery_display,
+                saved_locations_dropdown,
+                temp_scenery_image_display,
+                scenery_mode_tabs,
+                temp_location_applied_status,
+                temp_location_name_input,
+            ],
+            show_progress="hidden",
         )
         cancel_selection_button.click(fn=lambda: (None, gr.update(visible=False), None), inputs=None, outputs=[selected_message_state, action_button_group, selected_message_index_state])
 
-        save_prompt_button.click(fn=ui_handlers.handle_save_system_prompt, inputs=[current_room_name, system_prompt_editor], outputs=None)
-        reload_prompt_button.click(fn=ui_handlers.handle_reload_system_prompt, inputs=[current_room_name], outputs=[system_prompt_editor])
+        save_prompt_button.click(
+            fn=ui_handlers.handle_save_system_prompt,
+            inputs=[current_room_name, system_prompt_editor, room_dropdown, system_prompt_editor_room, is_switching_room],
+            outputs=None,
+        )
+        reload_prompt_button.click(
+            fn=ui_handlers.handle_reload_system_prompt_for_editor,
+            inputs=[room_dropdown],
+            outputs=[system_prompt_editor, system_prompt_editor_room],
+        )
 
         # --- 永続記憶・属性 (Identity) のイベントハンドラ ---
         # 開くだけでは読み込まず、再読込ボタンで明示的に取得する。
         save_identity_button.click(fn=ui_handlers.handle_save_identity, inputs=[current_room_name, identity_editor], outputs=None)
         reload_identity_button.click(fn=ui_handlers.handle_load_identity, inputs=[current_room_name], outputs=[identity_editor])
         reflect_identity_to_core_button.click(
-            fn=ui_handlers.handle_reflect_identity_to_core,
-            inputs=[current_room_name],
-            outputs=[core_memory_editor]
+            fn=ui_handlers.handle_reflect_identity_to_core_for_editor,
+            inputs=[current_room_name, room_dropdown, is_switching_room],
+            outputs=[core_memory_editor, core_memory_editor_room]
         )
         refresh_identity_edit_requests_button.click(
             fn=ui_handlers.handle_refresh_identity_edit_requests,
@@ -8424,98 +9960,132 @@ try:
         save_notepad_button.click(fn=ui_handlers.handle_save_notepad_click, inputs=[current_room_name, notepad_editor], outputs=[notepad_editor])
         reload_notepad_button.click(fn=ui_handlers.handle_reload_notepad, inputs=[current_room_name], outputs=[notepad_editor])
         clear_notepad_button.click(fn=ui_handlers.handle_clear_notepad_click, inputs=[current_room_name], outputs=[notepad_editor])
-        # --- 創作ノートのイベントハンドラ ---
-        # ファイルリスト更新
+        # --- 創作ノート: 過去分を含む年月閲覧と、独立したファイル全文編集 ---
+        refresh_creative_notes_button.click(
+            fn=ui_handlers.handle_note_history_load,
+            inputs=[current_room_name, creative_note_kind],
+            outputs=[creative_year_filter, creative_month_filter, creative_entry_dropdown,
+                     creative_notes_editor, creative_notes_summary, creative_note_edit_state],
+        )
+        show_latest_creative_button.click(
+            fn=ui_handlers.handle_note_history_latest,
+            inputs=[current_room_name, creative_note_kind],
+            outputs=[creative_year_filter, creative_month_filter, creative_entry_dropdown,
+                     creative_notes_editor, creative_notes_summary, creative_note_edit_state],
+        )
+        creative_year_filter.input(
+            fn=ui_handlers.handle_note_history_filter,
+            inputs=[current_room_name, creative_note_kind, creative_year_filter, creative_month_filter],
+            outputs=[creative_month_filter, creative_entry_dropdown, creative_notes_editor,
+                     creative_notes_summary, creative_note_edit_state],
+        )
+        creative_month_filter.input(
+            fn=ui_handlers.handle_note_history_filter,
+            inputs=[current_room_name, creative_note_kind, creative_year_filter, creative_month_filter],
+            outputs=[creative_month_filter, creative_entry_dropdown, creative_notes_editor,
+                     creative_notes_summary, creative_note_edit_state],
+        )
+        creative_entry_dropdown.input(
+            fn=ui_handlers.handle_note_history_selection,
+            inputs=[current_room_name, creative_note_kind, creative_entry_dropdown],
+            outputs=[creative_notes_editor, creative_note_edit_state],
+        )
+        save_creative_notes_button.click(
+            fn=ui_handlers.handle_note_history_save,
+            inputs=[current_room_name, creative_note_kind, creative_entry_dropdown,
+                    creative_notes_editor, creative_note_edit_state, creative_year_filter, creative_month_filter],
+            outputs=[creative_month_filter, creative_entry_dropdown, creative_notes_editor,
+                     creative_notes_summary, creative_note_edit_state],
+        )
+        reload_creative_notes_button.click(
+            fn=ui_handlers.handle_note_history_selection,
+            inputs=[current_room_name, creative_note_kind, creative_entry_dropdown],
+            outputs=[creative_notes_editor, creative_note_edit_state],
+        )
         refresh_creative_file_list_button.click(
             fn=lambda r: ui_handlers.handle_note_file_list_refresh(r, "creative"),
-            inputs=[current_room_name],
-            outputs=[creative_notes_file_dropdown]
+            inputs=[current_room_name], outputs=[creative_notes_file_dropdown],
         )
-        # ファイル選択変更時
         creative_notes_file_dropdown.input(
-            fn=ui_handlers.handle_load_creative_entries,
-            inputs=[current_room_name, creative_notes_file_dropdown],
-            outputs=[creative_year_filter, creative_month_filter, creative_entry_dropdown, creative_notes_raw_editor]
+            fn=ui_handlers.handle_note_raw_load,
+            inputs=[current_room_name, creative_note_kind, creative_notes_file_dropdown],
+            outputs=[creative_notes_raw_editor, creative_note_raw_state],
         )
-        # エントリ読み込み → 年・月フィルタと日付リストを更新
-        refresh_creative_notes_button.click(
-            fn=ui_handlers.handle_load_creative_entries,
-            inputs=[current_room_name, creative_notes_file_dropdown],
-            outputs=[creative_year_filter, creative_month_filter, creative_entry_dropdown, creative_notes_raw_editor]
+        reload_creative_raw_button.click(
+            fn=ui_handlers.handle_note_raw_load,
+            inputs=[current_room_name, creative_note_kind, creative_notes_file_dropdown],
+            outputs=[creative_notes_raw_editor, creative_note_raw_state],
         )
-        # 最新を表示ボタン
-        show_latest_creative_button.click(
-            fn=ui_handlers.handle_show_latest_creative,
-            inputs=[current_room_name, creative_notes_file_dropdown],
-            outputs=[creative_year_filter, creative_month_filter, creative_entry_dropdown, creative_notes_editor, creative_notes_raw_editor]
+        save_creative_raw_button.click(
+            fn=ui_handlers.handle_note_raw_save,
+            inputs=[current_room_name, creative_note_kind, creative_notes_file_dropdown,
+                    creative_notes_raw_editor, creative_note_raw_state],
+            outputs=[creative_notes_raw_editor, creative_note_raw_state],
         )
-        # フィルタ変更時 → ドロップダウン選択肢を更新
-        creative_year_filter.change(
-            fn=ui_handlers.handle_creative_filter_change,
-            inputs=[current_room_name, creative_year_filter, creative_month_filter, creative_notes_file_dropdown],
-            outputs=[creative_entry_dropdown]
-        )
-        creative_month_filter.change(
-            fn=ui_handlers.handle_creative_filter_change,
-            inputs=[current_room_name, creative_year_filter, creative_month_filter, creative_notes_file_dropdown],
-            outputs=[creative_entry_dropdown]
-        )
-        # エントリ選択時 → 詳細表示
-        creative_entry_dropdown.change(
-            fn=ui_handlers.handle_creative_selection,
-            inputs=[current_room_name, creative_entry_dropdown, creative_notes_file_dropdown],
-            outputs=[creative_notes_editor]
-        )
-        # 保存・再読込
-        save_creative_notes_button.click(fn=ui_handlers.handle_save_creative_entry, inputs=[current_room_name, creative_entry_dropdown, creative_notes_editor, creative_notes_file_dropdown], outputs=[creative_notes_editor])
-        reload_creative_notes_button.click(fn=ui_handlers.handle_creative_selection, inputs=[current_room_name, creative_entry_dropdown, creative_notes_file_dropdown], outputs=[creative_notes_editor])
-        # RAW編集
-        save_creative_raw_button.click(fn=ui_handlers.handle_save_creative_notes, inputs=[current_room_name, creative_notes_raw_editor, creative_notes_file_dropdown], outputs=[creative_notes_raw_editor])
-        reload_creative_raw_button.click(fn=ui_handlers.handle_reload_creative_notes, inputs=[current_room_name, creative_notes_file_dropdown], outputs=[creative_notes_raw_editor])
 
-        # --- 研究・分析ノートのイベントハンドラ ---
-        # ファイルリスト更新
+        # --- 研究・分析ノート: 過去分を含む年月閲覧と、独立したファイル全文編集 ---
+        refresh_research_notes_button.click(
+            fn=ui_handlers.handle_note_history_load,
+            inputs=[current_room_name, research_note_kind],
+            outputs=[research_year_filter, research_month_filter, research_entry_dropdown,
+                     research_notes_editor, research_notes_summary, research_note_edit_state],
+        )
+        show_latest_research_button.click(
+            fn=ui_handlers.handle_note_history_latest,
+            inputs=[current_room_name, research_note_kind],
+            outputs=[research_year_filter, research_month_filter, research_entry_dropdown,
+                     research_notes_editor, research_notes_summary, research_note_edit_state],
+        )
+        research_year_filter.input(
+            fn=ui_handlers.handle_note_history_filter,
+            inputs=[current_room_name, research_note_kind, research_year_filter, research_month_filter],
+            outputs=[research_month_filter, research_entry_dropdown, research_notes_editor,
+                     research_notes_summary, research_note_edit_state],
+        )
+        research_month_filter.input(
+            fn=ui_handlers.handle_note_history_filter,
+            inputs=[current_room_name, research_note_kind, research_year_filter, research_month_filter],
+            outputs=[research_month_filter, research_entry_dropdown, research_notes_editor,
+                     research_notes_summary, research_note_edit_state],
+        )
+        research_entry_dropdown.input(
+            fn=ui_handlers.handle_note_history_selection,
+            inputs=[current_room_name, research_note_kind, research_entry_dropdown],
+            outputs=[research_notes_editor, research_note_edit_state],
+        )
+        save_research_notes_button.click(
+            fn=ui_handlers.handle_note_history_save,
+            inputs=[current_room_name, research_note_kind, research_entry_dropdown,
+                    research_notes_editor, research_note_edit_state, research_year_filter, research_month_filter],
+            outputs=[research_month_filter, research_entry_dropdown, research_notes_editor,
+                     research_notes_summary, research_note_edit_state],
+        )
+        reload_research_notes_button.click(
+            fn=ui_handlers.handle_note_history_selection,
+            inputs=[current_room_name, research_note_kind, research_entry_dropdown],
+            outputs=[research_notes_editor, research_note_edit_state],
+        )
         refresh_research_file_list_button.click(
             fn=lambda r: ui_handlers.handle_note_file_list_refresh(r, "research"),
-            inputs=[current_room_name],
-            outputs=[research_notes_file_dropdown]
+            inputs=[current_room_name], outputs=[research_notes_file_dropdown],
         )
-        # ファイル選択変更時
         research_notes_file_dropdown.input(
-            fn=ui_handlers.handle_load_research_entries,
-            inputs=[current_room_name, research_notes_file_dropdown],
-            outputs=[research_year_filter, research_month_filter, research_entry_dropdown, research_notes_raw_editor]
+            fn=ui_handlers.handle_note_raw_load,
+            inputs=[current_room_name, research_note_kind, research_notes_file_dropdown],
+            outputs=[research_notes_raw_editor, research_note_raw_state],
         )
-        refresh_research_notes_button.click(
-            fn=ui_handlers.handle_load_research_entries,
-            inputs=[current_room_name, research_notes_file_dropdown],
-            outputs=[research_year_filter, research_month_filter, research_entry_dropdown, research_notes_raw_editor]
+        reload_research_raw_button.click(
+            fn=ui_handlers.handle_note_raw_load,
+            inputs=[current_room_name, research_note_kind, research_notes_file_dropdown],
+            outputs=[research_notes_raw_editor, research_note_raw_state],
         )
-        # 最新を表示ボタン
-        show_latest_research_button.click(
-            fn=ui_handlers.handle_show_latest_research,
-            inputs=[current_room_name, research_notes_file_dropdown],
-            outputs=[research_year_filter, research_month_filter, research_entry_dropdown, research_notes_editor, research_notes_raw_editor]
+        save_research_raw_button.click(
+            fn=ui_handlers.handle_note_raw_save,
+            inputs=[current_room_name, research_note_kind, research_notes_file_dropdown,
+                    research_notes_raw_editor, research_note_raw_state],
+            outputs=[research_notes_raw_editor, research_note_raw_state],
         )
-        research_year_filter.change(
-            fn=ui_handlers.handle_research_year_filter_change,
-            inputs=[current_room_name, research_year_filter, research_month_filter, research_notes_file_dropdown],
-            outputs=[research_month_filter, research_entry_dropdown]
-        )
-        research_month_filter.change(
-            fn=ui_handlers.handle_research_filter_change,
-            inputs=[current_room_name, research_year_filter, research_month_filter, research_notes_file_dropdown],
-            outputs=[research_entry_dropdown]
-        )
-        research_entry_dropdown.change(
-            fn=ui_handlers.handle_research_selection,
-            inputs=[current_room_name, research_entry_dropdown, research_notes_file_dropdown],
-            outputs=[research_notes_editor]
-        )
-        save_research_notes_button.click(fn=ui_handlers.handle_save_research_entry, inputs=[current_room_name, research_entry_dropdown, research_notes_editor, research_notes_file_dropdown], outputs=[research_notes_editor])
-        reload_research_notes_button.click(fn=ui_handlers.handle_research_selection, inputs=[current_room_name, research_entry_dropdown, research_notes_file_dropdown], outputs=[research_notes_editor])
-        save_research_raw_button.click(fn=ui_handlers.handle_save_research_notes, inputs=[current_room_name, research_notes_raw_editor, research_notes_file_dropdown], outputs=[research_notes_raw_editor])
-        reload_research_raw_button.click(fn=ui_handlers.handle_reload_research_notes, inputs=[current_room_name, research_notes_file_dropdown], outputs=[research_notes_raw_editor])
+
         refresh_research_threads_button.click(
             fn=ui_handlers.handle_refresh_research_threads,
             inputs=[current_room_name],
@@ -8550,36 +10120,94 @@ try:
         )
 
         # --- ワーキングメモリエベント ---
+        current_room_name.change(
+            fn=ui_handlers.handle_working_memory_cleanup_notice,
+            inputs=[current_room_name],
+            outputs=[
+                working_memory_cleanup_notice_group,
+                working_memory_cleanup_notice,
+                working_memory_cleanup_notice_state,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        working_memory_start_fresh_button.click(
+            fn=ui_handlers.handle_start_fresh_working_memory,
+            inputs=[current_room_name],
+            outputs=[
+                working_memory_cleanup_notice_group,
+                working_memory_slot_dropdown,
+                working_memory_editor,
+                active_working_memory_status,
+                working_memory_edit_state,
+                working_memory_metadata_editor,
+                working_memory_metadata_status,
+                working_memory_cleanup_notice_state,
+            ],
+        )
+        working_memory_keep_current_button.click(
+            fn=ui_handlers.handle_dismiss_working_memory_cleanup_notice,
+            inputs=[current_room_name, working_memory_cleanup_notice_state],
+            outputs=[
+                working_memory_cleanup_notice_group,
+                working_memory_cleanup_notice_state,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
         working_memory_slot_dropdown.input(
             fn=ui_handlers.handle_working_memory_slot_change,
             inputs=[current_room_name, working_memory_slot_dropdown],
-            outputs=[working_memory_editor, active_working_memory_status]
+            outputs=[working_memory_editor, active_working_memory_status, working_memory_edit_state]
+        )
+        working_memory_slot_dropdown.change(
+            fn=ui_handlers.handle_get_working_memory_edit_state,
+            inputs=[current_room_name, working_memory_slot_dropdown],
+            outputs=[working_memory_edit_state],
+            queue=False,
+            show_progress="hidden",
         )
         working_memory_new_slot_button.click(
             fn=ui_handlers.handle_new_working_memory_slot,
             inputs=[current_room_name],
-            outputs=[working_memory_slot_dropdown, working_memory_editor, active_working_memory_status]
+            outputs=[working_memory_slot_dropdown, working_memory_editor, active_working_memory_status, working_memory_edit_state]
         )
-        save_working_memory_button.click(
+        working_memory_save_event = save_working_memory_button.click(
             fn=ui_handlers.handle_save_working_memory,
-            inputs=[current_room_name, working_memory_editor, working_memory_slot_dropdown],
-            outputs=[working_memory_editor]
+            inputs=[current_room_name, working_memory_editor, working_memory_slot_dropdown, working_memory_edit_state],
+            outputs=[working_memory_editor, working_memory_edit_state, active_working_memory_status]
         )
-        reload_working_memory_button.click(
+        working_memory_reload_event = reload_working_memory_button.click(
             fn=ui_handlers.handle_reload_working_memory,
             inputs=[current_room_name, working_memory_slot_dropdown],
-            outputs=[working_memory_slot_dropdown, working_memory_editor, active_working_memory_status]
+            outputs=[working_memory_slot_dropdown, working_memory_editor, active_working_memory_status, working_memory_edit_state]
         )
         reload_working_memory_metadata_button.click(
             fn=ui_handlers.handle_reload_working_memory_metadata,
             inputs=[current_room_name],
             outputs=[working_memory_metadata_editor, working_memory_metadata_status]
         )
-        save_working_memory_metadata_button.click(
+        working_memory_metadata_save_event = save_working_memory_metadata_button.click(
             fn=ui_handlers.handle_save_working_memory_metadata,
             inputs=[current_room_name, working_memory_metadata_editor],
             outputs=[working_memory_metadata_editor, working_memory_metadata_status]
         )
+        for working_memory_refresh_event in (
+            working_memory_save_event,
+            working_memory_reload_event,
+            working_memory_metadata_save_event,
+        ):
+            working_memory_refresh_event.then(
+                fn=ui_handlers.handle_working_memory_cleanup_notice,
+                inputs=[current_room_name],
+                outputs=[
+                    working_memory_cleanup_notice_group,
+                    working_memory_cleanup_notice,
+                    working_memory_cleanup_notice_state,
+                ],
+                queue=False,
+                show_progress="hidden",
+            )
 
         alarm_dataframe.select(
             fn=ui_handlers.handle_alarm_selection_for_all_updates,
@@ -8721,9 +10349,9 @@ try:
 
 
         core_memory_update_button.click(
-            fn=ui_handlers.handle_core_memory_update_click,
-            inputs=[current_room_name, current_api_key_name_state],
-            outputs=[core_memory_editor] # <-- None から変更
+            fn=ui_handlers.handle_core_memory_update_for_editor,
+            inputs=[current_room_name, current_api_key_name_state, room_dropdown, is_switching_room],
+            outputs=[core_memory_editor, core_memory_editor_room]
         )
 
         update_episodic_memory_button.click(
@@ -9220,13 +10848,13 @@ try:
 
         save_core_memory_button.click(
             fn=ui_handlers.handle_save_core_memory,
-            inputs=[current_room_name, core_memory_editor],
-            outputs=[core_memory_editor]
+            inputs=[current_room_name, core_memory_editor, room_dropdown, core_memory_editor_room, is_switching_room],
+            outputs=None,
         )
         reload_core_memory_button.click(
-            fn=ui_handlers.handle_reload_core_memory,
-            inputs=[current_room_name],
-            outputs=[core_memory_editor]
+            fn=ui_handlers.handle_reload_core_memory_for_editor,
+            inputs=[room_dropdown],
+            outputs=[core_memory_editor, core_memory_editor_room]
         )
         init_purpose_profile_button.click(
             fn=ui_handlers.handle_init_purpose_profile,
@@ -10870,6 +12498,34 @@ try:
             show_progress="hidden",
             js="() => { const o = document.getElementById('doc_viewer_overlay'); if (o) o.style.removeProperty('display'); }"
         )
+        open_lite_cloud_quick_guide_btn.click(
+            fn=ui_handlers.handle_open_lite_cloud_quick_guide,
+            outputs=[doc_viewer_overlay, doc_viewer_display],
+            show_progress="hidden",
+            js="() => { const o = document.getElementById('doc_viewer_overlay'); if (o) o.style.removeProperty('display'); }"
+        )
+        lite_start_connected_button.click(
+            fn=ui_handlers.handle_lite_start_connected,
+            outputs=[
+                lite_connected_setup_accordion,
+                lite_independent_setup_accordion,
+                lite_independent_connectivity_accordion,
+            ],
+            queue=False,
+            show_progress="hidden",
+            js="() => setTimeout(() => document.getElementById('lite_connected_setup_flow')?.scrollIntoView({behavior: 'smooth', block: 'start'}), 100)",
+        )
+        lite_start_independent_button.click(
+            fn=ui_handlers.handle_lite_start_independent,
+            outputs=[
+                lite_connected_setup_accordion,
+                lite_independent_setup_accordion,
+                lite_independent_connectivity_accordion,
+            ],
+            queue=False,
+            show_progress="hidden",
+            js="() => setTimeout(() => document.getElementById('lite_independent_setup_flow')?.scrollIntoView({behavior: 'smooth', block: 'start'}), 100)",
+        )
         # CSSのID指定(display:flex)がGradioの非表示クラスに詳細度で勝ち、閉じても
         # オーバーレイが残る。インラインstyle(!important)で確実に消す/戻す。
         close_doc_btn.click(
@@ -10934,17 +12590,696 @@ try:
                 external_api_token_copy_output,
                 external_api_security_diagnostics,
                 external_lite_connection_help,
+                external_lite_qr_image,
                 external_api_docs,
             ]
         )
         external_api_refresh_button.click(
             fn=ui_handlers.handle_refresh_external_api_gateway_panel,
             inputs=[current_room_name],
-            outputs=[external_api_security_diagnostics, external_lite_connection_help, external_api_docs]
+            outputs=[
+                external_api_security_diagnostics,
+                external_lite_connection_help,
+                external_lite_qr_image,
+                external_api_docs,
+            ]
         )
         external_tailscale_button.click(
             fn=ui_handlers.handle_configure_tailscale_lite_https,
-            outputs=[external_api_security_diagnostics, external_lite_connection_help, external_api_status]
+            outputs=[
+                external_api_security_diagnostics,
+                external_lite_connection_help,
+                external_lite_qr_image,
+                external_api_status,
+            ]
+        )
+        lite_connectivity_flow.change(
+            fn=ui_handlers.handle_lite_connectivity_flow_change,
+            inputs=[lite_connectivity_flow],
+            outputs=[
+                lite_connectivity_card,
+                lite_connectivity_retention_group,
+                lite_connectivity_retention_prompt,
+                lite_worker_update_guide,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_connectivity_refresh_button.click(
+            fn=ui_handlers.handle_lite_connectivity_refresh_with_notification,
+            inputs=[lite_connectivity_flow, current_room_name],
+            outputs=[
+                lite_connectivity_card,
+                lite_connectivity_retention_group,
+                lite_connectivity_retention_prompt,
+                lite_worker_update_guide,
+                lite_phase5_database_name,
+                lite_connectivity_open_travel_button,
+            ],
+        ).then(
+            fn=ui_handlers.handle_lite_update_check,
+            inputs=[current_room_name], outputs=app_lite_update_outputs,
+            show_progress="hidden", api_visibility="private",
+            concurrency_id="lite-update-check", concurrency_limit=1,
+        )
+        lite_connectivity_retention_delete_button.click(
+            fn=ui_handlers.handle_lite_connectivity_retention_delete,
+            inputs=[lite_connectivity_flow],
+            outputs=[
+                lite_connectivity_action_status,
+                lite_connectivity_card,
+                lite_connectivity_retention_group,
+                lite_connectivity_retention_prompt,
+                lite_worker_update_guide,
+            ],
+        )
+        lite_connectivity_retention_dismiss_button.click(
+            fn=ui_handlers.handle_lite_connectivity_retention_dismiss,
+            outputs=[lite_connectivity_retention_group, lite_connectivity_action_status],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_connectivity_pair_button.click(
+            fn=ui_handlers.handle_lite_connectivity_issue_pairing_code,
+            inputs=[lite_connectivity_flow, current_room_name, lite_pairing_code_ttl_minutes],
+            outputs=[
+                lite_connectivity_action_status,
+                lite_connectivity_pairing_handoff,
+                lite_connectivity_card,
+                lite_connectivity_retention_group,
+                lite_connectivity_retention_prompt,
+                lite_worker_update_guide,
+                lite_phase5_database_name,
+                lite_connectivity_open_travel_button,
+            ],
+        )
+        lite_connectivity_prepare_button.click(
+            fn=ui_handlers.handle_lite_connectivity_prepare_standby,
+            inputs=[lite_connectivity_flow, current_room_name],
+            outputs=[
+                lite_connectivity_action_status,
+                lite_connectivity_card,
+                lite_connectivity_retention_group,
+                lite_connectivity_retention_prompt,
+                lite_worker_update_guide,
+                lite_phase5_database_name,
+                lite_connectivity_open_travel_button,
+            ],
+        )
+        outing_mode_outputs = [
+            outing_lite_setup_group,
+            outing_lite_daily_group,
+            outing_export_group,
+            outing_import_group,
+            external_open_lite_outing,
+            external_open_outing_export,
+            external_open_outing_import,
+        ]
+        lite_outing_home_connection_shortcut.click(
+            fn=ui_handlers.handle_outing_show_lite,
+            outputs=outing_mode_outputs,
+            queue=False,
+            show_progress="hidden",
+            js=_outing_mode_visibility_js("setup"),
+        ).then(
+            fn=ui_handlers.handle_lite_start_connected,
+            outputs=[
+                lite_connected_setup_accordion,
+                lite_independent_setup_accordion,
+                lite_independent_connectivity_accordion,
+            ],
+            queue=False,
+            show_progress="hidden",
+        ).then(
+            fn=None,
+            js="() => setTimeout(() => document.getElementById('lite_connected_setup_flow')?.scrollIntoView({behavior: 'smooth', block: 'start'}), 100)",
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_open_daily_event = lite_connectivity_open_travel_button.click(
+            fn=ui_handlers.handle_outing_show_lite_independent,
+            outputs=outing_mode_outputs,
+            queue=False,
+            show_progress="hidden",
+            js=_outing_mode_visibility_js("independent"),
+        )
+        lite_entry_event = external_open_lite_outing.click(
+            fn=ui_handlers.handle_outing_open_lite,
+            inputs=[current_room_name],
+            outputs=outing_mode_outputs,
+            queue=False,
+            show_progress="hidden",
+            js="(room) => { window.clearInterval(window.__nexusOutingModeTimer); window.__nexusOutingModeRequest = null; document.querySelectorAll('#outing_tab .outing-mode-panel').forEach(p => p.style.removeProperty('display')); return [room]; }",
+        )
+        lite_shortcut_events = []
+        for button in (lite_daily_shortcut, lite_return_shortcut):
+            lite_shortcut_events.append(button.click(
+                fn=ui_handlers.handle_outing_show_lite_independent,
+                outputs=outing_mode_outputs,
+                queue=False,
+                show_progress="hidden",
+                js=_outing_mode_visibility_js("independent"),
+            ))
+        for button, handler, immediate_mode in (
+            (lite_outing_back_to_setup, ui_handlers.handle_outing_show_lite, "setup"),
+            (external_open_outing_export, ui_handlers.handle_outing_show_export, "export"),
+            (external_open_outing_import, ui_handlers.handle_outing_show_import, "import"),
+        ):
+            button.click(
+                fn=handler,
+                outputs=outing_mode_outputs,
+                queue=False,
+                show_progress="hidden",
+                js=_outing_mode_visibility_js(immediate_mode),
+            )
+        def _start_lite_busy_button(button, busy_label):
+            return button.click(
+                fn=lambda: gr.update(value=busy_label, interactive=False),
+                outputs=[button],
+                queue=False,
+                show_progress="hidden",
+            )
+
+        def _restore_lite_busy_button(event, button, idle_label):
+            return event.then(
+                fn=lambda: gr.update(value=idle_label, interactive=True),
+                outputs=[button],
+                queue=False,
+                show_progress="hidden",
+            )
+
+        _lite_cloud_setup_outputs = [
+            lite_cloud_setup_state,
+            lite_cloud_setup_summary,
+            lite_cloud_setup_details,
+            lite_cloud_setup_check_button,
+            lite_cloud_setup_account,
+            lite_cloud_setup_confirm_account_button,
+            lite_cloud_setup_new_button,
+            lite_cloud_setup_import_button,
+            lite_cloud_setup_plan_group,
+            lite_cloud_setup_plan_summary,
+            lite_cloud_setup_worker_url,
+            lite_cloud_setup_prepare_confirm,
+            lite_cloud_setup_prepare_button,
+            lite_cloud_setup_publish_group,
+            lite_cloud_setup_publish_summary,
+            lite_cloud_setup_publish_confirm,
+            lite_cloud_setup_publish_button,
+            lite_cloud_setup_manual_account_group,
+            lite_cloud_setup_account_group,
+            lite_cloud_setup_mode_group,
+            lite_cloud_setup_check_group,
+        ]
+        lite_cloud_setup_check_event = _start_lite_busy_button(
+            lite_cloud_setup_check_button,
+            "確認中…",
+        )
+        lite_cloud_setup_check_event.then(
+            fn=ui_handlers.handle_lite_cloud_setup_check,
+            inputs=[lite_cloud_setup_state],
+            outputs=_lite_cloud_setup_outputs,
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_runtime_status_event = _start_lite_busy_button(
+            lite_runtime_status_button,
+            "確認中…",
+        ).then(
+            fn=ui_handlers.handle_lite_runtime_status_check,
+            outputs=[lite_runtime_status, lite_runtime_details, lite_runtime_repair_group],
+            queue=False,
+            show_progress="hidden",
+        )
+        _restore_lite_busy_button(
+            lite_runtime_status_event,
+            lite_runtime_status_button,
+            "状態を確認",
+        )
+        lite_runtime_repair_check_event = _start_lite_busy_button(
+            lite_runtime_repair_check_button,
+            "確認中…",
+        ).then(
+            fn=ui_handlers.handle_lite_runtime_repair_check,
+            outputs=[lite_runtime_repair_result, lite_runtime_repair_apply_button],
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="lite-runtime-repair-check",
+        )
+        _restore_lite_busy_button(
+            lite_runtime_repair_check_event,
+            lite_runtime_repair_check_button,
+            "次の手順を確認",
+        )
+        lite_cloud_setup_login_confirm.change(
+            fn=ui_handlers.handle_lite_cloud_setup_login_consent_change,
+            inputs=[lite_cloud_setup_login_confirm],
+            outputs=[lite_cloud_setup_login_button, lite_cloud_setup_login_hint],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_cloud_setup_login_button.click(
+            fn=ui_handlers.handle_lite_cloud_setup_login,
+            inputs=[lite_cloud_setup_login_confirm, lite_cloud_setup_state],
+            outputs=[lite_cloud_setup_login_status, *_lite_cloud_setup_outputs],
+        )
+        lite_cloud_setup_confirm_account_event = _start_lite_busy_button(
+            lite_cloud_setup_confirm_account_button,
+            "アカウントを確認中…",
+        ).then(
+            fn=ui_handlers.handle_lite_cloud_setup_confirm_account,
+            inputs=[lite_cloud_setup_state, lite_cloud_setup_account],
+            outputs=_lite_cloud_setup_outputs,
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="lite-cloud-account-confirm",
+        )
+        _restore_lite_busy_button(
+            lite_cloud_setup_confirm_account_event,
+            lite_cloud_setup_confirm_account_button,
+            "このアカウントで続ける",
+        )
+        lite_cloud_setup_manual_account_button.click(
+            fn=ui_handlers.handle_lite_cloud_setup_confirm_manual_account,
+            inputs=[
+                lite_cloud_setup_state,
+                lite_cloud_setup_manual_account_name,
+                lite_cloud_setup_manual_account_id,
+                lite_cloud_setup_manual_account_confirm,
+            ],
+            outputs=_lite_cloud_setup_outputs,
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_cloud_setup_new_button.click(
+            fn=ui_handlers.handle_lite_cloud_setup_select_new,
+            inputs=[lite_cloud_setup_state],
+            outputs=_lite_cloud_setup_outputs,
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_cloud_setup_import_button.click(
+            fn=ui_handlers.handle_lite_cloud_setup_select_import,
+            inputs=[lite_cloud_setup_state],
+            outputs=_lite_cloud_setup_outputs,
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_cloud_setup_prepare_confirm.change(
+            fn=ui_handlers.handle_lite_cloud_setup_confirmation_toggle,
+            inputs=[lite_cloud_setup_prepare_confirm],
+            outputs=[lite_cloud_setup_prepare_button],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_cloud_setup_prepare_event = _start_lite_busy_button(
+            lite_cloud_setup_prepare_button,
+            "Lite用クラウドを準備中…",
+        ).then(
+            fn=ui_handlers.handle_lite_cloud_setup_prepare,
+            inputs=[
+                lite_cloud_setup_state,
+                lite_cloud_setup_worker_url,
+                lite_cloud_setup_prepare_confirm,
+            ],
+            outputs=_lite_cloud_setup_outputs,
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="app-update-mutation",
+            show_progress="hidden",
+        )
+        _restore_lite_busy_button(
+            lite_cloud_setup_prepare_event,
+            lite_cloud_setup_prepare_button,
+            "確認した内容で準備を開始",
+        )
+        lite_cloud_setup_publish_confirm.change(
+            fn=ui_handlers.handle_lite_cloud_setup_confirmation_toggle,
+            inputs=[lite_cloud_setup_publish_confirm],
+            outputs=[lite_cloud_setup_publish_button],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_cloud_setup_publish_event = _start_lite_busy_button(
+            lite_cloud_setup_publish_button,
+            "Lite用クラウドを公開中…",
+        )
+        lite_cloud_setup_publish_result_event = lite_cloud_setup_publish_event.then(
+            fn=ui_handlers.handle_lite_cloud_setup_publish,
+            inputs=[lite_cloud_setup_state, lite_cloud_setup_publish_confirm],
+            outputs=_lite_cloud_setup_outputs,
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="app-update-mutation",
+            show_progress="hidden",
+        )
+        lite_cloud_setup_publish_sync_event = lite_cloud_setup_publish_result_event.then(
+            fn=ui_handlers.handle_lite_cloud_setup_sync_saved_connection_fields,
+            inputs=[
+                lite_cloud_setup_state,
+                lite_travel_worker_url,
+                lite_travel_owner_token,
+                lite_travel_signing_key,
+                lite_travel_wrangler_config_path,
+            ],
+            outputs=[
+                lite_travel_worker_url,
+                lite_travel_owner_token,
+                lite_travel_signing_key,
+                lite_travel_wrangler_config_path,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        _restore_lite_busy_button(
+            lite_cloud_setup_publish_sync_event,
+            lite_cloud_setup_publish_button,
+            "Lite用クラウドを公開して接続を確認",
+        )
+        lite_travel_settings_save_event = _start_lite_busy_button(
+            lite_travel_settings_save,
+            "設定を保存中…",
+        ).then(
+            fn=ui_handlers.handle_save_lite_travel_settings,
+            inputs=[
+                lite_travel_worker_url,
+                lite_travel_owner_token,
+                lite_travel_signing_key,
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+                lite_travel_retention_days,
+                lite_travel_wrangler_config_path,
+                lite_travel_daily_budget,
+                lite_travel_session_budget,
+                lite_travel_budget_warning_ratio,
+                lite_travel_allow_unknown_price,
+                lite_travel_max_output_tokens,
+                lite_travel_budget_timezone,
+                lite_travel_cache_policy,
+                lite_travel_use_custom_model,
+                lite_travel_custom_model_id,
+            ],
+            outputs=[lite_travel_settings_status],
+        )
+        _restore_lite_busy_button(
+            lite_travel_settings_save_event,
+            lite_travel_settings_save,
+            "AIと独立お出かけ設定を保存",
+        )
+        lite_travel_settings_save_event.then(
+            fn=ui_handlers.handle_lite_connectivity_flow_change,
+            inputs=[lite_connectivity_flow],
+            outputs=[
+                lite_connectivity_card,
+                lite_connectivity_retention_group,
+                lite_connectivity_retention_prompt,
+                lite_worker_update_guide,
+            ],
+            show_progress="hidden",
+        )
+        lite_travel_settings_save_event.then(
+            fn=ui_handlers.handle_refresh_lite_daily_ai_route,
+            outputs=[
+                lite_daily_credential_profile_id,
+                lite_daily_model_id,
+                lite_daily_ai_status,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_secret_provider_event = lite_travel_secret_provider.change(
+            fn=ui_handlers.handle_lite_travel_secret_provider_change,
+            inputs=[lite_travel_secret_provider],
+            outputs=[
+                lite_travel_local_key_reference,
+                lite_travel_secret_binding,
+                lite_travel_secret_profile_id,
+                lite_travel_secret_display_name,
+                lite_travel_local_key_status,
+                lite_travel_secret_register_button,
+            ],
+        )
+        lite_travel_secret_provider_event.then(
+            fn=ui_handlers.handle_lite_travel_secret_registration_provider_change,
+            inputs=[lite_travel_secret_provider],
+            outputs=[
+                lite_travel_secret_registration_target,
+                lite_travel_secret_binding,
+                lite_travel_secret_profile_id,
+                lite_travel_secret_display_name,
+                lite_travel_secret_confirm,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_secret_key_event = lite_travel_local_key_reference.change(
+            fn=ui_handlers.handle_lite_travel_secret_key_change,
+            inputs=[lite_travel_local_key_reference],
+            outputs=[lite_travel_secret_confirm],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_secret_target_event = lite_travel_secret_registration_target.change(
+            fn=ui_handlers.handle_lite_travel_secret_registration_target_change,
+            inputs=[lite_travel_secret_provider, lite_travel_secret_registration_target],
+            outputs=[
+                lite_travel_secret_binding,
+                lite_travel_secret_profile_id,
+                lite_travel_secret_display_name,
+                lite_travel_secret_confirm,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_secret_profile_event = lite_travel_secret_profile_id.input(
+            fn=ui_handlers.handle_lite_travel_secret_key_change,
+            inputs=[lite_travel_secret_profile_id],
+            outputs=[lite_travel_secret_confirm],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_secret_display_event = lite_travel_secret_display_name.input(
+            fn=ui_handlers.handle_lite_travel_secret_key_change,
+            inputs=[lite_travel_secret_display_name],
+            outputs=[lite_travel_secret_confirm],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_ai_connection_change_event = lite_travel_credential_profile_id.input(
+            fn=ui_handlers.handle_lite_ai_connection_change_with_fetch_state,
+            inputs=[lite_travel_credential_profile_id, lite_travel_model_id],
+            outputs=[
+                lite_travel_model_id,
+                lite_travel_ai_connection_status,
+                lite_travel_model_fetch_profile,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        # 接続先を明示的に選んだ後だけ、その接続に対応する最新候補を確認する。
+        # 起動時には外部照会せず、取得失敗時も初回候補と現在値を保持する。
+        lite_travel_ai_connection_change_event.then(
+            fn=ui_handlers.handle_fetch_lite_travel_models_staged,
+            inputs=[
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+                lite_travel_model_fetch_profile,
+            ],
+            outputs=[lite_travel_model_fetch_stage],
+            # 取得中の接続変更は最後の1件を残す。onceでは古い結果を
+            # 捨てた後、現在の接続の一覧が取得されないままになる。
+            trigger_mode="always_last",
+            concurrency_limit=1,
+            concurrency_id="lite-model-list-fetch",
+        ).then(
+            fn=ui_handlers.handle_apply_lite_travel_model_fetch,
+            inputs=[
+                lite_travel_model_fetch_stage,
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+            ],
+            outputs=[lite_travel_model_id, lite_travel_ai_connection_status],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_refresh_models_event = _start_lite_busy_button(
+            lite_travel_refresh_models_button,
+            "モデル一覧を取得中…",
+        ).then(
+            fn=ui_handlers.handle_fetch_lite_travel_models_staged,
+            inputs=[
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+                lite_travel_model_fetch_profile,
+            ],
+            outputs=[lite_travel_model_fetch_stage],
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="lite-model-list-fetch",
+        ).then(
+            fn=ui_handlers.handle_apply_lite_travel_model_fetch,
+            inputs=[
+                lite_travel_model_fetch_stage,
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+            ],
+            outputs=[lite_travel_model_id, lite_travel_ai_connection_status],
+            queue=False,
+            show_progress="hidden",
+        )
+        _restore_lite_busy_button(
+            lite_travel_refresh_models_event,
+            lite_travel_refresh_models_button,
+            "最新のモデル一覧を取得",
+        )
+        lite_travel_secret_register_event = lite_travel_secret_register_button.click(
+            fn=ui_handlers.handle_register_lite_travel_secret,
+            inputs=[
+                lite_travel_secret_provider,
+                lite_travel_local_key_reference,
+                lite_travel_secret_registration_target,
+                lite_travel_secret_profile_id,
+                lite_travel_secret_display_name,
+                lite_travel_wrangler_config_path,
+                lite_travel_secret_confirm,
+                lite_travel_model_id,
+            ],
+            outputs=[
+                lite_travel_secret_status,
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+            ],
+        )
+        lite_travel_secret_register_event.then(
+            fn=ui_handlers.handle_refresh_lite_daily_ai_route,
+            inputs=[lite_travel_credential_profile_id, lite_travel_model_id],
+            outputs=[
+                lite_daily_credential_profile_id,
+                lite_daily_model_id,
+                lite_daily_ai_status,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        # 初回キー登録は利用者が明示的に押した操作なので、その完了後だけ
+        # 登録したキーの最新モデル候補を確認する。外部照会を起動時には行わない。
+        lite_travel_secret_register_profile_state_event = lite_travel_secret_register_event.then(
+            fn=ui_handlers.handle_lite_model_fetch_profile_state,
+            inputs=[lite_travel_credential_profile_id],
+            outputs=[lite_travel_model_fetch_profile],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_secret_register_profile_state_event.then(
+            fn=ui_handlers.handle_fetch_lite_travel_models_staged,
+            inputs=[
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+                lite_travel_model_fetch_profile,
+                lite_travel_secret_status,
+            ],
+            outputs=[lite_travel_model_fetch_stage],
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="lite-model-list-fetch",
+        ).then(
+            fn=ui_handlers.handle_apply_lite_travel_model_fetch,
+            inputs=[
+                lite_travel_model_fetch_stage,
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+            ],
+            outputs=[lite_travel_model_id, lite_travel_ai_connection_status],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_secret_provider_event.then(
+            fn=ui_handlers.handle_lite_travel_secret_key_change,
+            inputs=[lite_travel_secret_provider],
+            outputs=[lite_travel_profile_label_confirm], queue=False, show_progress="hidden",
+        )
+        lite_travel_secret_key_event.then(
+            fn=ui_handlers.handle_lite_travel_secret_key_change,
+            inputs=[lite_travel_local_key_reference],
+            outputs=[lite_travel_profile_label_confirm], queue=False, show_progress="hidden",
+        )
+        lite_travel_secret_target_event.then(
+            fn=ui_handlers.handle_lite_travel_secret_key_change,
+            inputs=[lite_travel_secret_registration_target],
+            outputs=[lite_travel_profile_label_confirm], queue=False, show_progress="hidden",
+        )
+        lite_travel_secret_profile_event.then(
+            fn=ui_handlers.handle_lite_travel_secret_key_change,
+            inputs=[lite_travel_secret_profile_id],
+            outputs=[lite_travel_profile_label_confirm], queue=False, show_progress="hidden",
+        )
+        lite_travel_secret_display_event.then(
+            fn=ui_handlers.handle_lite_travel_secret_key_change,
+            inputs=[lite_travel_secret_display_name],
+            outputs=[lite_travel_profile_label_confirm], queue=False, show_progress="hidden",
+        )
+        lite_travel_profile_label_event = lite_travel_profile_label_button.click(
+            fn=ui_handlers.handle_update_lite_travel_secret_display,
+            inputs=[
+                lite_travel_secret_provider, lite_travel_local_key_reference,
+                lite_travel_secret_registration_target, lite_travel_secret_profile_id,
+                lite_travel_secret_display_name, lite_travel_profile_label_confirm,
+                lite_travel_credential_profile_id, lite_travel_model_id,
+            ],
+            outputs=[lite_travel_secret_status, lite_travel_credential_profile_id, lite_travel_model_id],
+        )
+        lite_travel_profile_label_event.then(
+            fn=ui_handlers.handle_refresh_lite_daily_ai_route,
+            inputs=[lite_daily_credential_profile_id, lite_daily_model_id],
+            outputs=[lite_daily_credential_profile_id, lite_daily_model_id, lite_daily_ai_status],
+            queue=False, show_progress="hidden",
+        )
+        lite_phase5_diagnostics_button.click(
+            fn=ui_handlers.handle_lite_phase5_diagnostics,
+            outputs=[lite_phase5_diagnostics_status],
+        )
+        lite_phase5_diagnostic_export_button.click(
+            fn=ui_handlers.handle_lite_phase5_diagnostic_export,
+            outputs=[lite_phase5_diagnostics_status],
+        )
+        lite_phase5_plan_button.click(
+            fn=ui_handlers.handle_lite_phase5_plan_update,
+            inputs=[lite_phase5_database_name],
+            outputs=[lite_phase5_operation, lite_phase5_update_status, lite_phase5_run_button],
+        )
+        lite_phase5_run_button.click(
+            fn=ui_handlers.handle_lite_phase5_run_update,
+            inputs=[lite_phase5_operation, lite_phase5_update_confirm, lite_connectivity_flow],
+            outputs=[
+                lite_phase5_operation,
+                lite_phase5_update_status,
+                lite_connectivity_card,
+                lite_worker_update_guide,
+            ],
+            trigger_mode="once", concurrency_limit=1,
+            concurrency_id="app-update-mutation",
+        )
+        lite_phase5_devices_button.click(
+            fn=ui_handlers.handle_lite_phase5_devices,
+            outputs=[lite_phase5_devices_status],
+        )
+        lite_phase5_revoke_all_button.click(
+            fn=ui_handlers.handle_lite_phase5_revoke_all_devices,
+            inputs=[lite_phase5_revoke_all_confirm],
+            outputs=[lite_phase5_devices_status],
+        )
+        lite_phase5_revoke_device_button.click(
+            fn=ui_handlers.handle_lite_phase5_revoke_device,
+            inputs=[lite_phase5_device_id, lite_phase5_revoke_device_confirm],
+            outputs=[lite_phase5_devices_status],
+        )
+        lite_phase5_retention_preview_button.click(
+            fn=lambda: ui_handlers.handle_lite_phase5_retention(True),
+            outputs=[lite_phase5_retention_status],
+        )
+        lite_phase5_retention_run_button.click(
+            fn=lambda: ui_handlers.handle_lite_phase5_retention(False),
+            outputs=[lite_phase5_retention_status],
         )
         external_event_type_dropdown.change(
             fn=ui_handlers.handle_external_event_type_change,
@@ -11349,12 +13684,58 @@ try:
             outputs=[common_settings_status]
         )
 
-# --- Multi-Provider Events ---
-        provider_radio.change(
-            fn=ui_handlers.handle_provider_change,
-            inputs=[provider_radio],
-            outputs=[google_settings_group, openai_settings_group, anthropic_settings_group, claude_subscription_settings_group, common_local_settings_group]
+        global_reasoning_inputs = [
+            provider_radio, model_dropdown, openai_profile_dropdown, openai_model_dropdown,
+            openai_base_url_input, anthropic_model_dropdown,
+        ]
+        room_reasoning_inputs = [
+            room_dropdown, room_provider_radio, room_model_dropdown, room_openai_profile_dropdown,
+            room_openai_model_dropdown, room_openai_base_url_input, room_anthropic_model_dropdown,
+        ]
+        wire_response_reasoning_events(
+            demo, global_reasoning_panel, room_reasoning_panel,
+            global_reasoning_inputs, room_reasoning_inputs,
         )
+        from gemini_connection_ui import wire_gemini_connection_events
+        from ui_handlers import response_reasoning as reasoning_handlers
+        gemini_connection_events = wire_gemini_connection_events(
+            demo, global_gemini_connection_panel, room_gemini_connection_panel,
+            room_dropdown, provider_radio, room_provider_radio,
+            vertex_key_panel=vertex_key_management_panel,
+        )
+        from gemini_connection_ui import wire_provider_connection_events
+        gemini_connection_events.update(wire_provider_connection_events(
+            provider_radio, room_provider_radio, room_dropdown, is_switching_room,
+            global_gemini_connection_panel, room_gemini_connection_panel,
+            [google_settings_group, openai_settings_group, anthropic_settings_group,
+             claude_subscription_settings_group, common_local_settings_group],
+            [room_google_settings_group, room_openai_settings_group, room_anthropic_settings_group,
+             room_claude_subscription_settings_group, room_local_settings_group,
+             room_claude_subscription_delegation_warning, room_model_dropdown,
+             room_api_key_dropdown, room_rotation_dropdown],
+            global_ai_studio_settings, room_ai_studio_settings, room_settings_save_status,
+            gemini_connection_events,
+            common_refresh=refresh_common_settings_button,
+            room_refresh=refresh_room_settings_button,
+            common_accordion=common_provider_accordion, room_accordion=room_provider_accordion,
+        ))
+        for connection_event in gemini_connection_events.values():
+            # 同モデルでも接続を変えると別の推論設定になる。保存失敗時も実効値を再照合する。
+            connection_event.then(
+                fn=reasoning_handlers.load_global,
+                inputs=global_reasoning_inputs, outputs=global_reasoning_panel["outputs"],
+                show_progress="hidden", api_visibility="private",
+            ).then(
+                fn=reasoning_handlers.load_room,
+                inputs=room_reasoning_inputs, outputs=room_reasoning_panel["outputs"],
+                show_progress="hidden", api_visibility="private",
+            ).then(
+                fn=ui_handlers.refresh_chat_connection_input,
+                inputs=[room_dropdown], outputs=[chat_input_multimodal],
+                show_progress="hidden", api_visibility="private",
+            )
+
+# --- Multi-Provider Events ---
 
         openai_profile_dropdown.change(
             fn=ui_handlers.handle_openai_profile_select,
@@ -12070,14 +14451,79 @@ try:
                 }, 3000);
             }
         """
+        app_update_accordion.expand(
+            fn=ui_handlers.handle_browser_runtime_status_check_with_progress,
+            inputs=None,
+            outputs=app_browser_runtime_outputs,
+            show_progress="hidden",
+            api_visibility="private",
+            concurrency_id="app-update-mutation",
+            concurrency_limit=1,
+        )
         update_check_button.click(
             fn=ui_handlers.handle_check_update,
             outputs=[update_status_markdown, update_download_group, update_apply_button]
+        ).then(
+            fn=ui_handlers.handle_app_update_host_check,
+            inputs=None, outputs=app_update_host_outputs,
+            show_progress="hidden", api_visibility="private",
+        ).then(
+            fn=ui_handlers.handle_browser_runtime_status_check_with_progress,
+            inputs=None, outputs=app_browser_runtime_outputs,
+            show_progress="hidden", api_visibility="private",
+            concurrency_id="app-update-mutation",
+            concurrency_limit=1,
+        ).then(
+            fn=ui_handlers.handle_lite_update_check,
+            inputs=[current_room_name], outputs=app_lite_update_outputs,
+            show_progress="hidden", api_visibility="private",
+            concurrency_id="lite-update-check", concurrency_limit=1,
+        )
+        app_update_host_migration_button.click(
+            fn=None, inputs=None, outputs=[app_update_host_confirmed],
+            js="""() => {
+                return confirm('本体を新しい更新方式へ移行しますか？\\n現在の本体は変更せず、通常終了後に起動用ファイルを切り替えます。\\n別の移行状況ウィンドウで完了を確認してから、今までのStart.batで起動してください。') ? 'true' : '';
+            }""",
+            queue=False, api_visibility="private",
+        )
+        app_update_host_confirmed.change(
+            fn=ui_handlers.handle_app_update_host_migration,
+            inputs=[app_update_host_confirmed], outputs=app_update_host_outputs,
+            trigger_mode="once", concurrency_limit=1,
+            concurrency_id="app-update-mutation", api_visibility="private",
         )
         update_apply_button.click(
             fn=ui_handlers.handle_apply_update,
             outputs=[update_status_markdown],
-            js="() => {" + _restart_watch_js_body + "}"
+            js="() => {" + _restart_watch_js_body + "}",
+            trigger_mode="once", concurrency_limit=1,
+            concurrency_id="app-update-mutation",
+        )
+        app_browser_runtime_check_button.click(
+            fn=ui_handlers.handle_browser_runtime_status_check_with_progress,
+            inputs=None,
+            outputs=app_browser_runtime_outputs,
+            show_progress="minimal",
+            api_visibility="private",
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="app-update-mutation",
+        )
+        app_browser_runtime_apply_button.click(
+            fn=ui_handlers.handle_browser_runtime_apply,
+            inputs=None,
+            outputs=app_browser_runtime_outputs,
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="app-update-mutation",
+        )
+        lite_runtime_repair_apply_button.click(
+            fn=ui_handlers.handle_lite_runtime_repair_apply,
+            outputs=[lite_runtime_repair_result],
+            js="() => {" + _restart_watch_js_body + "}",
+            trigger_mode="once",
+            concurrency_limit=1,
+            concurrency_id="app-update-mutation",
         )
         # 手動再起動: confirmの結果を隠しTextboxへ渡し、changeでハンドラを起動する
         # （確認キャンセルでfnが走らないようにするための既存パターン）。
@@ -12094,7 +14540,46 @@ try:
         restart_confirmed_state.change(
             fn=ui_handlers.handle_restart_app,
             inputs=[restart_confirmed_state],
-            outputs=[update_status_markdown, restart_confirmed_state]
+            outputs=[update_status_markdown, restart_confirmed_state],
+            trigger_mode="once", concurrency_limit=1,
+            concurrency_id="app-update-mutation",
+        )
+
+        app_lite_update_button.click(
+            fn=None, inputs=[app_lite_update_confirmation],
+            outputs=[app_lite_update_confirmed],
+            js="""(value) => {
+                let proposal;
+                try { proposal = JSON.parse(value); } catch { return ''; }
+                return proposal.text && proposal.operation_id && confirm(proposal.text)
+                    ? proposal.operation_id : '';
+            }""",
+            queue=False, api_visibility="private",
+        )
+        app_lite_update_confirmed.change(
+            fn=ui_handlers.handle_lite_update_run,
+            inputs=[app_lite_update_offer, app_lite_update_confirmed, current_room_name],
+            outputs=app_lite_update_outputs,
+            trigger_mode="once", concurrency_limit=1,
+            concurrency_id="app-update-mutation", api_visibility="private",
+        )
+        app_lite_auth_recovery_button.click(
+            fn=None, inputs=[app_lite_auth_recovery_confirmation],
+            outputs=[app_lite_auth_recovery_confirmed],
+            js="""(value) => {
+                let proposal;
+                try { proposal = JSON.parse(value); } catch { return ''; }
+                return proposal.text && proposal.operation_id && confirm(proposal.text)
+                    ? proposal.operation_id : '';
+            }""",
+            queue=False, api_visibility="private",
+        )
+        app_lite_auth_recovery_confirmed.change(
+            fn=ui_handlers.handle_lite_update_auth_recovery,
+            inputs=[app_lite_update_offer, app_lite_auth_recovery_confirmed, current_room_name],
+            outputs=app_lite_update_outputs,
+            trigger_mode="once", concurrency_limit=1,
+            concurrency_id="app-update-mutation", api_visibility="private",
         )
 
         # --- 画像生成マルチプロバイダ設定のイベント ---
@@ -12140,8 +14625,8 @@ try:
         # --- 個別設定のモデルリスト管理ボタンのイベント ---
         # Gemini個別設定
         room_fetch_gemini_models_button.click(
-            fn=ui_handlers.handle_fetch_gemini_models,
-            inputs=[room_api_key_dropdown, room_model_dropdown],
+            fn=ui_handlers.handle_fetch_room_gemini_models,
+            inputs=[room_api_key_dropdown, room_model_dropdown, room_dropdown],
             outputs=[room_model_dropdown]
         )
 
@@ -12159,6 +14644,265 @@ try:
         )
 
         # --- 「💼 お出かけ」専用タブのイベント接続 ---
+
+        lite_travel_overview_outputs = [
+            lite_travel_refresh_status,
+            lite_travel_refresh_feedback,
+            lite_travel_status,
+            lite_travel_connectivity_card,
+            lite_travel_progress,
+            lite_travel_connection_group,
+            lite_travel_standby_group,
+            lite_travel_departure_group,
+            lite_travel_return_group,
+            lite_travel_build_snapshot,
+            lite_travel_start_button,
+            lite_travel_return_preview_button,
+            lite_travel_online_return_button,
+            lite_travel_departure_summary,
+            lite_travel_snapshot_json,
+            lite_travel_return_preview,
+            lite_travel_snapshot_state,
+        ]
+        lite_open_daily_event.then(
+            fn=ui_handlers.handle_lite_travel_overview_refresh,
+            inputs=[lite_travel_focus_persona],
+            outputs=lite_travel_overview_outputs,
+        )
+        lite_entry_event.then(
+            fn=ui_handlers.handle_lite_entry_refresh,
+            inputs=[lite_travel_focus_persona],
+            outputs=lite_travel_overview_outputs,
+        )
+        for event in lite_shortcut_events:
+            event.then(
+                fn=ui_handlers.handle_lite_travel_overview_refresh,
+                inputs=[lite_travel_focus_persona],
+                outputs=lite_travel_overview_outputs,
+            )
+        lite_travel_refresh_status.click(
+            fn=ui_handlers.handle_lite_travel_overview_refresh,
+            inputs=[lite_travel_focus_persona],
+            outputs=lite_travel_overview_outputs,
+        )
+        for component in (
+            lite_travel_personas, lite_travel_parallel_personas, lite_travel_snapshot_preset,
+            lite_travel_include_core_memory, lite_travel_include_episodic_memory,
+            lite_travel_episodic_memory_days, lite_travel_recent_message_limit,
+            lite_daily_credential_profile_id, lite_daily_model_id,
+        ):
+            component.change(
+                fn=ui_handlers.handle_lite_travel_selection_changed,
+                outputs=[
+                    lite_travel_snapshot_state, lite_travel_standby_snapshot_state,
+                    lite_travel_start_button, lite_travel_confirm_standby,
+                    lite_travel_departure_summary, lite_travel_standby_preview,
+                ],
+                queue=False,
+                show_progress="hidden",
+            )
+        lite_daily_credential_profile_id.input(
+            fn=ui_handlers.handle_lite_ai_connection_change,
+            inputs=[lite_daily_credential_profile_id, lite_daily_model_id],
+            outputs=[lite_daily_model_id, lite_daily_ai_status],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_daily_ai_save_event = _start_lite_busy_button(
+            lite_daily_ai_save,
+            "今回使うAIを保存中…",
+        ).then(
+            fn=ui_handlers.handle_save_lite_daily_ai_route,
+            inputs=[lite_daily_credential_profile_id, lite_daily_model_id],
+            outputs=[
+                lite_daily_ai_status,
+                lite_travel_credential_profile_id,
+                lite_travel_model_id,
+                lite_travel_settings_status,
+            ],
+        )
+        _restore_lite_busy_button(
+            lite_daily_ai_save_event,
+            lite_daily_ai_save,
+            "今回使うAIを保存",
+        )
+        lite_travel_snapshot_preset.change(
+            fn=ui_handlers.handle_lite_snapshot_preset_change,
+            inputs=[
+                lite_travel_snapshot_preset,
+                lite_travel_include_core_memory,
+                lite_travel_include_episodic_memory,
+                lite_travel_episodic_memory_days,
+                lite_travel_recent_message_limit,
+            ],
+            outputs=[
+                lite_travel_include_core_memory,
+                lite_travel_include_episodic_memory,
+                lite_travel_episodic_memory_days,
+                lite_travel_recent_message_limit,
+                lite_travel_snapshot_preset_status,
+            ],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_include_episodic_memory.change(
+            fn=ui_handlers.handle_lite_snapshot_episodic_toggle,
+            inputs=[lite_travel_include_episodic_memory, lite_travel_snapshot_preset],
+            outputs=[lite_travel_episodic_memory_days],
+            queue=False,
+            show_progress="hidden",
+        )
+        for button in (lite_travel_open_worker_settings, lite_management_shortcut):
+            button.click(
+                fn=ui_handlers.handle_outing_show_lite,
+                outputs=outing_mode_outputs,
+                queue=False,
+                show_progress="hidden",
+                js=_outing_mode_visibility_js("setup"),
+            ).then(
+                fn=ui_handlers.handle_lite_open_connection_management,
+                outputs=[lite_connected_setup_accordion, lite_independent_setup_accordion, lite_independent_connectivity_accordion],
+                queue=False,
+                show_progress="hidden",
+                js="() => { setTimeout(() => document.getElementById('lite_independent_connectivity_flow')?.scrollIntoView({behavior: 'smooth', block: 'start'}), 150); return []; }",
+            )
+        lite_travel_pair_button.click(
+            fn=ui_handlers.handle_lite_travel_pairing_code,
+            inputs=[lite_pairing_code_ttl_minutes],
+            outputs=[lite_travel_pairing_result],
+        )
+        lite_travel_build_snapshot.click(
+            fn=ui_handlers.handle_lite_travel_build_multi_snapshot,
+            inputs=[
+                lite_travel_personas,
+                lite_travel_parallel_personas,
+                lite_travel_focus_persona,
+                lite_travel_include_core_memory,
+                lite_travel_include_episodic_memory,
+                lite_travel_episodic_memory_days,
+                lite_travel_recent_message_limit,
+            ],
+            outputs=[
+                lite_travel_departure_summary,
+                lite_travel_snapshot_json,
+                lite_travel_snapshot_state,
+                lite_travel_operation_result,
+                lite_travel_build_snapshot,
+                lite_travel_start_button,
+                lite_travel_progress,
+            ],
+        )
+        lite_travel_prepare_event = lite_travel_prepare_standby.click(
+            fn=ui_handlers.handle_lite_travel_preview_standby,
+            inputs=[
+                lite_travel_personas,
+                lite_travel_parallel_personas,
+                lite_travel_include_core_memory,
+                lite_travel_include_episodic_memory,
+                lite_travel_episodic_memory_days,
+                lite_travel_recent_message_limit,
+            ],
+            outputs=[
+                lite_travel_standby_preview,
+                lite_travel_standby_snapshot_json,
+                lite_travel_standby_snapshot_state,
+                lite_travel_confirm_standby,
+            ],
+        )
+        lite_travel_confirm_standby_event = lite_travel_confirm_standby.click(
+            fn=ui_handlers.handle_lite_travel_confirm_standby,
+            inputs=[lite_travel_standby_snapshot_state],
+            outputs=[
+                lite_travel_standby_status,
+                lite_travel_standby_snapshot_state,
+                lite_travel_confirm_standby,
+            ],
+        )
+        lite_travel_confirm_standby_event.then(
+            fn=ui_handlers.handle_lite_travel_after_operation,
+            inputs=[lite_travel_focus_persona, lite_travel_standby_status],
+            outputs=lite_travel_overview_outputs,
+        )
+        lite_travel_start_event = lite_travel_start_button.click(
+            fn=ui_handlers.handle_lite_travel_start_for_ui,
+            inputs=[lite_travel_snapshot_state, lite_travel_focus_persona],
+            outputs=[lite_travel_operation_result, lite_travel_snapshot_state, lite_travel_focus_persona],
+        )
+        lite_travel_start_event.then(
+            fn=ui_handlers.handle_lite_travel_after_operation,
+            inputs=[lite_travel_focus_persona, lite_travel_operation_result],
+            outputs=lite_travel_overview_outputs,
+        )
+        lite_travel_export_button.click(
+            fn=ui_handlers.handle_lite_travel_export_bundle,
+            inputs=[lite_travel_focus_persona],
+            outputs=[lite_travel_bundle_file, lite_travel_operation_result],
+        )
+        lite_travel_online_return_event = lite_travel_online_return_button.click(
+            fn=ui_handlers.handle_lite_travel_online_return,
+            inputs=[lite_travel_focus_persona],
+            outputs=[lite_travel_operation_result, lite_travel_route_proposals],
+        )
+        lite_travel_online_return_event.then(
+            fn=ui_handlers.handle_lite_travel_after_operation,
+            inputs=[lite_travel_focus_persona, lite_travel_operation_result],
+            outputs=lite_travel_overview_outputs,
+        )
+        lite_travel_return_preview_button.click(
+            fn=ui_handlers.handle_lite_travel_return_preview_ui,
+            inputs=[lite_travel_focus_persona],
+            outputs=[
+                lite_travel_return_preview,
+                lite_travel_return_preview_button,
+                lite_travel_online_return_button,
+                lite_travel_progress,
+            ],
+        )
+        lite_travel_focus_persona.change(
+            fn=ui_handlers.handle_lite_travel_room_change,
+            inputs=[lite_travel_focus_persona],
+            outputs=[
+                lite_travel_departure_summary,
+                lite_travel_snapshot_json,
+                lite_travel_snapshot_state,
+                lite_travel_standby_preview,
+                lite_travel_standby_snapshot_json,
+                lite_travel_standby_snapshot_state,
+                lite_travel_confirm_standby,
+                lite_travel_return_preview,
+                lite_travel_start_button,
+                lite_travel_online_return_button,
+                lite_travel_status,
+            ],
+            queue=False,
+            show_progress="hidden",
+        ).then(
+            fn=ui_handlers.handle_lite_travel_room_stage_change,
+            inputs=[lite_travel_focus_persona],
+            outputs=[lite_travel_progress, lite_travel_connection_group, lite_travel_standby_group, lite_travel_departure_group, lite_travel_return_group],
+            queue=False,
+            show_progress="hidden",
+        )
+        lite_travel_apply_routes.click(
+            fn=ui_handlers.handle_lite_travel_apply_route_proposals,
+            inputs=[lite_travel_route_proposals],
+            outputs=[lite_travel_route_apply_status],
+        )
+        lite_travel_import_button.click(
+            fn=ui_handlers.handle_lite_travel_import_bundle,
+            inputs=[lite_travel_bundle_file, lite_travel_focus_persona],
+            outputs=[lite_travel_status],
+        )
+        lite_travel_delete_content.click(
+            fn=ui_handlers.handle_lite_travel_delete_remote_content,
+            inputs=[lite_travel_focus_persona],
+            outputs=[lite_travel_status],
+        )
+        lite_travel_emergency_button.click(
+            fn=ui_handlers.handle_lite_travel_emergency_reclaim,
+            inputs=[lite_travel_focus_persona, lite_travel_emergency_reason],
+            outputs=[lite_travel_status],
+        )
 
         # データ読み込み
         outing_load_button.click(
@@ -12377,6 +15121,38 @@ try:
             ]
         )
 
+        # 感情の設定は明示保存のみ。初期同期や選択の変更では保存しない。
+        emotion_panel["refresh"].click(
+            fn=ui_handlers.handle_load_emotion_panel,
+            inputs=[room_dropdown], outputs=emotion_panel_outputs,
+            show_progress="hidden", api_visibility="private",
+            concurrency_id="emotion_panel", concurrency_limit=1,
+        )
+        room_dropdown.change(
+            fn=ui_handlers.handle_load_emotion_panel,
+            inputs=[room_dropdown], outputs=emotion_panel_outputs,
+            show_progress="hidden", api_visibility="private",
+            concurrency_id="emotion_panel", concurrency_limit=1,
+        )
+        emotion_panel["selector"].input(
+            fn=ui_handlers.handle_select_emotion_definition,
+            inputs=[room_dropdown, emotion_panel["selector"], emotion_panel["session"]],
+            outputs=emotion_panel_outputs,
+            show_progress="hidden", api_visibility="private",
+            concurrency_id="emotion_panel", concurrency_limit=1,
+        )
+        emotion_panel["save"].click(
+            fn=ui_handlers.handle_save_emotion_definition,
+            inputs=[
+                room_dropdown, emotion_panel["selector"], emotion_panel["name"],
+                emotion_panel["description"], emotion_panel["enabled"],
+                emotion_panel["half_life"], emotion_panel["max_age"], emotion_panel["session"],
+            ],
+            outputs=emotion_panel_outputs,
+            show_progress="hidden", api_visibility="private",
+            concurrency_id="emotion_panel", concurrency_limit=1,
+        )
+
         # Room Provider Events [Phase 3]
         # （room_provider_radio.change は上で一本化済み。旧・重複配線は二重発火防止のため削除）
 
@@ -12543,6 +15319,10 @@ try:
             print("--- [Port Warning] gradio_port設定が無効なため、7860を使用します ---")
             preferred_gradio_port = 7860
         allow_port_fallback = _env_flag("NEXUS_ARK_ALLOW_PORT_FALLBACK", False)
+        if os.environ.get("NEXUS_ARK_UPDATE_TRIAL") == "1":
+            allow_external = False
+            server_name_value = "127.0.0.1"
+            allow_port_fallback = False
         gradio_port = _resolve_gradio_port(
             default_port=preferred_gradio_port,
             excluded_ports={webhook_port, line_bot_port, api_gateway_port, atelier_serve_port},
@@ -12690,6 +15470,8 @@ try:
             "server_name": server_name_value,
             "server_port": gradio_port,
             "share": False,
+            # SSRのPATH上Node起動を避け、通常のブラウザ描画を明示する。
+            "ssr_mode": False,
             "allowed_paths": allowed_paths,
             "inbrowser": False,
             "quiet": True,
@@ -12724,6 +15506,7 @@ try:
                     print(f"--- [Launch] Gradio を http://{host}:{port} で起動します ---")
                     print(f"--- [Open] ブラウザでは http://127.0.0.1:{port} を開いてください ---")
                     print(f"OPEN_URL=http://127.0.0.1:{port}")
+                    _start_update_trial_ready_monitor(port)
                     _open_local_browser_later(port)
                     queued_demo.launch(**launch_kwargs)
                     launched = True

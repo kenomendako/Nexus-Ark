@@ -46,3 +46,35 @@ def _settings_status_message(scope: str, label: str, result: Any, restart_requir
     if result:
         return f"{scope}: {label} を保存しました {now}{suffix}"
     return f"{scope}: {label} の保存に失敗しました"
+
+
+def require_selected_persona_room(room_name, selected_room, is_switching):
+    """選択表示と内部ルームの不一致・切替中の書き込みを止める。"""
+    import gradio as gr
+
+    if is_switching:
+        raise gr.Error("ルーム切替中のため保存しませんでした。切替完了を待ってください。")
+    if not room_name or room_name != selected_room:
+        raise gr.Error("選択中のルームと保存先が一致しないため、保存しませんでした。対象ルームを選び直してください。")
+
+
+def require_persona_editor_target(room_name, selected_room, editor_room, is_switching):
+    """本文の読込元も一致する場合だけ編集内容を保存する。"""
+    import gradio as gr
+
+    require_selected_persona_room(room_name, selected_room, is_switching)
+    if room_name != editor_room:
+        raise gr.Error(
+            "編集内容の読込元と選択中のルームを確認できないため、保存しませんでした。"
+            "未保存の文章を手元に控え、対象ルームを選択して"
+            "「🔄 最新の状態に更新」で読み直してから編集してください。"
+        )
+
+
+def with_persona_editor_room(update, room_name):
+    """本文を更新した結果にだけ読込元を付け、失敗時は双方を保持する。"""
+    import gradio as gr
+
+    if isinstance(update, dict) and "value" not in update:
+        return update, gr.skip()
+    return update, room_name

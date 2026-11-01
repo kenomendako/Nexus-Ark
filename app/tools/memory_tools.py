@@ -25,6 +25,30 @@ class RecallMemoriesArgs(BaseModel):
     room_name: str = Field(..., description="対象のルーム名")
     api_key: str = Field(..., description="APIキー")
 
+
+def _memory_result_label(doc) -> str:
+    metadata = getattr(doc, "metadata", {}) or {}
+    source = metadata.get("source", "不明")
+    doc_type = metadata.get("type", "unknown")
+    if doc_type == "diary":
+        return "日記"
+    if doc_type == "identity":
+        return "自己同一性記憶"
+    if doc_type == "log_archive":
+        return "過去の会話"
+    if doc_type == "episodic_memory":
+        return f"エピソード記憶（{metadata.get('date', '')}）"
+    if doc_type == "lite_return_addendum":
+        return f"帰宅補足エピソード（{metadata.get('date', '')}）"
+    if doc_type == "dream_insight":
+        return "夢の記録"
+    if doc_type == "research_notes":
+        return "研究・分析ノート"
+    if doc_type == "creative_note":
+        recorded_at = metadata.get("created_at") or metadata.get("date") or "日時不明"
+        return f"創作ノート（記録日時: {recorded_at}／現在の事実・予定の根拠ではない）"
+    return str(source)
+
 @tool(args_schema=RecallMemoriesArgs)
 def recall_memories(query: str, room_name: str, api_key: str) -> str:
     """
@@ -60,25 +84,7 @@ def recall_memories(query: str, room_name: str, api_key: str) -> str:
         
         result_text = f"【記憶検索の結果：「{query}」】\n\n"
         for doc in memory_results[:7]:  # 最大7件
-            source = doc.metadata.get("source", "不明")
-            doc_type = doc.metadata.get("type", "unknown")
-            
-            # ソースタイプに応じたラベル付け
-            if doc_type == "diary":
-                label = "日記"
-            elif doc_type == "identity":
-                label = "自己同一性記憶"
-            elif doc_type == "log_archive":
-                label = "過去の会話"
-            elif doc_type == "episodic_memory":
-                date = doc.metadata.get("date", "")
-                label = f"エピソード記憶（{date}）"
-            elif doc_type == "dream_insight":
-                label = "夢の記録"
-            elif doc_type == "research_notes":
-                label = "研究・分析ノート"
-            else:
-                label = source
+            label = _memory_result_label(doc)
             
             # [2026-01-27] ヘッダーの簡略化 (## AGENT:ペルソナ -> ペルソナ)
             content = doc.page_content
@@ -416,12 +422,12 @@ def search_memory(query: str, room_name: str, api_key: str, intent: str = None) 
         
         result_text = f"【記憶検索の結果：「{query}」】\n\n"
         for doc in diary_results[:5]:  # 最大5件
-            source = doc.metadata.get("source", "不明")
+            label = _memory_result_label(doc)
             # 長すぎる場合はトリミング
             content = doc.page_content
             if len(content) > 500:
                 content = content[:500] + "..."
-            result_text += f"--- [出典: {source}] ---\n{content}\n\n"
+            result_text += f"--- [出典: {label}] ---\n{content}\n\n"
         
         return result_text.strip()
         

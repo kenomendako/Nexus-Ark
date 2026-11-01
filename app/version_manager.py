@@ -2,8 +2,44 @@ import os
 import json
 import logging
 from pathlib import Path
+from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
+
+LITE_CLOUD_RELEASE_CHANNEL_DISABLED = "disabled"
+LITE_CLOUD_RELEASE_CHANNEL_STAGE2_CANARY = "stage2_canary"
+LITE_CLOUD_RELEASE_CHANNEL_LIMITED_BETA = "limited_beta"
+LITE_CLOUD_RELEASE_CHANNEL_KEY = "lite_cloud_new_setup_release_channel"
+LITE_CLOUD_STAGE2_CANARY_VERSION = "0.5.0.21"
+LITE_CLOUD_RELEASE_CHANNELS = frozenset(
+    {
+        LITE_CLOUD_RELEASE_CHANNEL_STAGE2_CANARY,
+        LITE_CLOUD_RELEASE_CHANNEL_LIMITED_BETA,
+    }
+)
+
+
+def resolve_lite_cloud_new_setup_release_channel(
+    version_data: Mapping[str, Any] | None,
+) -> str:
+    """署名対象version metadataから初回準備の配布区分をfail-closedで返す。"""
+
+    if not isinstance(version_data, Mapping):
+        return LITE_CLOUD_RELEASE_CHANNEL_DISABLED
+    channel = version_data.get(LITE_CLOUD_RELEASE_CHANNEL_KEY)
+    if channel == LITE_CLOUD_RELEASE_CHANNEL_STAGE2_CANARY:
+        if (
+            version_data.get("version") == LITE_CLOUD_STAGE2_CANARY_VERSION
+            and version_data.get("lite_cloud_stage2_e2e_canary") is True
+        ):
+            return channel
+        return LITE_CLOUD_RELEASE_CHANNEL_DISABLED
+    if channel == LITE_CLOUD_RELEASE_CHANNEL_LIMITED_BETA:
+        if version_data.get("lite_cloud_stage2_e2e_canary") is not True:
+            return channel
+        return LITE_CLOUD_RELEASE_CHANNEL_DISABLED
+    return LITE_CLOUD_RELEASE_CHANNEL_DISABLED
+
 
 class VersionManager:
     VERSION_FILE = "version.json"

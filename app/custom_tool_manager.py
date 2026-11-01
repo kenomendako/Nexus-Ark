@@ -1,10 +1,13 @@
 import os
 import importlib.util
+from importlib import metadata
 import inspect
 import asyncio
 from contextlib import asynccontextmanager
 import subprocess
 import sys
+import re
+import shutil
 import py_compile
 import tempfile
 from typing import List, Callable, Dict, Any, Tuple, Optional
@@ -12,12 +15,184 @@ import traceback
 import httpx
 from langchain_core.tools import tool, BaseTool
 
+try:
+    from packaging.requirements import InvalidRequirement, Requirement
+    from packaging.version import InvalidVersion, Version
+except ImportError:  # pragma: no cover - packaging is part of the managed runtime
+    InvalidRequirement = ValueError
+    InvalidVersion = ValueError
+    Requirement = None
+    Version = None
+
 _MCP_TOOLS_CACHE = None
 
 DEFAULT_CUSTOM_TOOL_RESULT_PROMPT = (
     "実行結果を踏まえて、必要な場合は相手に自然に報告してください。"
     "失敗や不足がある場合は隠さず、次に必要な確認事項を伝えてください。"
 )
+
+MIN_UV_VERSION = "0.13.4"
+MIN_PIP_VERSION = "26.2.2"
+
+
+def _version_is_at_least(actual: str, minimum: str) -> bool:
+    """ローカルで取得した版を比較する（失敗時は安全側でFalse）。"""
+    try:
+        if Version is not None:
+            return Version(actual) >= Version(minimum)
+        if not re.fullmatch(r"\d+(?:\.\d+)*", actual.strip()):
+            return False
+        actual_parts = tuple(int(part) for part in actual.strip().split("."))
+        minimum_parts = tuple(int(part) for part in minimum.split("."))
+        width = max(len(actual_parts), len(minimum_parts))
+        return actual_parts + (0,) * (width - len(actual_parts)) >= minimum_parts + (0,) * (width - len(minimum_parts))
+    except (AttributeError, TypeError, ValueError, InvalidVersion):
+        return False
+
+
+def _select_uv_executable(base_dir: str) -> Optional[str]:
+    """プロジェクトvenvを優先し、なければPATHのuvを返す。"""
+    if os.name == "nt":
+        venv_candidates = (
+            os.path.join(base_dir, ".venv", "Scripts", "uv.exe"),
+            os.path.join(base_dir, ".venv", "Scripts", "uv"),
+        )
+    else:
+        venv_candidates = (os.path.join(base_dir, ".venv", "bin", "uv"),)
+
+    for candidate in venv_candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return shutil.which("uv")
+
+
+def _probe_uv_version(uv_path: Optional[str]) -> Tuple[bool, str]:
+    """uvの版だけをローカル確認し、安全な最低版を満たすか返す。"""
+    if not uv_path:
+        return False, "uvが見つかりません"
+
+    try:
+        result = subprocess.run(
+            [uv_path, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except Exception as exc:
+        return False, f"uvの版確認に失敗しました: {exc}"
+
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+    # uvの通常出力は「uv X.Y.Z (platform)」。版に直結したprereleaseや
+    # 要素数不明の表記は、安定版を確認できた扱いにしない。
+    match = re.fullmatch(
+        r"\s*uv\s+([0-9]+\.[0-9]+\.[0-9]+)(?:\s+\([^()\r\n]*\))?\s*",
+        output,
+        re.IGNORECASE,
+    )
+    if result.returncode != 0 or not match:
+        return False, "uvの版を確認できません"
+
+    version = match.group(1)
+    if not _version_is_at_least(version, MIN_UV_VERSION):
+        return False, f"uv {version} は最低版 {MIN_UV_VERSION} 未満です"
+    return True, f"uv {version}"
+
+
+def _local_pip_version() -> Tuple[bool, str]:
+    """現在のsys.executableから使えるpipを外部実行なしで確認する。"""
+    try:
+        if importlib.util.find_spec("pip") is None:
+            return False, "pipモジュールが見つかりません"
+    except Exception as exc:
+        return False, f"pipモジュールを確認できません: {exc}"
+
+    try:
+        version = metadata.version("pip")
+    except metadata.PackageNotFoundError:
+        return False, "pipのインストール済み版を確認できません"
+    except Exception as exc:
+        return False, f"pipの版確認に失敗しました: {exc}"
+
+    if not _version_is_at_least(version, MIN_PIP_VERSION):
+        return False, f"pip {version} は最低版 {MIN_PIP_VERSION} 未満です"
+    return True, f"pip {version}"
+
+
+def _versions_are_equal(actual: str, expected: str) -> bool:
+    """版指定の同一性をローカルに確認する。"""
+    try:
+        if Version is not None:
+            return Version(actual) == Version(expected)
+        if not re.fullmatch(r"\d+(?:\.\d+)*", actual.strip()) or not re.fullmatch(
+            r"\d+(?:\.\d+)*", expected.strip()
+        ):
+            return False
+        actual_parts = tuple(int(part) for part in actual.strip().split("."))
+        expected_parts = tuple(int(part) for part in expected.strip().split("."))
+        width = max(len(actual_parts), len(expected_parts))
+        return actual_parts + (0,) * (width - len(actual_parts)) == expected_parts + (0,) * (
+            width - len(expected_parts)
+        )
+    except (AttributeError, TypeError, ValueError, InvalidVersion):
+        return False
+
+
+def _dependency_is_satisfied(dep: str) -> bool:
+    """既存のimport可否を確認し、==指定だけmetadataで同版を再確認する。"""
+    requirement = None
+    if Requirement is not None:
+        try:
+            requirement = Requirement(dep)
+        except (InvalidRequirement, TypeError, ValueError):
+            requirement = None
+
+    # Explicit source URLs must still be installed from the approved source.
+    if requirement is not None and requirement.url:
+        return False
+    if requirement is None:
+        package_name = (
+            dep.split("==")[0]
+            .split(">=")[0]
+            .split("<=")[0]
+            .split(">")[0]
+            .split("<")[0]
+            .split("[")[0]
+            .strip()
+        )
+        exact_version = None
+        if "==" in dep:
+            match = re.search(r"==\s*([^,;\s]+)", dep)
+            if match and not match.group(1).endswith(".*"):
+                exact_version = match.group(1)
+    else:
+        package_name = requirement.name
+        exact_version = None
+        exact_specifiers = [
+            specifier for specifier in requirement.specifier if specifier.operator == "=="
+        ]
+        if "==" in dep and len(requirement.specifier) == 1 and len(exact_specifiers) == 1:
+            candidate = exact_specifiers[0].version
+            if not candidate.endswith(".*"):
+                exact_version = candidate
+
+    try:
+        importlib.import_module(package_name.replace("-", "_"))
+    except (ImportError, ModuleNotFoundError):
+        return False
+
+    if "==" not in dep:
+        return True
+    if exact_version is None:
+        return False
+
+    try:
+        installed_version = metadata.version(package_name)
+    except metadata.PackageNotFoundError:
+        return False
+    except Exception:
+        return False
+    return _versions_are_equal(installed_version, exact_version)
 
 class CustomToolManager:
     """
@@ -542,7 +717,7 @@ class CustomToolManager:
 
     @staticmethod
     def install_dependencies(deps: List[str]) -> Tuple[bool, str]:
-        """依存パッケージをチェックし、承認済みであれば uv pip でインストールする"""
+        """承認済み依存だけを、安全なuvまたはpip経由でインストールする。"""
         if not deps:
             return True, "No dependencies to install"
             
@@ -568,37 +743,44 @@ class CustomToolManager:
             
             return False, f"⚠️ セキュリティ保護のため、以下の新しい依存関係（バージョン指定含む）にはユーザーの承認が必要です: {', '.join(unauthorized)}。拡張ツール設定画面で承認してください。"
 
-        # 2. 承認済みパッケージのインストール実行
-        installed_results = []
+        # 2. 取得前に、既存環境だけで満足状況を確認する。全て満足ならuv/pipの版確認も行わない。
+        pending_deps = [dep for dep in deps if not _dependency_is_satisfied(dep)]
+        if not pending_deps:
+            return True, "All dependencies already satisfied"
+
+        # 3. 選択されたuvの版を先に確認する。古いvenv内uvをPATHのuvで迂回しない。
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        uv_path = os.path.join(base_dir, ".venv", "bin", "uv")
-        if not os.path.exists(uv_path):
-            uv_path = "uv"
-            
-        for dep in deps:
-            # インストール済みチェック（パッケージ名のみで判定）
-            pkg_name = dep.split("==")[0].split(">")[0].split("<")[0].split("[")[0].strip()
-            try:
-                # 既にインポート可能かチェック
-                importlib.import_module(pkg_name.replace("-", "_"))
-                # バージョン指定がある場合は、インストール済みでも uv pip install を呼ぶことで
-                # 指定バージョンへの固定（ダウングレード/アップグレード）を確実に実行させる
-                if "==" not in dep:
+        uv_path = _select_uv_executable(base_dir)
+        uv_ready, uv_detail = _probe_uv_version(uv_path)
+        installed_results = []
+        pip_ready = None
+        pip_detail = None
+
+        for dep in pending_deps:
+            if uv_ready:
+                try:
+                    # uv pip install --python <current_python> <package>
+                    subprocess.check_call([uv_path, "pip", "install", "--python", sys.executable, dep])
+                    installed_results.append(dep)
                     continue
-            except ImportError:
-                pass
+                except Exception as uv_error:
+                    uv_detail = f"uvのインストールに失敗しました: {uv_error}"
+
+            # uvがない、古い、版不明、または実行に失敗した場合だけpipをローカル検査する。
+            if pip_ready is None:
+                pip_ready, pip_detail = _local_pip_version()
+            if not pip_ready:
+                return False, (
+                    f"依存関係 {dep} を取得できません。{uv_detail}。"
+                    f"pipフォールバックには pip {MIN_PIP_VERSION} 以上が必要ですが、{pip_detail}。"
+                )
 
             try:
-                # uv pip install --python <current_python> <package>
-                subprocess.check_call([uv_path, "pip", "install", "--python", sys.executable, dep])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", dep])
                 installed_results.append(dep)
-            except Exception:
-                try:
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", dep])
-                    installed_results.append(dep)
-                except Exception as e2:
-                    return False, f"Failed to install {dep}: {str(e2)}"
-                    
+            except Exception as pip_error:
+                return False, f"Failed to install {dep}: {pip_error}"
+
         if installed_results:
             return True, f"✅ 承認済みパッケージをインストールしました: {', '.join(installed_results)}"
         return True, "All dependencies already satisfied"

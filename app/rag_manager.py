@@ -3,9 +3,12 @@
 import gc
 import ctypes
 import os
+import pickle
 import shutil
 import tempfile
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, List, Dict, Optional, Set, Tuple, Union
 import traceback
@@ -13,6 +16,8 @@ import logging
 import json
 import hashlib
 import math
+import re
+from collections import Counter
 from datetime import date, datetime
 
 from langchain_core.embeddings import Embeddings
@@ -28,6 +33,58 @@ import psutil
 
 # ロギング設定
 logger = logging.getLogger(__name__)
+
+
+class GeminiEmbedding2Embeddings(Embeddings):
+    """Gemini Embedding 2の非集約text embeddingをLangChainへ接続する。"""
+
+    MODEL_NAME = "gemini-embedding-2"
+    OUTPUT_DIMENSIONALITY = 3072
+
+    def __init__(self, api_key: str, *, client: Any = None):
+        if client is None:
+            from google import genai
+
+            client = genai.Client(api_key=api_key)
+        self.client = client
+
+    @staticmethod
+    def _document_text(text: str) -> str:
+        return f"title: none | text: {text}"
+
+    @staticmethod
+    def _query_text(text: str) -> str:
+        return f"task: search result | query: {text}"
+
+    def _embed_separately(self, texts: List[str]) -> List[List[float]]:
+        from google.genai import types
+
+        contents = [
+            types.Content(parts=[types.Part.from_text(text=text)])
+            for text in texts
+        ]
+        result = self.client.models.embed_content(
+            model=self.MODEL_NAME,
+            contents=contents,
+            config=types.EmbedContentConfig(
+                output_dimensionality=self.OUTPUT_DIMENSIONALITY,
+            ),
+        )
+        embeddings = [list(item.values) for item in (result.embeddings or [])]
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                "Gemini Embedding 2 returned an unexpected number of vectors: "
+                f"inputs={len(texts)}, vectors={len(embeddings)}"
+            )
+        return embeddings
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        if not texts:
+            return []
+        return self._embed_separately([self._document_text(text) for text in texts])
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._embed_separately([self._query_text(text)])[0]
 
 
 def _parse_episodic_date_range(metadata: Dict) -> Optional[Tuple[date, date]]:
@@ -57,6 +114,166 @@ def _parse_episodic_date_range(metadata: Dict) -> Optional[Tuple[date, date]]:
         return None
 
     return start_date, end_date
+
+
+def _episodic_summary_fingerprint(summary: object) -> str:
+    """エピソード本文の変更を検出するための安定したfingerprintを返す。"""
+    text = "" if summary is None else str(summary)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _episodic_record_id(episode: Dict) -> str:
+    """エピソードIDと本文fingerprintを含む差分更新用record IDを作る。"""
+    date_str = str(episode.get("date") or "unknown").strip() or "unknown"
+    episode_type = str(episode.get("type") or "episodic_memory").strip() or "episodic_memory"
+    episode_id = str(episode.get("id") or "").strip()
+    logical_id = episode_id or f"{episode_type}:{date_str}"
+    fingerprint = _episodic_summary_fingerprint(episode.get("summary", ""))
+    return f"episodic:{episode_type}:{logical_id}:{fingerprint}"
+
+
+def _collect_episodic_documents(
+    episodic_files: List[Path],
+    processed_records: Set[str],
+    existing_documents: Optional[List[Document]] = None,
+) -> List[Tuple[str, Document]]:
+    """月次／旧形式のエピソードを、通常dailyと補足を区別して収集する。"""
+    pending_items: List[Tuple[str, Document]] = []
+    for episodic_path in episodic_files:
+        try:
+            with open(episodic_path, "r", encoding="utf-8") as f:
+                episodes = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(episodes, list):
+            continue
+
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            summary = episode.get("summary", "")
+            if not summary:
+                continue
+
+            date_str = str(episode.get("date", "unknown") or "unknown")
+            episode_type = str(episode.get("type") or "episodic_memory")
+            fingerprint = _episodic_summary_fingerprint(summary)
+            record_id = _episodic_record_id(episode)
+            if record_id in processed_records:
+                continue
+            legacy_record_id = f"episodic:{date_str}"
+            if (
+                episode_type != "lite_return_addendum"
+                and legacy_record_id in processed_records
+                and _legacy_episode_content_matches(episode, existing_documents or [])
+            ):
+                continue
+
+            metadata = {
+                "source": episodic_path.name,
+                "type": episode_type,
+                "date": date_str,
+                "episode_fingerprint": fingerprint,
+            }
+            episode_id = str(episode.get("id") or "").strip()
+            if episode_id:
+                metadata["episode_id"] = episode_id
+            for key in ("arousal", "created_at", "compressed", "monthly_compressed"):
+                if key in episode:
+                    metadata[key] = episode[key]
+
+            content = f"日付: {date_str}\n内容: {summary}"
+            pending_items.append((record_id, Document(page_content=content, metadata=metadata)))
+
+    return pending_items
+
+
+def _index_documents(index: object) -> List[Document]:
+    """FAISS docstoreからDocumentを読み取る。索引を変更せずstubにも対応する。"""
+    docstore = getattr(index, "docstore", None)
+    documents = getattr(docstore, "_dict", None)
+    if not isinstance(documents, dict):
+        return []
+    return [doc for doc in documents.values() if isinstance(doc, Document)]
+
+
+def _legacy_episode_content_matches(
+    episode: Dict,
+    existing_documents: List[Document],
+) -> bool:
+    """旧形式の同日ベクトル本文が現行episode本文と一致するか確認する。
+
+    旧collectorはspecial typeもepisodic_memoryとして保存していたため、
+    帰宅補足を除く既存typeは本文一致時に旧ベクトルを再利用する。
+    """
+    if not existing_documents:
+        return False
+    episode_type = str(episode.get("type") or "episodic_memory")
+    if episode_type == "lite_return_addendum":
+        return False
+    date_str = str(episode.get("date") or "").strip()
+    summary = str(episode.get("summary") or "")
+    if not date_str or not summary:
+        return False
+
+    expected = f"日付: {date_str}\n内容: {summary}"
+    chunks = [
+        str(doc.page_content)
+        for doc in existing_documents
+        if (doc.metadata or {}).get("type") == "episodic_memory"
+        and str((doc.metadata or {}).get("date") or "").strip() == date_str
+    ]
+    if not chunks:
+        return False
+    if len(chunks) == 1 and chunks[0] == expected:
+        return True
+
+    def normalize_chunk(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip()
+
+    expected_chunk_sets = []
+    splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
+    for source_text in (expected, normalize_chunk(expected)):
+        expected_chunk_sets.append(
+            Counter(
+                normalize_chunk(chunk)
+                for chunk in splitter.split_text(source_text)
+                if len(chunk.strip()) >= 10
+                and chunk.strip() not in {"*", "-", "#", "**", "***", "---", "##", "###", "####"}
+            )
+        )
+    actual_chunks = Counter(normalize_chunk(chunk) for chunk in chunks if len(chunk.strip()) >= 10)
+    if any(actual_chunks == expected_chunks for expected_chunks in expected_chunk_sets):
+        return True
+
+    # 部分一致やchunk区間の被覆では改訂を同一本文と誤認するため、
+    # 旧形式の互換判定は期待チャンク集合の完全一致までで終了する。
+    return False
+
+
+def _collect_current_episode_fingerprints(episodic_files: List[Path]) -> Dict[str, str]:
+    """現行JSONにあるIDごとの本文fingerprintを返す。"""
+    current: Dict[str, str] = {}
+    for episodic_path in episodic_files:
+        try:
+            with open(episodic_path, "r", encoding="utf-8") as f:
+                episodes = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(episodes, list):
+            continue
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            episode_id = str(episode.get("id") or "").strip()
+            if not episode_id:
+                continue
+            episode_type = str(episode.get("type") or "episodic_memory")
+            current.setdefault(
+                f"{episode_type}:{episode_id}",
+                _episodic_summary_fingerprint(episode.get("summary", "")),
+            )
+    return current
 
 
 def _date_ranges_overlap(left: Tuple[date, date], right: Tuple[date, date]) -> bool:
@@ -166,13 +383,139 @@ def _collect_identity_documents(memory_dir: Path, processed_records: Set[str]) -
     return pending_items, current_hashes
 
 
+_NOTE_TIMESTAMP_RE = re.compile(
+    r"(?m)^\s*📝\s*(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}))?\s*$"
+)
+
+
+def _split_timestamped_note_entries(content: str) -> List[Tuple[str, str]]:
+    """タイムスタンプ付きノートを、日時の出典を失わないエントリ単位へ分割する。"""
+    text = str(content or "")
+    matches = list(_NOTE_TIMESTAMP_RE.finditer(text))
+    if not matches:
+        return []
+
+    entries: List[Tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[start:end].strip()
+        body = re.sub(r"^(?:\s*---\s*)+", "", body).strip()
+        body = re.sub(r"(?:\s*---\s*)+$", "", body).strip()
+        if not body:
+            continue
+        recorded_at = match.group(1)
+        if match.group(2):
+            recorded_at += f" {match.group(2)}"
+        entries.append((recorded_at, body))
+    return entries
+
+
+def _collect_current_note_documents(
+    notes_dir: Path,
+    processed_records: Set[str],
+) -> List[Tuple[str, Document]]:
+    """現行ノートを収集し、創作ノートだけは日時単位・創作区分で索引化する。"""
+    pending_items: List[Tuple[str, Document]] = []
+    for filename in [constants.RESEARCH_NOTES_FILENAME, constants.CREATIVE_NOTES_FILENAME]:
+        note_path = notes_dir / filename
+        if not note_path.exists():
+            continue
+        try:
+            content = note_path.read_text(encoding="utf-8")
+            if not content.strip():
+                continue
+
+            if filename == constants.CREATIVE_NOTES_FILENAME:
+                entries = _split_timestamped_note_entries(content)
+                if entries:
+                    for recorded_at, body in entries:
+                        content_hash = hashlib.md5(body.encode()).hexdigest()[:12]
+                        record_id = f"creative_note:{recorded_at}:{content_hash}"
+                        if record_id in processed_records:
+                            continue
+                        dated_content = (
+                            "【創作ノートの過去記録】\n"
+                            f"記録日時: {recorded_at}\n"
+                            "注意: 創作表現であり、現在の事実や予定を示す根拠ではありません。\n"
+                            f"{body}"
+                        )
+                        pending_items.append((
+                            record_id,
+                            Document(
+                                page_content=dated_content,
+                                metadata={
+                                    "source": filename,
+                                    "type": "creative_note",
+                                    "path": str(note_path),
+                                    "date": recorded_at.split()[0],
+                                    "created_at": recorded_at,
+                                    "epistemic_status": "creative",
+                                },
+                            ),
+                        ))
+                    continue
+
+                # 旧形式で日時がない場合も、創作物であることを明示する。
+                content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
+                record_id = f"creative_note:{filename}:{content_hash}"
+                if record_id not in processed_records:
+                    pending_items.append((
+                        record_id,
+                        Document(
+                            page_content=(
+                                "【創作ノートの記録】\n"
+                                "注意: 記録日時不明の創作表現であり、現在の事実や予定を示す根拠ではありません。\n"
+                                f"{content}"
+                            ),
+                            metadata={
+                                "source": filename,
+                                "type": "creative_note",
+                                "path": str(note_path),
+                                "epistemic_status": "creative",
+                            },
+                        ),
+                    ))
+                continue
+
+            content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
+            record_id = f"note:{filename}:{content_hash}"
+            if record_id not in processed_records:
+                pending_items.append((
+                    record_id,
+                    Document(
+                        page_content=content,
+                        metadata={
+                            "source": filename,
+                            "type": "research_notes",
+                            "path": str(note_path),
+                        },
+                    ),
+                ))
+        except Exception as e:
+            print(f"  - ノート読み込みエラー ({filename}): {e}")
+    return pending_items
+
+
+def _is_legacy_unprovenanced_creative_document(doc: Document) -> bool:
+    """旧索引に残る、日時・創作区分なしのcreative_notes全文チャンクを識別する。"""
+    metadata = getattr(doc, "metadata", {}) or {}
+    return (
+        str(metadata.get("source") or "").casefold()
+        == constants.CREATIVE_NOTES_FILENAME.casefold()
+        and metadata.get("type") == "note"
+    )
+
+
 def _dedupe_scored_rag_results(
     scored_results: List[ScoredRAGResult],
     current_identity_hashes: Optional[Dict[str, str]] = None,
+    current_episode_fingerprints: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[ScoredRAGResult], int, int, int]:
     """
     RAG検索結果をスコア順のまま先勝ちで重複除去する。
     既存の先頭100文字content dedupに加え、episodic_memoryは日付レンジが重なるものを除外する。
+    現行JSONとfingerprintが一致しないepisode revisionも検索時だけ除外する。
     identity は現行ハッシュ以外、および旧diary型で残った memory_identity.txt を検索結果から除外する。
     """
     seen_contents = set()
@@ -182,6 +525,22 @@ def _dedupe_scored_rag_results(
     episodic_duplicate_count = 0
     identity_stale_count = 0
     identity_hashes = current_identity_hashes or {}
+    episode_fingerprints = current_episode_fingerprints or {}
+    current_episode_result_keys = set()
+    for candidate_doc, *_ in scored_results:
+        candidate_metadata = getattr(candidate_doc, "metadata", {}) or {}
+        candidate_type = str(candidate_metadata.get("type") or "episodic_memory")
+        candidate_id = str(candidate_metadata.get("episode_id") or "").strip()
+        candidate_fingerprint = str(candidate_metadata.get("episode_fingerprint") or "").strip()
+        candidate_key = f"{candidate_type}:{candidate_id}"
+        if (
+            candidate_id
+            and candidate_fingerprint
+            and episode_fingerprints.get(candidate_key) == candidate_fingerprint
+        ):
+            current_episode_result_keys.add(
+                (candidate_type, str(candidate_metadata.get("date") or "").strip())
+            )
 
     for doc, sim_score, arousal, decay, comp_score in scored_results:
         source = doc.metadata.get("source")
@@ -190,6 +549,31 @@ def _dedupe_scored_rag_results(
         if current_identity_hash:
             if doc_type != "identity" or doc.metadata.get("identity_hash") != current_identity_hash:
                 identity_stale_count += 1
+                continue
+
+        episode_id = str(doc.metadata.get("episode_id") or "").strip()
+        episode_fingerprint = str(doc.metadata.get("episode_fingerprint") or "").strip()
+        if episode_id and episode_fingerprint:
+            episode_key = f"{doc_type or 'episodic_memory'}:{episode_id}"
+            current_fingerprint = episode_fingerprints.get(episode_key)
+            if current_fingerprint and current_fingerprint != episode_fingerprint:
+                # 旧revisionは既存索引から削除せず、検索時だけ現行JSONと照合して隠す。
+                # 返却tupleの互換性を維持するため、content重複件数へ合算する。
+                content_duplicate_count += 1
+                continue
+        elif episode_id:
+            episode_key = f"{doc_type or 'episodic_memory'}:{episode_id}"
+            if episode_key in episode_fingerprints and (
+                str(doc.metadata.get("type") or "episodic_memory"),
+                str(doc.metadata.get("date") or "").strip(),
+            ) in current_episode_result_keys:
+                content_duplicate_count += 1
+                continue
+        elif doc_type == "episodic_memory":
+            legacy_date_key = ("episodic_memory", str(doc.metadata.get("date") or "").strip())
+            if legacy_date_key in current_episode_result_keys:
+                # 移行前のIDなしdailyは、現行revisionが同じ検索候補にある時だけ隠す。
+                content_duplicate_count += 1
                 continue
 
         content_key = doc.page_content[:100].strip()
@@ -272,6 +656,8 @@ class RotatingEmbeddings(Embeddings):
 class RAGManager:
     # インデックスをメモリ上に保持するキャッシュ {str(path): (FAISS_db, timestamp)}
     _index_cache: Dict[str, Tuple[FAISS, float]] = {}
+    _index_cache_lock = threading.RLock()
+    _legacy_document_cache: Dict[str, Tuple[float, List[Document]]] = {}
     _model_mismatch_notices: Set[str] = set()
     INDEX_LABELS = {
         "faiss_index_static": "記憶索引",
@@ -287,9 +673,11 @@ class RAGManager:
         メモリ上のインデックスキャッシュをクリアする。
         OSレベルのファイルロックを解除するために、マイグレーション前などに呼び出す。
         """
-        if cls._index_cache:
-            print(f"[RAGManager] Clearing {len(cls._index_cache)} cached indices from memory.")
-            cls._index_cache.clear()
+        with cls._index_cache_lock:
+            if cls._index_cache:
+                print(f"[RAGManager] Clearing {len(cls._index_cache)} cached indices from memory.")
+                cls._index_cache.clear()
+            cls._legacy_document_cache.clear()
         gc.collect() # メモリ解放とファイルハンドル解放を促す
         if os.name == "posix":
             try:
@@ -297,9 +685,10 @@ class RAGManager:
             except Exception:
                 pass
 
-    def __init__(self, room_name: str, api_key: str):
+    def __init__(self, room_name: str, api_key: str, *, pin_api_key: bool = False):
         self.room_name = room_name
         self.api_key = api_key
+        self.pin_api_key = bool(pin_api_key)
         
         # --- [API Key Rotation Limit] ---
         # このセッションで試行したキーとその回数を記録
@@ -363,7 +752,7 @@ class RAGManager:
         # [2026-06-23 FIX] エンベディングは内部処理。共通設定のキー/ローテーションに従い、
         # ルーム個別の有料キー等を波及させない（最終応答のみ個別設定に従う方針と一貫）。
         # Gemini API エンベディング時のみ対象（local/OpenAIは自前の設定を使う）。
-        if self.embedding_mode == "api":
+        if self.embedding_mode == "api" and not self.pin_api_key:
             try:
                 common_key = config_manager.get_active_gemini_api_key(None)
                 if common_key:
@@ -455,6 +844,65 @@ class RAGManager:
             result["reason"] = "compatible"
         return result
 
+    @staticmethod
+    def _is_retired_preview_index(inspection: Dict[str, Any]) -> bool:
+        return (
+            inspection.get("exists")
+            and inspection.get("reason") == "model_mismatch"
+            and inspection.get("saved_model_id") == "google:gemini-embedding-2-preview"
+            and inspection.get("current_model_id") == "google:gemini-embedding-2"
+        )
+
+    def _legacy_keyword_results(self, target_path: Path, query: str, k: int) -> List[Tuple[Document, float]]:
+        """旧previewの文書だけをキーワード検索する。ベクトル比較・API呼出し・索引変更はしない。"""
+        inspection = self.inspect_index_compatibility(target_path)
+        if not self._is_retired_preview_index(inspection):
+            return []
+        record = Path(target_path) / "index.pkl"
+        if not record.is_file() or record.is_symlink():
+            return []
+        try:
+            cache_key = str(record.resolve())
+            mtime = record.stat().st_mtime_ns
+            with RAGManager._index_cache_lock:
+                cached = RAGManager._legacy_document_cache.get(cache_key)
+            if cached is not None and cached[0] == mtime:
+                documents = cached[1]
+            else:
+                # Nexus Ark自身が保存したFAISS docstoreを既存のload_localと同じ信頼境界で読む。
+                with record.open("rb") as stream:
+                    docstore, id_map = pickle.load(stream)
+                documents = [
+                    docstore.search(doc_id)
+                    for _, doc_id in sorted(id_map.items())
+                ]
+                documents = [doc for doc in documents if isinstance(doc, Document)]
+                with RAGManager._index_cache_lock:
+                    RAGManager._legacy_document_cache[cache_key] = (mtime, documents)
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, pickle.UnpicklingError) as exc:
+            print(f"--- [RAG Legacy Search] 旧索引文書を読めません: {type(exc).__name__} ---")
+            return []
+
+        parts = re.findall(r"[a-z0-9_]{2,}|[぀-ヿ㐀-鿿]{2,}|[㐀-鿿]", query.casefold())
+        terms = []
+        for part in parts:
+            terms.append((part, 3 if len(part) > 2 else 2))
+            if len(part) >= 4 and not part.isascii():
+                terms.extend((part[i:i + 2], 1) for i in range(len(part) - 1))
+        if not terms:
+            return []
+        total_weight = sum(weight for _, weight in terms)
+        matches = []
+        for doc in documents:
+            body = doc.page_content.casefold()
+            coverage = sum(weight for term, weight in terms if term in body) / total_weight
+            if coverage <= 0:
+                continue
+            # 通常のRAG閾値内の距離へ写像するが、意味検索との同等性は主張しない。
+            matches.append((doc, 1.1 - min(coverage, 1.0)))
+        matches.sort(key=lambda pair: pair[1])
+        return matches[:max(0, k)]
+
     def _notify_incompatible_index(self, inspection: Dict[str, Any]) -> None:
         """同じ不一致をプロセス中1回だけ、索引名付きで通知する。"""
         if inspection.get("compatible") or not inspection.get("exists"):
@@ -477,10 +925,25 @@ class RAGManager:
             return
         self._model_mismatch_notices.add(signature)
 
-        msg = (
-            f"RAG警告: {label}のモデル（{saved_model_id}）と現在の設定（{current_model_id}）が一致しません。"
-            "旧索引への追記と検索を停止しました。記憶・ノートの「🗑️ 索引を初期化して再構築」を実行してください。"
-        )
+        if (
+            saved_model_id == "google:gemini-embedding-2-preview"
+            and current_model_id == "google:gemini-embedding-2"
+        ):
+            msg = (
+                f"RAG警告: {label}はGoogleのGemini Embedding 2プレビュー版（{saved_model_id}）で作成されています。"
+                f"現在の設定は安定版（{current_model_id}）です。Nexus Arkの更新で設定が自動的に切り替わった場合も、この警告が表示されます。"
+                "異なるモデルのベクトルを混ぜないため、旧索引への追記と意味検索を停止しました。"
+                "旧索引内の文書はローカルのキーワード検索で参照します。"
+                "意味検索と索引更新を使いたい場合のみ、中央「記憶・ノート」→「記憶」→"
+                "「🛠️ 記憶のメンテナンス (手動実行)」→「🔍 記憶索引 (RAG) の再構築」にある"
+                "「🗑️ 索引を初期化して再構築」を実行してください。"
+                "再構築にはEmbedding APIの利用料金と時間がかかる場合があります。"
+            )
+        else:
+            msg = (
+                f"RAG警告: {label}のモデル（{saved_model_id}）と現在の設定（{current_model_id}）が一致しません。"
+                "旧索引への追記と検索を停止しました。記憶・ノートの「🗑️ 索引を初期化して再構築」を実行してください。"
+            )
         utils.add_system_notice(msg, level="warning")
         print(f"--- [RAG Model Guard] {msg} ---")
 
@@ -490,6 +953,12 @@ class RAGManager:
         if not inspection.get("exists") or inspection.get("compatible"):
             return None
         self._notify_incompatible_index(inspection)
+        if self._is_retired_preview_index(inspection):
+            return (
+                f"⚠️ {inspection['label']}: 旧preview索引を保護するため更新を中止しました。"
+                "旧文書はローカルのキーワード検索で参照できます。"
+                "意味検索と索引更新が必要な場合のみ、料金と時間を確認して完全再構築を選んでください。"
+            )
         return (
             f"⚠️ {inspection['label']}: 既存索引のモデルが現在設定と一致しないため更新を中止しました。"
             "「🗑️ 索引を初期化して再構築」を実行してください。"
@@ -617,12 +1086,17 @@ class RAGManager:
                 print(f"  - 処置: Google API ({model_name}) にフォールバックします。")
                 print(f"!"*60 + "\n")
                 
-                from langchain_google_genai import GoogleGenerativeAIEmbeddings
-                self.actual_embeddings[task_type] = GoogleGenerativeAIEmbeddings(
-                    model=model_name,
-                    google_api_key=self.api_key,
-                    task_type=task_type
-                )
+                if model_name == GeminiEmbedding2Embeddings.MODEL_NAME:
+                    self.actual_embeddings[task_type] = GeminiEmbedding2Embeddings(
+                        self.api_key
+                    )
+                else:
+                    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+                    self.actual_embeddings[task_type] = GoogleGenerativeAIEmbeddings(
+                        model=model_name,
+                        google_api_key=self.api_key,
+                        task_type=task_type
+                    )
         else:
             # API エンベディングを使用 (Google または OpenAI)
             settings = config_manager.get_internal_model_settings()
@@ -656,12 +1130,17 @@ class RAGManager:
 
             if provider == "google":
                 # Gemini API エンベディングを使用
-                from langchain_google_genai import GoogleGenerativeAIEmbeddings
-                self.actual_embeddings[task_type] = GoogleGenerativeAIEmbeddings(
-                    model=model_name,
-                    google_api_key=self.api_key,
-                    task_type=task_type
-                )
+                if model_name == GeminiEmbedding2Embeddings.MODEL_NAME:
+                    self.actual_embeddings[task_type] = GeminiEmbedding2Embeddings(
+                        self.api_key
+                    )
+                else:
+                    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+                    self.actual_embeddings[task_type] = GoogleGenerativeAIEmbeddings(
+                        model=model_name,
+                        google_api_key=self.api_key,
+                        task_type=task_type
+                    )
                 print(f"[RAGManager] Gemini API エンベディング ({self._get_embedding_model_id()}) を初期化しました (Task: {task_type}, Key: {config_manager.get_key_name_by_value(self.api_key)})")
             
         print(f"--- [PERF] RAGManager._get_actual_embeddings took: {time.time() - perf_start:.4f}s ---")
@@ -683,6 +1162,9 @@ class RAGManager:
             "switched": キー切替済み（新しいキーでリトライ可能）
             False:      リトライ不可（全キー枯渇、または日次上限でローテーションOFF）
         """
+        if self.pin_api_key:
+            return False
+
         if not ("429" in error_str or "ResourceExhausted" in error_str):
             return False
 
@@ -802,6 +1284,20 @@ class RAGManager:
             except Exception:
                 return {}
         return {}
+
+    def _load_current_episode_fingerprints(self) -> Dict[str, str]:
+        """検索時に旧revisionを除外するため、現行エピソード本文のhashを読む。"""
+        room_dir = getattr(self, "room_dir", None)
+        if room_dir is None:
+            return {}
+        episodic_dir = room_dir / "memory" / "episodic"
+        legacy_episodic_path = room_dir / "memory" / "episodic_memory.json"
+        episodic_files: List[Path] = []
+        if legacy_episodic_path.exists():
+            episodic_files.append(legacy_episodic_path)
+        if episodic_dir.exists():
+            episodic_files.extend(sorted(episodic_dir.glob("*.json")))
+        return _collect_current_episode_fingerprints(episodic_files)
 
     def _save_current_identity_hashes(self, current_hashes: Dict[str, str]) -> None:
         try:
@@ -1029,8 +1525,8 @@ class RAGManager:
 
                     # キャッシュをクリア
                     cache_key = str(target_path.absolute())
-                    if cache_key in RAGManager._index_cache:
-                        del RAGManager._index_cache[cache_key]
+                    with RAGManager._index_cache_lock:
+                        RAGManager._index_cache.pop(cache_key, None)
 
                     # 成功
                     self._cleanup_old_indices(parent_dir, target_path.name)
@@ -1080,8 +1576,10 @@ class RAGManager:
         mtime = target_path.stat().st_mtime
         
         # キャッシュの有効性チェック
-        if target_abs_path in RAGManager._index_cache:
-            cache_db, cache_mtime = RAGManager._index_cache[target_abs_path]
+        with RAGManager._index_cache_lock:
+            cached = RAGManager._index_cache.get(target_abs_path)
+        if cached is not None:
+            cache_db, cache_mtime = cached
             if cache_mtime == mtime:
                 print(f"--- [Cache Hit] RAGManager._safe_load_index: {target_path.name} ---")
                 return cache_db
@@ -1120,7 +1618,8 @@ class RAGManager:
                 )
             
             # キャッシュに保存（この時点で db はメモリ上に展開されている）
-            RAGManager._index_cache[target_abs_path] = (db, mtime)
+            with RAGManager._index_cache_lock:
+                RAGManager._index_cache[target_abs_path] = (db, mtime)
             print(f"--- [PERF] RAGManager._safe_load_index({target_path.name}) took: {time.time() - perf_start:.4f}s ---")
             return db
                 
@@ -1212,6 +1711,8 @@ class RAGManager:
                     break 
                 
                 except Exception as e:
+                    if self.pin_api_key:
+                        raise
                     error_str = str(e)
                     print(f"      ! ベクトル化エラー (試行 {attempt+1}/{max_retries}): {e}")
                     if "429" in error_str or "ResourceExhausted" in error_str:
@@ -1294,6 +1795,8 @@ class RAGManager:
         report("記憶索引を更新中: 過去ログ、エピソード記憶、夢日記、日記ファイルの差分を確認...")
         
         processed_records = self._load_processed_record()
+        static_db = self._safe_load_index(self.static_index_path)
+        existing_documents = _index_documents(static_db)
         
         # 処理対象のキュー: (record_id, document) のタプルリスト
         pending_items: List[Tuple[str, Document]] = []
@@ -1322,21 +1825,13 @@ class RAGManager:
         if episodic_dir.exists():
             episodic_files.extend(sorted(episodic_dir.glob("*.json")))
         
-        for episodic_path in episodic_files:
-            try:
-                with open(episodic_path, 'r', encoding='utf-8') as f:
-                    episodes = json.load(f)
-                if isinstance(episodes, list):
-                    for ep in episodes:
-                        date_str = ep.get('date', 'unknown')
-                        record_id = f"episodic:{date_str}"
-                        if record_id not in processed_records:
-                            summary = ep.get('summary', '')
-                            if summary:
-                                content = f"日付: {date_str}\n内容: {summary}"
-                                doc = Document(page_content=content, metadata={"source": episodic_path.name, "type": "episodic_memory", "date": date_str})
-                                pending_items.append((record_id, doc))
-            except Exception: pass
+        pending_items.extend(
+            _collect_episodic_documents(
+                episodic_files,
+                processed_records,
+                existing_documents=existing_documents,
+            )
+        )
 
 
         # 3. 夢日記収集
@@ -1349,30 +1844,10 @@ class RAGManager:
         pending_items.extend(identity_items)
         self._save_current_identity_hashes(current_identity_hashes)
 
-        # [2026-02-02] ノート類収集 (research_notes, creative_notes およびアーカイブ)
+        # ノート類収集。創作ノートは日時・創作区分を保持したエントリ単位で収集する。
         notes_dir = self.room_dir / constants.NOTES_DIR_NAME
         if notes_dir.exists():
-            # 1. 最新のノート (research_notes.md, creative_notes.md)
-            for filename in [constants.RESEARCH_NOTES_FILENAME, constants.CREATIVE_NOTES_FILENAME]:
-                note_path = notes_dir / filename
-                if note_path.exists():
-                    try:
-                        content = note_path.read_text(encoding="utf-8")
-                        if content.strip():
-                            content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
-                            record_id = f"note:{filename}:{content_hash}"
-                            if record_id not in processed_records:
-                                doc = Document(
-                                    page_content=content,
-                                    metadata={
-                                        "source": filename,
-                                        "type": "note",
-                                        "path": str(note_path)
-                                    }
-                                )
-                                pending_items.append((record_id, doc))
-                    except Exception as e:
-                        print(f"  - ノート読み込みエラー ({filename}): {e}")
+            pending_items.extend(_collect_current_note_documents(notes_dir, processed_records))
 
             # 2. アーカイブされたノート (notes/archives/*.md)
             archives_dir = notes_dir / "archives"
@@ -1403,7 +1878,6 @@ class RAGManager:
             total_pending = len(pending_items)
             report(f"新規追加アイテム: {total_pending}件。処理中...")
             
-            static_db = self._safe_load_index(self.static_index_path)
             SAVE_INTERVAL = 5 
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
             processed_count = 0
@@ -1458,6 +1932,8 @@ class RAGManager:
         yield (0, 0, "記憶索引を更新中: 差分を確認...")
         
         processed_records = self._load_processed_record()
+        static_db = self._safe_load_index(self.static_index_path)
+        existing_documents = _index_documents(static_db)
         pending_items: List[Tuple[str, Document]] = []
         
         # 1. 過去ログ収集
@@ -1484,21 +1960,13 @@ class RAGManager:
         if episodic_dir.exists():
             episodic_files.extend(sorted(episodic_dir.glob("*.json")))
         
-        for episodic_path in episodic_files:
-            try:
-                with open(episodic_path, 'r', encoding='utf-8') as f:
-                    episodes = json.load(f)
-                if isinstance(episodes, list):
-                    for ep in episodes:
-                        date_str = ep.get('date', 'unknown')
-                        record_id = f"episodic:{date_str}"
-                        if record_id not in processed_records:
-                            summary = ep.get('summary', '')
-                            if summary:
-                                content = f"日付: {date_str}\n内容: {summary}"
-                                doc = Document(page_content=content, metadata={"source": episodic_path.name, "type": "episodic_memory", "date": date_str})
-                                pending_items.append((record_id, doc))
-            except Exception: pass
+        pending_items.extend(
+            _collect_episodic_documents(
+                episodic_files,
+                processed_records,
+                existing_documents=existing_documents,
+            )
+        )
 
 
         # 3. 夢日記収集
@@ -1511,30 +1979,10 @@ class RAGManager:
         pending_items.extend(identity_items)
         self._save_current_identity_hashes(current_identity_hashes)
 
-        # [2026-02-02] ノート類収集 (research_notes, creative_notes およびアーカイブ)
+        # ノート類収集。創作ノートは日時・創作区分を保持したエントリ単位で収集する。
         notes_dir = self.room_dir / constants.NOTES_DIR_NAME
         if notes_dir.exists():
-            # 1. 最新のノート (research_notes.md, creative_notes.md)
-            for filename in [constants.RESEARCH_NOTES_FILENAME, constants.CREATIVE_NOTES_FILENAME]:
-                note_path = notes_dir / filename
-                if note_path.exists():
-                    try:
-                        content = note_path.read_text(encoding="utf-8")
-                        if content.strip():
-                            content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
-                            record_id = f"note:{filename}:{content_hash}"
-                            if record_id not in processed_records:
-                                doc = Document(
-                                    page_content=content,
-                                    metadata={
-                                        "source": filename,
-                                        "type": "note",
-                                        "path": str(note_path)
-                                    }
-                                )
-                                pending_items.append((record_id, doc))
-                    except Exception as e:
-                        print(f"  - ノート読み込みエラー ({filename}): {e}")
+            pending_items.extend(_collect_current_note_documents(notes_dir, processed_records))
 
             # 2. アーカイブされたノート (notes/archives/*.md)
             archives_dir = notes_dir / "archives"
@@ -1564,7 +2012,6 @@ class RAGManager:
         total_pending = len(pending_items)
         yield (0, total_pending, f"新規追加アイテム: {total_pending}件。処理中...")
         
-        static_db = self._safe_load_index(self.static_index_path)
         SAVE_INTERVAL = 5
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
         processed_count = 0
@@ -1678,7 +2125,13 @@ class RAGManager:
         """
         # [2026-02-11 FIX] 試行済みキーをリセット
         self._reset_rotation_session()
-        
+
+        blocked_message = self._incremental_update_block_message(self.dynamic_index_path)
+        if blocked_message:
+            if status_callback:
+                status_callback(blocked_message)
+            return blocked_message
+
         def report(message):
             print(f"--- [RAG Knowledge] {message}")
             if status_callback: status_callback(message)
@@ -1951,18 +2404,30 @@ class RAGManager:
         # 2. それ以外はLLMで分類
         if intent and intent in constants.INTENT_WEIGHTS:
             weights = constants.INTENT_WEIGHTS[intent]
-            print(f"--- [RAG Search Debug] Query: '{query}' (Intent: {intent} [pre-classified], Threshold: {score_threshold}) ---")
+            print(
+                f"--- [RAG Search Debug] Query: '{query}' "
+                f"(Intent: {intent} [pre-classified], Threshold: {score_threshold}) ---",
+                flush=True,
+            )
         elif enable_intent_aware and self.api_key:
             intent_start = time.time()
             intent_info = self.classify_query_intent(query)
             print(f"--- [PERF] RAGManager.search: classify_query_intent took: {time.time() - intent_start:.4f}s ---")
             intent = intent_info["intent"]
             weights = intent_info["weights"]
-            print(f"--- [RAG Search Debug] Query: '{query}' (Intent: {intent}, Threshold: {score_threshold}) ---")
+            print(
+                f"--- [RAG Search Debug] Query: '{query}' "
+                f"(Intent: {intent}, Threshold: {score_threshold}) ---",
+                flush=True,
+            )
         else:
             intent = constants.DEFAULT_INTENT
             weights = constants.INTENT_WEIGHTS[constants.DEFAULT_INTENT]
-            print(f"--- [RAG Search Debug] Query: '{query}' (Intent: disabled, Threshold: {score_threshold}) ---")
+            print(
+                f"--- [RAG Search Debug] Query: '{query}' "
+                f"(Intent: disabled, Threshold: {score_threshold}) ---",
+                flush=True,
+            )
 
         load_start = time.time()
         dynamic_db = (
@@ -1975,6 +2440,26 @@ class RAGManager:
             if normalized_scope in {"all", "memory"}
             else None
         )
+        legacy_results = []
+        if normalized_scope in {"all", "knowledge"} and dynamic_db is None:
+            legacy_knowledge = self._legacy_keyword_results(self.dynamic_index_path, query, k)
+            if intent in {"temporal", "relational", "emotional"}:
+                system_specs = {
+                    "memory_system_specification.md", "nexus_ark_specification.md",
+                    "ai_development_guidelines.md", "gradio_notes.md",
+                    "ui_implementation_patterns.md", "settings_persistence_guidelines.md",
+                }
+                legacy_knowledge = [
+                    (doc, score) for doc, score in legacy_knowledge
+                    if str(doc.metadata.get("source", "")).lower() not in system_specs
+                ]
+            legacy_results.extend(legacy_knowledge)
+        if normalized_scope in {"all", "memory"} and static_db is None:
+            legacy_results.extend(
+                (doc, score)
+                for doc, score in self._legacy_keyword_results(self.static_index_path, query, k)
+                if not _is_legacy_unprovenanced_creative_document(doc)
+            )
         print(
             f"--- [PERF] RAGManager.search: safe_load_index "
             f"(scope={normalized_scope}) took: {time.time() - load_start:.4f}s ---"
@@ -1984,7 +2469,7 @@ class RAGManager:
         max_retries = 5
         attempt = 0
         while attempt < max_retries:
-            results_with_scores = []
+            results_with_scores = list(legacy_results)
             error_429_detected = False
             
             # 1. 動的インデックス検索
@@ -2042,6 +2527,13 @@ class RAGManager:
                 try:
                     search_start = time.time()
                     static_results = static_db.similarity_search_with_score(query, k=k)
+                    # 旧索引の創作ノート全文チャンクは日時を持たず、過去の創作を現在の事実・予定へ
+                    # 誤変換させるため除外する。新形式creative_noteは日時と創作区分を保持する。
+                    static_results = [
+                        (doc, score)
+                        for doc, score in static_results
+                        if not _is_legacy_unprovenanced_creative_document(doc)
+                    ]
                     print(f"--- [PERF] RAGManager.search: static similarity_search took: {time.time() - search_start:.4f}s ---")
                     results_with_scores.extend(static_results)
                 except Exception as e:
@@ -2098,9 +2590,15 @@ class RAGManager:
         # [2026-07-04 追加] episodic_memory の同一日/日付レンジ重複除去
         # [2026-07-08 追加] identity の旧版チャンクと旧diary型チャンクを除去
         current_identity_hashes = self._load_current_identity_hashes()
+        current_episode_fingerprints = (
+            self._load_current_episode_fingerprints()
+            if normalized_scope in {"all", "memory"}
+            else {}
+        )
         unique_results, content_duplicate_count, episodic_duplicate_count, identity_stale_count = _dedupe_scored_rag_results(
             scored_results,
             current_identity_hashes=current_identity_hashes,
+            current_episode_fingerprints=current_episode_fingerprints,
         )
         duplicate_count = content_duplicate_count + episodic_duplicate_count + identity_stale_count
 
@@ -2130,24 +2628,135 @@ class RAGManager:
             if decay > 0.9:
                 markers += " 🆕"
             
-            print(f"  - {status_icon} Sim: {sim_score:.3f} | Arousal: {arousal:.2f} | Decay: {decay:.2f} | Comp: {comp_score:.3f}{markers} | {clean_content}...")
+            print(
+                f"  - {status_icon} Sim: {sim_score:.3f} | Arousal: {arousal:.2f} "
+                f"| Decay: {decay:.2f} | Comp: {comp_score:.3f}{markers} "
+                f"| {clean_content}...",
+                flush=True,
+            )
             
             if is_relevant:
                 filtered_docs.append(doc)
         
         if arousal_boost_count > 0:
-            print(f"  - [RAG] 高Arousal記憶: {arousal_boost_count}件がブースト対象")
+            print(
+                f"  - [RAG] 高Arousal記憶: {arousal_boost_count}件がブースト対象",
+                flush=True,
+            )
 
         return filtered_docs[:k]
 
-    def _set_rebuild_failure(self, errors: List[str]) -> None:
-        message = "完全再構築に失敗しました: " + " / ".join(errors)
+    def _set_rebuild_failure(self, errors: List[str], backup_dir: Optional[Path] = None) -> None:
+        details = list(errors)
+        if backup_dir is not None:
+            details.append(f"旧索引はrag_data/backups/{backup_dir.name}に保持しました")
+        message = "完全再構築に失敗しました: " + " / ".join(details)
         self.last_rebuild_result = {
             "success": False,
             "message": message,
-            "errors": list(errors),
+            "errors": details,
+            "backup_path": str(backup_dir) if backup_dir is not None else None,
         }
         print(f"--- [RAG Rebuild] {message} ---")
+
+    def _backup_indices_before_rebuild(self, paths: List[Path]) -> Optional[Path]:
+        """旧索引を検証済みのローカルコピーに保護してから再構築を許可する。"""
+        existing = [path for path in paths if path.exists() or path.is_symlink()]
+        if not existing:
+            return None
+
+        backup_root = self.rag_data_dir / "backups"
+        if backup_root.is_symlink():
+            raise RuntimeError("索引バックアップ先がリンクのため停止しました")
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup_dir = backup_root / (
+            f"embedding_rebuild_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        )
+        backup_dir.mkdir(exist_ok=False)
+
+        def inventory(path: Path) -> Dict[str, str]:
+            if path.is_symlink():
+                raise RuntimeError(f"索引にリンクが含まれるため停止しました: {path.name}")
+            if path.is_file():
+                files = [(path.name, path)]
+            elif path.is_dir():
+                files = []
+                for root, directories, names in os.walk(path, followlinks=False):
+                    for name in directories + names:
+                        item = Path(root) / name
+                        if item.is_symlink():
+                            raise RuntimeError(f"索引にリンクが含まれるため停止しました: {path.name}")
+                    files.extend(
+                        (str((Path(root) / name).relative_to(path)), Path(root) / name)
+                        for name in names
+                    )
+            else:
+                raise RuntimeError(f"索引を読み取れません: {path.name}")
+            hashes = {}
+            for relative, item in files:
+                digest = hashlib.sha256()
+                with item.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                hashes[relative] = digest.hexdigest()
+            return hashes
+
+        try:
+            source_inventories = {path.name: inventory(path) for path in existing}
+            for path in existing:
+                destination = backup_dir / path.name
+                if path.is_dir():
+                    shutil.copytree(path, destination)
+                else:
+                    shutil.copy2(path, destination)
+                if inventory(destination) != source_inventories[path.name]:
+                    raise RuntimeError(f"旧索引のバックアップを検証できません: {path.name}")
+            (backup_dir / "backup_manifest.json").write_text(
+                json.dumps({"state": "complete", "files": source_inventories}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return backup_dir
+        except Exception:
+            # コピーが不完全なら元の索引は手つかず。今回作った部分コピーだけ片付ける。
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            raise
+
+    def _restore_rebuild_backup(self, backup_dir: Optional[Path], paths: List[Path]) -> List[str]:
+        """再構築失敗時に試行結果を退避し、旧索引を検証して戻す。"""
+        if backup_dir is None:
+            return []
+        errors: List[str] = []
+        attempt_dir = backup_dir / "incomplete_attempt"
+        try:
+            manifest = json.loads((backup_dir / "backup_manifest.json").read_text(encoding="utf-8"))
+            expected_files = manifest["files"]
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return [f"旧索引の復元記録を読み取れません ({type(exc).__name__})"]
+
+        RAGManager.clear_cache()
+        for path in paths:
+            source = backup_dir / path.name
+            try:
+                if path.exists() or path.is_symlink():
+                    attempt_dir.mkdir(exist_ok=True)
+                    path.rename(attempt_dir / path.name)
+                if not source.exists():
+                    continue
+                if source.is_dir():
+                    shutil.copytree(source, path)
+                else:
+                    shutil.copy2(source, path)
+                for relative, expected in expected_files[path.name].items():
+                    restored = path / relative if path.is_dir() else path
+                    digest = hashlib.sha256()
+                    with restored.open("rb") as stream:
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                    if digest.hexdigest() != expected:
+                        raise RuntimeError("復元した索引のhashが一致しません")
+            except Exception as exc:
+                errors.append(f"{path.name}を自動復元できません ({type(exc).__name__})")
+        return errors
 
     def rebuild_all_indices_with_progress(self):
         """全索引を削除・各1回再構築し、モデル整合性確認まで進捗を返す。"""
@@ -2157,7 +2766,7 @@ class RAGManager:
             "message": "完全再構築を開始しました。",
             "errors": [],
         }
-        yield (0, 4, "既存索引を消去中...")
+        yield (0, 4, "旧索引を保護中...")
 
         # FAISS参照を先に解放し、Windowsでも削除できる状態へ寄せる。
         RAGManager.clear_cache()
@@ -2171,6 +2780,17 @@ class RAGManager:
             self.rag_data_dir / "current_log_index",
             self.rag_data_dir / "current_log_meta.json",
         ]
+
+        try:
+            backup_dir = self._backup_indices_before_rebuild(paths_to_delete)
+        except Exception as exc:
+            self._set_rebuild_failure([f"旧索引の保護に失敗したため、原本を変更せず停止しました ({type(exc).__name__})"])
+            yield (0, 4, self.last_rebuild_result["message"])
+            return
+        if backup_dir is not None:
+            yield (0, 4, "旧索引のバックアップを検証しました。既存索引を消去中...")
+        else:
+            yield (0, 4, "既存索引を消去中...")
 
         deletion_errors: List[str] = []
         for path in paths_to_delete:
@@ -2188,7 +2808,11 @@ class RAGManager:
         if remaining_paths:
             deletion_errors.append("削除後も残っている索引: " + ", ".join(remaining_paths))
         if deletion_errors:
-            self._set_rebuild_failure(deletion_errors)
+            restore_errors = self._restore_rebuild_backup(backup_dir, paths_to_delete)
+            details = deletion_errors + restore_errors
+            if backup_dir is not None and not restore_errors:
+                details.append("旧索引を元の場所へ復元しました")
+            self._set_rebuild_failure(details, backup_dir)
             yield (0, 4, self.last_rebuild_result["message"])
             return
 
@@ -2196,21 +2820,34 @@ class RAGManager:
         self.static_index_path = self.rag_data_dir / "faiss_index_static"
         self.dynamic_index_path = self.rag_data_dir / "faiss_index_dynamic"
 
-        yield (1, 4, "記憶索引を再構築中...")
-        memory_result = "記憶索引: 対象なし"
-        for current, total, status_message in self.update_memory_index_with_progress():
-            memory_result = status_message
-            yield (1, 4, f"記憶索引: {status_message}")
+        try:
+            yield (1, 4, "記憶索引を再構築中...")
+            memory_result = "記憶索引: 対象なし"
+            for current, total, status_message in self.update_memory_index_with_progress():
+                memory_result = status_message
+                yield (1, 4, f"記憶索引: {status_message}")
 
-        yield (2, 4, "ナレッジ索引を再構築中...")
-        knowledge_result = self.update_knowledge_index()
-        yield (2, 4, knowledge_result)
+            yield (2, 4, "ナレッジ索引を再構築中...")
+            knowledge_result = self.update_knowledge_index()
+            yield (2, 4, knowledge_result)
 
-        yield (3, 4, "現行ログ索引を再構築中...")
-        current_log_result = "現行ログ索引: 対象なし"
-        for current, total, status_message in self.update_current_log_index_with_progress():
-            current_log_result = status_message
-            yield (3, 4, f"現行ログ索引: {status_message}")
+            yield (3, 4, "現行ログ索引を再構築中...")
+            current_log_result = "現行ログ索引: 対象なし"
+            for current, total, status_message in self.update_current_log_index_with_progress():
+                current_log_result = status_message
+                yield (3, 4, f"現行ログ索引: {status_message}")
+
+        except BaseException as exc:
+            # 長い進捗表示を閉じた場合も、削除済みの旧索引を元へ戻す。
+            restore_errors = self._restore_rebuild_backup(backup_dir, paths_to_delete)
+            details = [f"再構築処理中に停止しました ({type(exc).__name__})"] + restore_errors
+            if backup_dir is not None and not restore_errors:
+                details.append("旧索引を元の場所へ復元しました")
+            self._set_rebuild_failure(details, backup_dir)
+            if not isinstance(exc, Exception):
+                raise
+            yield (4, 4, self.last_rebuild_result["message"])
+            return
 
         verification_errors = self.validate_existing_index_models()
         failure_markers = ("失敗", "エラー", "中止", "中断", "日次上限", "途中保存")
@@ -2231,7 +2868,11 @@ class RAGManager:
                 verification_errors.append(f"{label}: 作成完了の報告後に索引実体が見つかりません")
 
         if verification_errors:
-            self._set_rebuild_failure(verification_errors)
+            restore_errors = self._restore_rebuild_backup(backup_dir, paths_to_delete)
+            details = verification_errors + restore_errors
+            if backup_dir is not None and not restore_errors:
+                details.append("旧索引を元の場所へ復元しました")
+            self._set_rebuild_failure(details, backup_dir)
             yield (4, 4, self.last_rebuild_result["message"])
             return
 
@@ -2242,10 +2883,13 @@ class RAGManager:
             if not signature.startswith(f"{self.room_name}|")
         }
         message = f"完全再構築が完了しました（使用モデル: {current_model_id}）"
+        if backup_dir is not None:
+            message += f"。旧索引はrag_data/backups/{backup_dir.name}に保持しました。"
         self.last_rebuild_result = {
             "success": True,
             "message": message,
             "errors": [],
+            "backup_path": str(backup_dir) if backup_dir is not None else None,
             "model_id": current_model_id,
             "results": {
                 "memory": memory_result,

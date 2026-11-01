@@ -205,6 +205,7 @@ def handle_refresh_twitter_pending(room_name: str = None):
     pending = twitter_manager.get_pending_list()
     if room_name:
         pending = [d for d in pending if d.get("room_name") == room_name]
+    pending = sorted(pending, key=lambda d: str(d.get("timestamp", "")), reverse=True)
 
     if not pending:
         return gr.update(value=pd.DataFrame(columns=["ID", "時刻", "画像", "下書き内容", "警告"]))
@@ -215,7 +216,7 @@ def handle_refresh_twitter_pending(room_name: str = None):
         media_str = f"🖼️x{media_count}" if media_count > 0 else "-"
         data.append([
             d["id"],
-            d["timestamp"].split("T")[1][:5] if "T" in d["timestamp"] else d["timestamp"],
+            str(d.get("timestamp", "")).replace("T", " ")[:16],
             media_str,
             d["filtered_content"],
             ", ".join(d["warnings"]) if d.get("warnings") else "-"
@@ -746,6 +747,7 @@ def handle_refresh_twitter_all(room_name):
     
     # 3. 下書き取得
     drafts = [d for d in twitter_manager.get_pending_list() if not room_name or d.get("room_name") == room_name]
+    drafts.sort(key=lambda d: str(d.get("timestamp", "")), reverse=True)
     draft_data = []
     for d in drafts:
         draft_data.append([

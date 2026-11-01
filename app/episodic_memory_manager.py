@@ -14,6 +14,95 @@ import constants
 import config_manager
 import utils
 
+SPECIAL_EPISODE_TYPES = frozenset({
+    "achievement",
+    "bonding",
+    "discovery",
+    "curiosity_resolved",
+    "goal_achievement",
+    "persona_emotion_change",
+    "bonding_event",
+})
+
+LITE_RETURN_ADDENDUM_TYPE = "lite_return_addendum"
+_LITE_RETURN_MARKER_RE = re.compile(
+    r"(?:Lite\s+Travel\s+Event\s*:\s*)?([0-9a-f]{64})",
+    re.IGNORECASE,
+)
+_EPISODE_MARKER_KEYS = (
+    "lite_return_event_markers",
+    # 旧試作で使われた名前も読み取り、圧縮時に正規名へ引き継ぐ。
+    "lite_return_marker_receipt",
+    "marker_receipt",
+)
+
+
+class LitePendingMemoryUnavailable(RuntimeError):
+    """Lite帰宅の記憶整理待ちを安全に読み取れない。"""
+
+
+def is_daily_episodic_memory(episode: object, target_date: Optional[str] = None) -> bool:
+    """通常の日次要約かを判定する。特殊記憶や週次・月次の範囲要約は含めない。"""
+    if not isinstance(episode, dict):
+        return False
+
+    date_str = str(episode.get("date", "") or "").strip()
+    if not date_str or "~" in date_str or "～" in date_str:
+        return False
+    if target_date is not None and date_str != target_date:
+        return False
+    if episode.get("type") in SPECIAL_EPISODE_TYPES or episode.get("type") == LITE_RETURN_ADDENDUM_TYPE:
+        return False
+    if "エラーにより要約できませんでした" in str(episode.get("summary", "") or ""):
+        return False
+    return True
+
+
+def _normalise_lite_marker(value: object) -> Optional[str]:
+    """Liteログのコメントまたはhex markerを、保存用のhexへ正規化する。"""
+    if not isinstance(value, str):
+        return None
+    raw_value = value.strip()
+    if raw_value.startswith("<!--") and raw_value.endswith("-->"):
+        raw_value = raw_value[4:-3].strip()
+    match = _LITE_RETURN_MARKER_RE.fullmatch(raw_value)
+    if not match:
+        return None
+    return match.group(1).lower()
+
+
+def _episode_lite_markers(episode: object) -> set[str]:
+    """エピソードが受領済みとして保持するLite markerの集合を返す。"""
+    if not isinstance(episode, dict):
+        return set()
+    markers: set[str] = set()
+    for key in _EPISODE_MARKER_KEYS:
+        raw = episode.get(key)
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple, set)):
+            continue
+        for item in raw:
+            marker = _normalise_lite_marker(item)
+            if marker:
+                markers.add(marker)
+    return markers
+
+
+def _message_date_from_content(message: dict, content: str, date_pattern: re.Pattern) -> Optional[str]:
+    """発言の元日付を決める。Lite metadata、通常footerとも最後の日時を採用する。"""
+    explicit_date = message.get("_message_date")
+    if isinstance(explicit_date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", explicit_date.strip()):
+        return explicit_date.strip()
+    if "_lite_created_at" in message:
+        # Lite元日時が不正な場合は本文中の引用・帰宅時刻へfallbackしない。
+        return None
+    matches = date_pattern.findall(content)
+    if matches:
+        return matches[-1]
+    return None
+
+
 class EpisodicMemoryManager:
     def __init__(self, room_name: str):
         self.room_name = room_name
@@ -71,22 +160,39 @@ class EpisodicMemoryManager:
         
         return f"{date_prefix}{max_seq + 1:03d}"
 
-    def _load_memory(self) -> List[Dict]:
+    def _load_memory(self, strict: bool = False) -> List[Dict]:
         """
         全ての月次ファイル + レガシーファイルからエピソード記憶を読み込む（ロック付き）。
         後方互換性: episodic_memory.json が存在する場合も読み込む。
+
+        ``strict=True`` はLite帰宅経路のスナップショット読込で使う。
+        正本のJSONが壊れている場合に自動修復して空の記憶として扱うと、
+        pendingを誤って完了扱いにできるため、構文エラー・トップレベル型・
+        要素型の異常をそのまま呼び出し元へ伝播する。
         """
         from file_lock_utils import safe_json_read
         
         all_episodes = []
+
+        def read_file(path: Path) -> None:
+            if strict and path.stat().st_size == 0:
+                raise RuntimeError(f"episodic memory JSON is empty: {path.name}")
+            data = safe_json_read(str(path), default=[])
+            if strict:
+                if not isinstance(data, list):
+                    raise RuntimeError(f"episodic memory JSON must be a list: {path.name}")
+                if any(not isinstance(item, dict) for item in data):
+                    raise RuntimeError(f"episodic memory entries must be objects: {path.name}")
+            if isinstance(data, list):
+                all_episodes.extend(data)
         
         # 1. レガシーファイル（episodic_memory.json）を読み込み
         if self.legacy_memory_file.exists():
             try:
-                data = safe_json_read(str(self.legacy_memory_file), default=[])
-                if isinstance(data, list):
-                    all_episodes.extend(data)
+                read_file(self.legacy_memory_file)
             except Exception as e:
+                if strict:
+                    raise
                 print(f"⚠️ [EpisodicMemory] {self.legacy_memory_file.name} の読み込みに失敗: {e}")
                 utils.backup_and_repair_json(self.legacy_memory_file, [])
         
@@ -94,10 +200,10 @@ class EpisodicMemoryManager:
         if self.episodic_dir.exists():
             for monthly_file in sorted(self.episodic_dir.glob("*.json")):
                 try:
-                    data = safe_json_read(str(monthly_file), default=[])
-                    if isinstance(data, list):
-                        all_episodes.extend(data)
+                    read_file(monthly_file)
                 except Exception as e:
+                    if strict:
+                        raise
                     print(f"⚠️ [EpisodicMemory] {monthly_file.name} の読み込みに失敗: {e}")
                     utils.backup_and_repair_json(monthly_file, [])
         
@@ -118,6 +224,68 @@ class EpisodicMemoryManager:
                     unique_episodes.append(ep)
         
         return unique_episodes
+
+    @staticmethod
+    def _latest_memory_date_from_data(data: List[Dict], daily_only: bool = False) -> str:
+        """既に読み込んだスナップショットから最新日付を求める。"""
+        if not data:
+            return "なし"
+        if daily_only:
+            data = [item for item in data if is_daily_episodic_memory(item)]
+
+        valid_items = [
+            item
+            for item in data
+            if isinstance(item, dict) and isinstance(item.get("date"), str) and item.get("date", "").strip()
+        ]
+        if not valid_items:
+            return "なし"
+
+        def get_sort_key(item: Dict) -> str:
+            date_value = item["date"].strip()
+            if "~" in date_value:
+                return date_value.split("~")[-1].strip()
+            if "～" in date_value:
+                return date_value.split("～")[-1].strip()
+            return date_value
+
+        return sorted(valid_items, key=get_sort_key)[-1]["date"]
+
+    def export_recent_memories(
+        self,
+        days: int,
+        *,
+        today: Optional[datetime.date] = None,
+    ) -> str:
+        """今日を除く直近N日分を、外部持ち出し用Markdownとして返す。"""
+        resolved_days = max(0, int(days))
+        if resolved_days == 0:
+            return ""
+
+        base_date = today or datetime.date.today()
+        cutoff_date = base_date - datetime.timedelta(days=resolved_days)
+        cutoff_str = cutoff_date.isoformat()
+        today_str = base_date.isoformat()
+        filtered_entries = []
+        for entry in self._load_memory():
+            if not isinstance(entry, dict):
+                continue
+            date_key = str(entry.get("date") or "").strip()
+            if not date_key:
+                continue
+            date_start = date_key.split("~", 1)[0].split("～", 1)[0].strip()
+            # 日次記憶は通常「昨日まで」生成される。万一今日の記憶があっても、
+            # 直近会話との重複を避けるためLite/外部持ち出しには含めない。
+            if cutoff_str <= date_start < today_str:
+                filtered_entries.append((date_start, date_key, entry.get("summary", "")))
+
+        filtered_entries.sort(key=lambda item: item[0])
+        result_lines = []
+        for _, date_key, summary in filtered_entries:
+            result_lines.append(f"### {date_key}")
+            result_lines.append(utils.clean_persona_text(str(summary or "")))
+            result_lines.append("")
+        return "\n".join(result_lines)
 
     def _save_memory(self, data: List[Dict]):
         """
@@ -197,7 +365,7 @@ class EpisodicMemoryManager:
         return "\n".join(annotated_lines)
 
 
-    def update_memory(self, api_key: str) -> str:
+    def _legacy_update_memory(self, api_key: str) -> str:
         """
         全ログ（現行＋アーカイブ）を解析し、未処理の過去日付について要約を作成・追記する。
         【v3: 名前解決・逐次保存版】
@@ -241,8 +409,8 @@ class EpisodicMemoryManager:
         for msg in all_messages:
             try:
                 content = msg.get('content', '')
-                match = date_pattern.search(content)
-                current_date = match.group(1) if match else None
+                matches = date_pattern.findall(content)
+                current_date = matches[-1] if matches else None
                 
                 if current_date:
                     if current_date not in logs_by_date:
@@ -271,15 +439,11 @@ class EpisodicMemoryManager:
         # 既にある日付をセット（単独日の高速検索用）
         # 全角チルダにも対応し、前後の空白も除去
         # 「エラーにより要約できませんでした」という文字が含まれるエントリは、再処理対象にするため「既知」から除外する
-        # 特殊タイプ（achievement, bonding, discovery）は日次要約とは別物なので除外
-        special_types = {"achievement", "bonding", "discovery", "curiosity_resolved", "goal_achievement", "persona_emotion_change", "bonding_event"}
         # 日次要約（通常のエピソード）のみの日付セット
         daily_summary_dates = {
-            item['date'].strip() for item in existing_memory 
-            if isinstance(item, dict) and 'date' in item 
-            and '~' not in item['date'] and '～' not in item['date']
-            and "エラーにより要約できませんでした" not in item.get('summary', '')
-            and item.get('type') not in special_types
+            item["date"].strip()
+            for item in existing_memory
+            if is_daily_episodic_memory(item)
         }
         print(f"  - 解析された既知の日次要約数: {len(daily_summary_dates)}")
         
@@ -431,6 +595,547 @@ class EpisodicMemoryManager:
                 error_count += 1
 
         return f"処理完了: 成功 {success_count}件 / エラー・スキップ {error_count}件"
+
+    def _load_lite_pending(self) -> Dict[str, Dict]:
+        """帰宅時に取り込まれた未整理markerを読み取る。"""
+        try:
+            from lite_return_memory import pending_return_memory
+
+            value = pending_return_memory(self.room_name)
+        except (ImportError, OSError, ValueError) as exc:
+            raise LitePendingMemoryUnavailable(str(exc)) from exc
+        if not isinstance(value, dict):
+            raise LitePendingMemoryUnavailable("pendingの形式が不正です")
+        pending: Dict[str, Dict] = {}
+        for raw_marker, descriptor in value.items():
+            marker = _normalise_lite_marker(raw_marker)
+            if not marker or not isinstance(descriptor, dict):
+                continue
+            date = descriptor.get("date")
+            if date is not None and (
+                not isinstance(date, str)
+                or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date.strip())
+            ):
+                date = None
+            pending[marker] = {**descriptor, "date": date.strip() if isinstance(date, str) else None}
+        return pending
+
+    def _ack_lite_markers(self, markers: set[str]) -> bool:
+        """指定snapshotだけを完了扱いにする。ack失敗時は再試行可能なまま返す。"""
+        if not markers:
+            return True
+        try:
+            from lite_return_memory import acknowledge_return_memory
+
+            acknowledge_return_memory(self.room_name, sorted(markers))
+            return True
+        except Exception as exc:
+            print(f"  - [Lite Return] marker ackに失敗（次回再試行）: {exc}")
+            return False
+
+    @staticmethod
+    def _next_episode_id(current_data: List[Dict], date_str: str) -> str:
+        date_prefix = f"episode_{date_str.split('~')[0].split('～')[0].strip()}_"
+        max_seq = 0
+        for item in current_data:
+            if not isinstance(item, dict):
+                continue
+            episode_id = str(item.get("id", ""))
+            if not episode_id.startswith(date_prefix):
+                continue
+            try:
+                max_seq = max(max_seq, int(episode_id.rsplit("_", 1)[-1]))
+            except (TypeError, ValueError):
+                continue
+        return f"{date_prefix}{max_seq + 1:03d}"
+
+    def _memory_file_candidates(self) -> List[Path]:
+        files = []
+        if self.legacy_memory_file.exists():
+            files.append(self.legacy_memory_file)
+        if self.episodic_dir.exists():
+            files.extend(sorted(self.episodic_dir.glob("*.json")))
+        return files
+
+    def _locate_episode_file(self, expected: Optional[Dict], date_str: str) -> Path:
+        """expected snapshotの所在を探す。新規は日付の月次ファイルへ書く。"""
+        from file_lock_utils import safe_json_read
+
+        if not expected:
+            return self._get_monthly_file_path(date_str)
+        expected_id = expected.get("id")
+        expected_type = expected.get("type")
+        expected_summary = expected.get("summary")
+        for path in self._memory_file_candidates():
+            try:
+                data = safe_json_read(str(path), default=[])
+            except Exception:
+                continue
+            if not isinstance(data, list):
+                continue
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                if expected_id and item.get("id") == expected_id:
+                    return path
+                if (
+                    not expected_id
+                    and item.get("date") == date_str
+                    and item.get("type") == expected_type
+                    and item.get("summary") == expected_summary
+                ):
+                    return path
+        return self._get_monthly_file_path(date_str)
+
+    def _safe_upsert_episode(
+        self,
+        date_str: str,
+        payload: Dict,
+        *,
+        expected: Optional[Dict] = None,
+        marker_union: Optional[set[str]] = None,
+    ) -> None:
+        """最新JSONをロック内で再読し、競合を検出して一件だけ保存する。"""
+        from file_lock_utils import safe_json_update
+
+        path = self._locate_episode_file(expected, date_str)
+        expected_id = expected.get("id") if isinstance(expected, dict) else None
+        expected_summary = expected.get("summary") if isinstance(expected, dict) else None
+        expected_markers = _episode_lite_markers(expected)
+        new_markers = set(marker_union or set())
+        status = {"saved": False}
+
+        def update(data):
+            if not isinstance(data, list):
+                raise RuntimeError("episodic memory conflict: canonical JSON is not a list")
+            current_data = data
+            current_item = None
+            if expected_id:
+                current_item = next(
+                    (item for item in current_data if isinstance(item, dict) and item.get("id") == expected_id),
+                    None,
+                )
+                if current_item is None:
+                    raise RuntimeError("episodic memory conflict: target episode disappeared")
+                if (
+                    current_item.get("summary") != expected_summary
+                    or current_item.get("date") != expected.get("date")
+                    or current_item.get("type") != expected.get("type")
+                ):
+                    raise RuntimeError("episodic memory conflict: target episode changed")
+                current_markers = _episode_lite_markers(current_item)
+                if current_markers - expected_markers:
+                    raise RuntimeError("episodic memory conflict: target receipt changed")
+            elif expected is not None:
+                current_item = next(
+                    (
+                        item
+                        for item in current_data
+                        if isinstance(item, dict)
+                        and item.get("date") == date_str
+                        and item.get("type") == expected.get("type")
+                        and item.get("summary") == expected_summary
+                    ),
+                    None,
+                )
+                if current_item is None:
+                    raise RuntimeError("episodic memory conflict: target episode changed")
+                if _episode_lite_markers(current_item) - expected_markers:
+                    raise RuntimeError("episodic memory conflict: target receipt changed")
+
+            if current_item is None:
+                episode_type = payload.get("type")
+                same_date = [
+                    item
+                    for item in current_data
+                    if isinstance(item, dict)
+                    and item.get("date") == date_str
+                    and item.get("type") == episode_type
+                ]
+                if same_date:
+                    raise RuntimeError("episodic memory conflict: target episode was added")
+                new_episode = dict(payload)
+                new_episode.setdefault("id", self._next_episode_id(current_data, date_str))
+                if new_markers:
+                    new_episode["lite_return_event_markers"] = sorted(new_markers)
+                current_data.append(new_episode)
+                status["saved"] = True
+                return current_data
+
+            # 既存ID・未知フィールド・特殊記憶は保持し、必要な値だけ差し替える。
+            current_item["summary"] = payload.get("summary", current_item.get("summary", ""))
+            merged_markers = expected_markers | _episode_lite_markers(current_item) | new_markers
+            if merged_markers:
+                current_item["lite_return_event_markers"] = sorted(merged_markers)
+            status["saved"] = True
+            return current_data
+
+        updated = safe_json_update(str(path), update, default=[])
+        if not updated or not status["saved"]:
+            raise OSError("episodic memory save did not complete")
+
+    def _build_lite_summary_prompt(
+        self,
+        *,
+        date_str: str,
+        logs: List[str] | str,
+        agent_name: str,
+        existing_summary: Optional[str] = None,
+        addendum: bool = False,
+    ) -> str:
+        log_text = logs if isinstance(logs, str) else "\n".join(logs)
+        if existing_summary is not None:
+            heading = "独立Lite（外出中）から帰宅後に追加された、まだ要約へ反映していない経験"
+            return f"""あなたは{agent_name}本人である。既存の日次エピソード記憶を、帰宅後に届いた追加経験だけを使って更新せよ。
+
+【既存の本人視点の要約 ({date_str})】
+---
+{existing_summary}
+---
+
+【{heading}】
+---
+{log_text}
+---
+
+既存要約の一人称・口調・事実を保ちながら、追加経験を自然に織り込め。独立Liteの外出中の出来事を本体の自宅での会話や行動と混同せず、外出中の経験であることが分かるように書くこと。[★重要]が付いた行は情景と感情を詳しく、その他は簡潔にまとめよ。本文だけを、常体で、{constants.EPISODIC_MONTHLY_BUDGET}文字以内に出力せよ。"""
+
+        mode_label = "独立Lite（外出中）での経験を含む" if addendum else "通常の会話"
+        return f"""あなたは{agent_name}本人である。{date_str}の{mode_label}を、後から自分が読み返す本人視点のエピソード記憶として整理せよ。
+
+【会話ログ ({date_str})】
+---
+{log_text}
+---
+
+事実、重要な決定、約束、感情的な交流、行動結果を優先し、常体で書くこと。[★重要]が付いた行は詳細に、その他は簡潔にまとめよ。独立Lite（外出中）の行は本体の自宅側の出来事と混同せず、外出中の経験だと分かるラベルを維持せよ。本文だけを、{constants.EPISODIC_MONTHLY_BUDGET}文字以内に出力せよ。"""
+
+    def _annotate_lite_prompt_logs(self, logs: List[str], date_str: str) -> str:
+        """既存の日次要約と同じArousal注釈をLite追加・通常ログへ適用する。"""
+        try:
+            return self._annotate_logs_with_arousal(logs, date_str)
+        except Exception as exc:
+            print(f"  - [Arousal] 日次注釈に失敗（本文は維持）: {exc}")
+            return "\n".join(logs)
+
+    def update_memory(self, api_key: str) -> str:
+        """通常ログと帰宅後のLite会話を、日付単位で競合安全にエピソード化する。"""
+        print(f"--- [Episodic Memory] 更新処理開始: {self.room_name} ---")
+        import room_manager
+
+        room_config = room_manager.get_room_config(self.room_name) or {}
+        user_name = room_config.get("user_display_name", "ユーザー")
+        agent_name = room_config.get("agent_display_name") or room_config.get("room_name", "AI")
+
+        try:
+            pending = self._load_lite_pending()
+        except LitePendingMemoryUnavailable as exc:
+            print(f"  - [Lite Return] pending読み込み失敗のため更新を保留: {exc}")
+            return "Lite帰宅の記憶整理待ちを読み込めないため、記憶更新を保留しました。"
+        if not pending:
+            # 帰宅queueがない通常ルートは、既存の日次Arousal注釈・行動履歴・
+            # 本人視点プロンプトを保った実装へ委譲する。
+            return self._legacy_update_memory(api_key)
+        pending_markers = set(pending)
+        pending_dates = {
+            descriptor.get("date")
+            for descriptor in pending.values()
+            if descriptor.get("date")
+        }
+
+        # Lite経路では、日付境界を決める前に正本をstrictに一度だけ読む。
+        # _load_memory()の通常経路が破損JSONをバックアップ・空配列へ修復すると、
+        # pendingを残したまま「全件処理済み」と誤認したり、保存時に他記憶を
+        # 巻き戻したりするため、ここでは修復を許可しない。
+        try:
+            existing_memory = self._load_memory(strict=True)
+        except Exception as exc:
+            print(f"  - [Lite Return] 正本のstrict読込に失敗したため更新を保留: {exc}")
+            return "Lite帰宅の記憶正本を読み込めないため、記憶更新を保留しました。"
+
+        log_f, _, _, _, _, _, _ = room_manager.get_room_files_paths(self.room_name)
+        if not log_f or not os.path.exists(log_f):
+            return "ログメッセージが見つかりません。"
+
+        latest_daily = self._latest_memory_date_from_data(existing_memory, daily_only=True)
+        cutoff_candidates = [
+            date_str
+            for date_str in [latest_daily, *sorted(pending_dates)]
+            if date_str and date_str not in {"なし", "取得エラー"}
+        ]
+        cutoff_date = min(cutoff_candidates) if cutoff_candidates else None
+
+        all_messages, _ = utils.load_chat_log_lazy(
+            room_dir=os.path.dirname(log_f),
+            # 帰宅元日時と物理ログ順が一致しないため、Lite経路ではlazy側の
+            # 逆順cutoff停止を使わず、下の発言単位フィルタで境界を適用する。
+            cutoff_date=None,
+        )
+        if not all_messages:
+            return "ログメッセージが見つかりません。"
+
+        date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2}) \(...\) \d{2}:\d{2}:\d{2}")
+        logs_by_date: Dict[str, List[Dict]] = {}
+        unresolved_pending: set[str] = set()
+        for message in all_messages:
+            try:
+                content = str(message.get("content", "") or "")
+                current_date = _message_date_from_content(message, content, date_pattern)
+                marker = _normalise_lite_marker(message.get("_lite_travel_event_marker"))
+                if marker in pending_markers:
+                    descriptor_date = pending[marker].get("date")
+                    if "_lite_created_at" in message and current_date is None:
+                        unresolved_pending.add(marker)
+                        # 壊れたLite metadataはpending descriptorだけで補完せず、
+                        # 本文の帰宅日時にも割り当てない。
+                        continue
+                    if not descriptor_date:
+                        unresolved_pending.add(marker)
+                        # 元日時不明のLite発言を帰宅日/footerへ割り当てない。
+                        # 日付が確定するまで要約・ackの対象からも外す。
+                        continue
+                    elif current_date != descriptor_date:
+                        # marker由来の元日付を優先し、帰宅日のfooterへ誤分類しない。
+                        current_date = descriptor_date
+                if not current_date:
+                    continue
+                if cutoff_date and current_date < cutoff_date:
+                    continue
+
+                role = message.get("role", "UNKNOWN")
+                responder = message.get("responder", "")
+                speaker = user_name if role == "USER" else (responder if responder and responder != "model" else agent_name)
+                clean_text = utils.remove_thoughts_from_text(content)
+                clean_text = re.sub(
+                    r"\n\n\d{4}-\d{2}-\d{2}(?:\s+\([^)]*\))?\s+\d{2}:\d{2}:\d{2}\s*$",
+                    "",
+                    clean_text,
+                ).strip()
+                if clean_text:
+                    logs_by_date.setdefault(current_date, []).append({
+                        "text": f"{speaker}: {clean_text}",
+                        "marker": marker if marker in pending_markers else None,
+                        "is_lite": bool(marker),
+                    })
+            except Exception as exc:
+                print(f"  - ログ読み込みエラー: {exc}")
+
+        daily_by_date: Dict[str, Dict] = {}
+        existing_ranges: List[Tuple[str, str, Dict]] = []
+        for item in existing_memory:
+            if not isinstance(item, dict):
+                continue
+            date_value = str(item.get("date", "") or "").strip()
+            if is_daily_episodic_memory(item) and date_value:
+                daily_by_date.setdefault(date_value, item)
+            sep = "~" if "~" in date_value else ("～" if "～" in date_value else None)
+            if sep:
+                parts = [part.strip() for part in date_value.split(sep)]
+                if len(parts) == 2:
+                    existing_ranges.append((parts[0], parts[1], item))
+
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        ack_pending_markers: set[str] = set()
+        unresolved_pending.update(
+            marker for marker, descriptor in pending.items() if not descriptor.get("date")
+        )
+        # 保存済みだがackできなかったmarkerは追加LLMなしで完了扱いにする。
+        reflected_markers = set()
+        for item in existing_memory:
+            reflected_markers.update(_episode_lite_markers(item))
+        acked_without_llm = pending_markers & reflected_markers
+        if acked_without_llm:
+            if self._ack_lite_markers(acked_without_llm):
+                unresolved_pending -= acked_without_llm
+            else:
+                ack_pending_markers.update(acked_without_llm)
+        pending_markers -= acked_without_llm
+        deferred_pending_markers = {
+            marker
+            for marker in pending_markers
+            if pending[marker].get("date") and pending[marker]["date"] >= today_str
+        }
+
+        deferred_dates = {date_str for date_str in logs_by_date if date_str >= today_str}
+        target_dates = []
+        for date_str in sorted(logs_by_date):
+            if date_str >= today_str:
+                continue
+            has_pending = any(
+                entry.get("marker") in pending_markers
+                for entry in logs_by_date[date_str]
+            )
+            if date_str in daily_by_date:
+                if has_pending:
+                    target_dates.append(date_str)
+                continue
+            containing_range = any(start <= date_str <= end for start, end, _ in existing_ranges)
+            if containing_range:
+                if has_pending:
+                    target_dates.append(date_str)
+                continue
+            target_dates.append(date_str)
+
+        if not target_dates:
+            pending_reasons = []
+            if deferred_dates or deferred_pending_markers:
+                pending_reasons.append("当日以降の日付")
+            if unresolved_pending:
+                pending_reasons.append("未解決の日付")
+            if ack_pending_markers:
+                pending_reasons.append("ack未完了marker")
+            if pending_markers:
+                pending_reasons.append("未処理marker")
+            if pending_reasons:
+                return f"記憶更新を保留しました（{'、'.join(pending_reasons)}）。"
+            return "新規に要約すべき過去の日付はありませんでした（全ての過去ログは処理済みです）。"
+
+        effective_settings = config_manager.get_effective_settings(self.room_name)
+        current_api_key = api_key
+        success_count = 0
+        error_count = 0
+        for date_str in target_dates:
+            entries = logs_by_date.get(date_str, [])
+            markers_for_date = {
+                entry["marker"]
+                for entry in entries
+                if entry.get("marker") in pending_markers
+            }
+            has_pending = bool(markers_for_date)
+            existing_daily = daily_by_date.get(date_str)
+            containing_range = next(
+                (item for start, end, item in existing_ranges if start <= date_str <= end),
+                None,
+            )
+
+            # 週次/月次範囲に含まれる帰宅経験は、範囲要約を置き換えず補足へ記録する。
+            if containing_range is not None and has_pending:
+                episode_type = LITE_RETURN_ADDENDUM_TYPE
+                expected = next(
+                    (
+                        item for item in existing_memory
+                        if item.get("date") == date_str and item.get("type") == episode_type
+                    ),
+                    None,
+                )
+                source_entries = [entry for entry in entries if entry.get("marker") in markers_for_date]
+                prompt_logs = [f"【独立Lite・外出中】{entry['text']}" for entry in source_entries]
+                prompt_logs = self._annotate_lite_prompt_logs(prompt_logs, date_str)
+                prompt = self._build_lite_summary_prompt(
+                    date_str=date_str,
+                    logs=prompt_logs,
+                    agent_name=agent_name,
+                    existing_summary=expected.get("summary") if expected else None,
+                    addendum=True,
+                )
+            elif existing_daily is not None and has_pending:
+                episode_type = existing_daily.get("type")
+                expected = existing_daily
+                source_entries = [entry for entry in entries if entry.get("marker") in markers_for_date]
+                prompt_logs = [f"【独立Lite・外出中】{entry['text']}" for entry in source_entries]
+                prompt_logs = self._annotate_lite_prompt_logs(prompt_logs, date_str)
+                prompt = self._build_lite_summary_prompt(
+                    date_str=date_str,
+                    logs=prompt_logs,
+                    agent_name=agent_name,
+                    existing_summary=str(existing_daily.get("summary", "")),
+                )
+            else:
+                episode_type = None
+                expected = None
+                prompt_logs = [
+                    ("【独立Lite・外出中】" if entry.get("is_lite") else "") + entry["text"]
+                    for entry in entries
+                ]
+                try:
+                    import action_logger
+
+                    actions = action_logger.get_actions_by_date(self.room_name, date_str)
+                    for action in actions or []:
+                        action_time = str(action.get("time", ""))[:5]
+                        tool_name = action.get("tool_name", "")
+                        result = str(action.get("result_summary", ""))[:100].replace("\n", " ")
+                        prompt_logs.append(f"【行動履歴】[{action_time}] {tool_name}: {result}")
+                except Exception as exc:
+                    print(f"  - [Action Memory] 日次要約時の取得エラー: {exc}")
+                # 従来の日次生成は短いログをプレースホルダー保存する。
+                if len("\n".join(prompt_logs)) < 50 and not has_pending:
+                    try:
+                        self._safe_upsert_episode(
+                            date_str,
+                            {
+                                "date": date_str,
+                                "summary": "（特筆すべき会話ログや行動履歴はありませんでした）",
+                                "created_at": datetime.datetime.now().isoformat(),
+                            },
+                        )
+                        success_count += 1
+                    except Exception as exc:
+                        print(f"  - {date_str}: 短文エピソード保存失敗: {exc}")
+                        error_count += 1
+                    continue
+                prompt_logs = self._annotate_lite_prompt_logs(prompt_logs, date_str)
+                prompt = self._build_lite_summary_prompt(
+                    date_str=date_str,
+                    logs=prompt_logs,
+                    agent_name=agent_name,
+                    addendum=False,
+                )
+
+            try:
+                summary_result, current_api_key = self._invoke_llm(
+                    "summarization", prompt, current_api_key, effective_settings
+                )
+                summary_result = str(summary_result or "").strip()
+                if not summary_result:
+                    raise RuntimeError("要約結果が空です")
+
+                payload = {
+                    "date": date_str,
+                    "summary": summary_result,
+                    "created_at": datetime.datetime.now().isoformat(),
+                }
+                if episode_type:
+                    payload["type"] = episode_type
+                if expected is None:
+                    try:
+                        import session_arousal_manager
+
+                        payload["arousal"] = session_arousal_manager.get_daily_average(self.room_name, date_str)
+                    except Exception:
+                        payload["arousal"] = 0.5
+                self._safe_upsert_episode(
+                    date_str,
+                    payload,
+                    expected=expected,
+                    marker_union=markers_for_date,
+                )
+                if markers_for_date:
+                    if self._ack_lite_markers(markers_for_date):
+                        pending_markers -= markers_for_date
+                    else:
+                        ack_pending_markers.update(markers_for_date)
+                        pending_markers -= markers_for_date
+                success_count += 1
+            except Exception as exc:
+                print(f"  - {date_str}: 要約または保存に失敗しました（pending維持）: {exc}")
+                error_count += 1
+
+        if unresolved_pending:
+            error_count += len(unresolved_pending)
+        pending_reasons = []
+        if deferred_dates or deferred_pending_markers:
+            pending_reasons.append("当日以降の日付")
+        if unresolved_pending:
+            pending_reasons.append("未解決の日付")
+        if ack_pending_markers:
+            pending_reasons.append("ack未完了marker")
+        if pending_markers:
+            pending_reasons.append("未処理marker")
+        result = f"処理完了: 成功 {success_count}件 / エラー・スキップ {error_count}件"
+        if pending_reasons:
+            result += f"（保留: {'、'.join(pending_reasons)}）"
+        return result
 
     def update_memory_by_session(self, api_key: str, date_str: str) -> str:
         """
@@ -679,7 +1384,6 @@ class EpisodicMemoryManager:
             episode_to_add = dict(new_episode)
             new_date = episode_to_add.get('date', '').strip()
             monthly_path = self._get_monthly_file_path(new_date)
-            special_types = {"achievement", "bonding", "discovery", "curiosity_resolved", "goal_achievement", "persona_emotion_change", "bonding_event"}
             did_write = False
 
             def update(data):
@@ -705,6 +1409,9 @@ class EpisodicMemoryManager:
                     d_str = item.get('date', '').strip()
                     existing_type = item.get('type', None)
                     if '~' in d_str or '～' in d_str:
+                        # 帰宅補足は既存の週次/月次範囲と共存させる。
+                        if new_type == LITE_RETURN_ADDENDUM_TYPE:
+                            continue
                         sep = '~' if '~' in d_str else '～'
                         parts = d_str.split(sep)
                         if len(parts) == 2:
@@ -714,9 +1421,11 @@ class EpisodicMemoryManager:
                                 existing_item = item
                                 break
                     elif d_str == new_date:
-                        if existing_type in special_types and new_type not in special_types:
+                        if new_type == LITE_RETURN_ADDENDUM_TYPE and existing_type != LITE_RETURN_ADDENDUM_TYPE:
                             continue
-                        if new_type in special_types and existing_type not in special_types:
+                        if existing_type in SPECIAL_EPISODE_TYPES and new_type not in SPECIAL_EPISODE_TYPES:
+                            continue
+                        if new_type in SPECIAL_EPISODE_TYPES and existing_type not in SPECIAL_EPISODE_TYPES:
                             continue
                         is_duplicate = True
                         existing_item = item
@@ -818,13 +1527,7 @@ class EpisodicMemoryManager:
             
             # 日次要約（通常のエピソード）のみを対象とする場合のフィルタリング
             if daily_only:
-                special_types = {"achievement", "bonding", "discovery", "curiosity_resolved", "goal_achievement", "persona_emotion_change", "bonding_event"}
-                data = [
-                    x for x in data 
-                    if isinstance(x, dict) and 'date' in x 
-                    and '~' not in x['date'] and '～' not in x['date']
-                    and x.get('type') not in special_types
-                ]
+                data = [item for item in data if is_daily_episodic_memory(item)]
             
             # 範囲日付の終端、または単一の日付でソートして最後（最新）を取得
             # dateキーが存在しない可能性を考慮
@@ -908,10 +1611,14 @@ class EpisodicMemoryManager:
         # --- 週ごとにグループ化 ---
         weekly_groups = defaultdict(list)
         preserved_compressed_episodes = [] # 既にある圧縮済みエピソード
+        preserved_lite_addenda = [] # 既存の週/月範囲に紐づく補足は日次圧縮しない
         unparseable_episodes = [] # 形式不一致のため統合できないが破棄してはいけないエピソード
         
         for episode in old_episodes:
             ep_date_str = episode.get('date', '').strip()
+            if episode.get("type") == LITE_RETURN_ADDENDUM_TYPE:
+                preserved_lite_addenda.append(episode)
+                continue
             if '~' in ep_date_str or '～' in ep_date_str:
                 # すでに圧縮済みのものはそのまま保持する
                 preserved_compressed_episodes.append(episode)
@@ -1004,7 +1711,7 @@ class EpisodicMemoryManager:
                 summary = summary.strip()
                 
                 if summary:
-                    compressed_episodes.append({
+                    weekly_episode = {
                         "date": f"{week_start}~{week_end}",
                         "summary": summary,
                         "arousal": round(avg_arousal, 3),  # 週平均Arousal
@@ -1012,7 +1719,13 @@ class EpisodicMemoryManager:
                         "compressed": True,
                         "original_count": len(week_episodes),
                         "created_at": datetime.datetime.now().isoformat()
-                    })
+                    }
+                    marker_union = set()
+                    for source_episode in week_episodes:
+                        marker_union.update(_episode_lite_markers(source_episode))
+                    if marker_union:
+                        weekly_episode["lite_return_event_markers"] = sorted(marker_union)
+                    compressed_episodes.append(weekly_episode)
                     print(f"    - {week_start}〜{week_end}: {len(week_episodes)}件 → 1件 (Arousal avg:{avg_arousal:.2f})")
                 else:
                     # 要約が空だった場合は元のエピソードをそのまま保持（データ消失防止）
@@ -1023,9 +1736,32 @@ class EpisodicMemoryManager:
                 # エラー時は元のエピソードをそのまま保持
                 compressed_episodes.extend(week_episodes)
         
+        # 補足のmarker receiptも、包含する週次集約へunionして再取込を防ぐ。
+        for addendum in preserved_lite_addenda:
+            addendum_date = str(addendum.get("date", "")).strip()
+            addendum_markers = _episode_lite_markers(addendum)
+            if not addendum_date or not addendum_markers:
+                continue
+            for aggregate in preserved_compressed_episodes + compressed_episodes:
+                aggregate_date = str(aggregate.get("date", "")).strip()
+                separator = "~" if "~" in aggregate_date else ("～" if "～" in aggregate_date else None)
+                if not separator:
+                    continue
+                bounds = [part.strip() for part in aggregate_date.split(separator)]
+                if len(bounds) == 2 and bounds[0] <= addendum_date <= bounds[1]:
+                    aggregate["lite_return_event_markers"] = sorted(
+                        _episode_lite_markers(aggregate) | addendum_markers
+                    )
+
         # --- 圧縮後のデータを保存 ---
         # 既存の圧縮済み + 今回圧縮したもの + 形式不一致 + 最近のもの
-        final_episodes = preserved_compressed_episodes + compressed_episodes + unparseable_episodes + recent_episodes
+        final_episodes = (
+            preserved_compressed_episodes
+            + compressed_episodes
+            + preserved_lite_addenda
+            + unparseable_episodes
+            + recent_episodes
+        )
         
         self._save_memory(final_episodes)
         
@@ -1054,6 +1790,8 @@ class EpisodicMemoryManager:
         
         for ep in episodes:
             date_str = ep.get('date', '')
+            if ep.get("type") == LITE_RETURN_ADDENDUM_TYPE:
+                continue
             # 圧縮済み（週範囲形式 "YYYY-MM-DD~YYYY-MM-DD"）をチェック
             if '~' in date_str:
                 parts = date_str.split('~')
@@ -1104,6 +1842,10 @@ class EpisodicMemoryManager:
         episodes = self._load_memory()
         if not episodes:
             return "月次圧縮対象のエピソード記憶がありません。"
+        lite_addenda = [
+            episode for episode in episodes
+            if isinstance(episode, dict) and episode.get("type") == LITE_RETURN_ADDENDUM_TYPE
+        ]
         
         # 閾値日付を計算
         threshold_date = datetime.datetime.now() - datetime.timedelta(days=threshold_days)
@@ -1232,7 +1974,7 @@ class EpisodicMemoryManager:
                 summary = summary.strip()
                 
                 if summary:
-                    new_monthly_episodes.append({
+                    monthly_episode = {
                         "date": f"{month_start}~{month_end}",
                         "summary": summary,
                         "arousal": round(avg_arousal, 3),
@@ -1241,7 +1983,17 @@ class EpisodicMemoryManager:
                         "monthly_compressed": True,
                         "original_count": len(month_episodes),
                         "created_at": datetime.datetime.now().isoformat()
-                    })
+                    }
+                    marker_union = set()
+                    for source_episode in month_episodes:
+                        marker_union.update(_episode_lite_markers(source_episode))
+                    for addendum in lite_addenda:
+                        addendum_date = str(addendum.get("date", "")).strip()
+                        if month_start <= addendum_date <= month_end:
+                            marker_union.update(_episode_lite_markers(addendum))
+                    if marker_union:
+                        monthly_episode["lite_return_event_markers"] = sorted(marker_union)
+                    new_monthly_episodes.append(monthly_episode)
                     print(f"    - {month_key}: {len(month_episodes)}週 → 1件 (Arousal avg:{avg_arousal:.2f})")
                 else:
                     print(f"    - {month_key}: 要約が空のため統合をスキップ")
@@ -1250,6 +2002,23 @@ class EpisodicMemoryManager:
                 print(f"    - {month_key}: 要約エラー ({e})")
                 other_episodes.extend(month_episodes)
         
+        # 既存月次集約へ後から追加された補足のreceiptも引き継ぐ。
+        for addendum in lite_addenda:
+            addendum_date = str(addendum.get("date", "")).strip()
+            addendum_markers = _episode_lite_markers(addendum)
+            if not addendum_date or not addendum_markers:
+                continue
+            for aggregate in monthly_compressed + new_monthly_episodes:
+                aggregate_date = str(aggregate.get("date", "")).strip()
+                separator = "~" if "~" in aggregate_date else ("～" if "～" in aggregate_date else None)
+                if not separator:
+                    continue
+                bounds = [part.strip() for part in aggregate_date.split(separator)]
+                if len(bounds) == 2 and bounds[0] <= addendum_date <= bounds[1]:
+                    aggregate["lite_return_event_markers"] = sorted(
+                        _episode_lite_markers(aggregate) | addendum_markers
+                    )
+
         # --- 圧縮後のデータを保存 ---
         final_episodes = monthly_compressed + new_monthly_episodes + other_episodes
         self._save_memory(final_episodes)
@@ -1441,6 +2210,15 @@ class EpisodicMemoryManager:
         provider_cat, effective_model_name, _ = config_manager.get_effective_internal_model(role)
         sanitized_model_name = utils.sanitize_model_name(effective_model_name or "")
         is_google = provider_cat in ["google", "Google (Gemini)", "Google (Gemini Native)"]
+
+        if is_google:
+            from gemini_connection import is_vertex
+            if is_vertex():
+                response, used_key = LLMFactory.invoke_internal_llm(
+                    internal_role=role, prompt=prompt, room_name=self.room_name,
+                    generation_config=settings,
+                )
+                return utils.extract_text_from_llm_content(response.content), used_key
 
         current_api_key = api_key
 

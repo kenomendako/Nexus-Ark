@@ -1,8 +1,11 @@
 import sys
 import json
+import ssl
 import urllib.request
 import urllib.parse
 import logging
+
+import certifi
 from mcp.server.fastmcp import FastMCP
 
 # デバッグ用に stderr へログを出力するように設定
@@ -12,12 +15,21 @@ logger = logging.getLogger("weather-mcp")
 # MCPサーバの初期化
 mcp = FastMCP("WeatherService")
 
+
+def _create_tls_context() -> ssl.SSLContext:
+    """直接起動でも certifi の CA バンドルだけを使う TLS コンテキスト。"""
+
+    context = ssl.create_default_context(cafile=certifi.where())
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.check_hostname = True
+    return context
+
 def get_coords(city_name: str):
     """地名から経緯度を取得する (Open-Meteo Geocoding API)"""
     encoded_city = urllib.parse.quote(city_name)
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={encoded_city}&count=1&language=ja&format=json"
     
-    with urllib.request.urlopen(url) as response:
+    with urllib.request.urlopen(url, context=_create_tls_context()) as response:
         data = json.loads(response.read().decode())
         if not data.get("results"):
             return None
@@ -39,7 +51,7 @@ def get_weather(city: str) -> str:
     lat, lon, formal_name = coords
     weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code"
     
-    with urllib.request.urlopen(weather_url) as response:
+    with urllib.request.urlopen(weather_url, context=_create_tls_context()) as response:
         data = json.loads(response.read().decode())
         current = data["current"]
         temp = current["temperature_2m"]

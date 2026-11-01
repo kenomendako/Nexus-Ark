@@ -14,6 +14,8 @@ import json
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
 
+from tls_security import create_tls_context
+
 # グローバルメモリキャッシュ
 _weather_cache: Optional["WeatherData"] = None
 _weather_cache_time: float = 0.0
@@ -85,7 +87,7 @@ class WeatherService:
         
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'NexusArkWeatherClient/1.0'})
-            with urllib.request.urlopen(req, timeout=5.0) as response:
+            with urllib.request.urlopen(req, timeout=5.0, context=create_tls_context()) as response:
                 data = json.loads(response.read().decode('utf-8'))
                 results = data.get("results", [])
                 if not results:
@@ -121,7 +123,11 @@ class WeatherService:
 
         try:
             req = urllib.request.Request(url, headers={'User-Agent': 'NexusArkWeatherClient/1.0'})
-            with urllib.request.urlopen(req, timeout=_WEATHER_API_TIMEOUT_SECONDS) as response:
+            with urllib.request.urlopen(
+                req,
+                timeout=_WEATHER_API_TIMEOUT_SECONDS,
+                context=create_tls_context(),
+            ) as response:
                 data = json.loads(response.read().decode('utf-8'))
                 
                 current = data.get("current", {})

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "bootstrap_version": 1,
+  "tls_policy": "certifi-pinned-v1",
+  "minimum_certifi": "2026.10.23"
+}

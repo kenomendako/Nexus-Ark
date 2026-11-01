@@ -27,8 +27,62 @@ import constants
 import room_manager
 import utils
 import signature_manager
+from gemini_model_features import (
+    normalize_model_name,
+    supports_native_thinking_parts,
+    uses_argon_request_rules,
+    tool_signature_map,
+)
 import closet_manager
-from episodic_memory_manager import EpisodicMemoryManager
+from episodic_memory_manager import EpisodicMemoryManager, is_daily_episodic_memory
+
+
+def _get_gemini_connection_module():
+    """Gemini の資格情報を一元管理する境界を遅延 import する。"""
+
+    import gemini_connection
+    return gemini_connection
+
+
+def _is_vertex_connection(connection=None) -> bool:
+    """接続辞書の backend だけを見て Vertex 経路を判定する。"""
+
+    if not connection:
+        return False
+    module = _get_gemini_connection_module()
+    if module is not None:
+        try:
+            return bool(module.is_vertex(connection=connection))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return (
+        isinstance(connection, dict)
+        and str(connection.get("backend", "")).strip().lower() == "vertex"
+    )
+
+
+def _get_connection(*, room_name=None, force_global=False):
+    module = _get_gemini_connection_module()
+    if module is None:
+        return None
+    return module.normalize_connection(
+        module.get_connection(room_name=room_name, force_global=force_global), require_valid=True,
+    )
+
+
+def _create_google_client(connection=None, api_key=None, http_options=None):
+    """Developer/Vertex の秘密値を混ぜずに GenAI Client を生成する。"""
+
+    module = _get_gemini_connection_module()
+    if connection is not None and module is not None:
+        return module.create_client(
+            connection,
+            api_key=api_key,
+            http_options=http_options,
+        )
+    if http_options is None:
+        return genai.Client(vertexai=False, api_key=api_key)
+    return genai.Client(vertexai=False, api_key=api_key, http_options=http_options)
 
 def _is_gemini_3_family_model(model_name: str) -> bool:
     return re.search(r"gemini[-_\s]?3(?:[.\-_]?\d+)?", (model_name or "").lower()) is not None
@@ -203,17 +257,26 @@ def _get_autonomous_429_fallback_model() -> str:
         return constants.INTERNAL_PROCESSING_MODEL
 
 # --- トークン計算関連 (変更なし) ---
-def get_model_token_limits(model_name: str, api_key: str, provider: str = None) -> Optional[Dict[str, int]]:
+def get_model_token_limits(
+    model_name: str,
+    api_key: str = None,
+    provider: str = None,
+    connection: dict | None = None,
+) -> Optional[Dict[str, int]]:
     # 注釈（かっこ書き）を除去
     model_name = model_name.split(" (")[0].strip() if model_name else model_name
 
     if model_name in utils._model_token_limits_cache: return utils._model_token_limits_cache[model_name]
-    if not api_key or api_key.startswith("YOUR_API_KEY"): return None
 
     # 【マルチモデル対応】OpenAIモデルの場合はGemini APIを呼び出さない
     # gpt-、o1-、claude-などGemini以外のモデルはGemini APIで情報取得不可
     if not provider:
         provider = config_manager.get_active_provider()
+
+    if connection is None and provider in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+        connection = _get_connection(force_global=True)
+    if connection is None and (not api_key or api_key.startswith("YOUR_API_KEY")):
+        return None
 
     # '/'が含まれる場合（例: mistralai/mistral-7b...）もOpenAI互換とみなす
     is_openai_model = (
@@ -229,14 +292,20 @@ def get_model_token_limits(model_name: str, api_key: str, provider: str = None) 
         return {"input": 128000, "output": 8192}  # GPT-4o相当のデフォルト値
 
     try:
-        client = genai.Client(api_key=api_key)
-        model_info = client.models.get(model=f"models/{model_name}")
+        client = _create_google_client(
+            connection=connection,
+            api_key=None if _is_vertex_connection(connection) else api_key,
+        )
+        model_info = client.models.get(model=model_name if _is_vertex_connection(connection) else f"models/{model_name}")
         if model_info and hasattr(model_info, 'input_token_limit') and hasattr(model_info, 'output_token_limit'):
             limits = {"input": model_info.input_token_limit, "output": model_info.output_token_limit}
             utils._model_token_limits_cache[model_name] = limits
             return limits
         return None
-    except Exception as e: print(f"モデル情報の取得中にエラー: {e}"); return None
+    except Exception as e:
+        detail = type(e).__name__ if _is_vertex_connection(connection) else str(e)
+        print(f"モデル情報の取得中にエラー: {detail}")
+        return None
 
 def _convert_lc_to_gg_for_count(messages: List[Union[SystemMessage, HumanMessage, AIMessage]]) -> List[Dict]:
     contents = []
@@ -306,6 +375,26 @@ def count_tokens_from_lc_messages(messages: List, model_name: str, api_key: str)
         # 最悪の場合、文字数/2 程度で返す
         return sum(len(str(m.content)) for m in messages) // 2
 
+
+def _compose_working_memory_token_section(
+    active_slot: str,
+    content: str,
+    available_slots: List[str],
+) -> str:
+    """Gemini見積もり用WM節。terminal本文を含めず、他slot概要は保持する。"""
+    body = str(content or "").strip()
+    slots = [str(slot).strip() for slot in (available_slots or []) if str(slot).strip()]
+    section = ""
+    if body:
+        section = (
+            f"\n### 現在のプラン・ワーキングメモリ "
+            f"(アクティブスロット: {active_slot})\n{body}\n"
+        )
+    if slots:
+        section += f"\n※ 他の利用可能なスロット: {', '.join(slots)}\n"
+    return section
+
+
 # --- 日付ベースフィルタリング関数 ---
 
 def _get_effective_today_cutoff(room_name: str, silent: bool = False) -> str:
@@ -337,15 +426,8 @@ def _get_effective_today_cutoff(room_name: str, silent: bool = False) -> str:
     has_yesterday_memory = False
 
     def check_episodes_for_date(episodes: list, target_date: str) -> bool:
-        """エピソードリストに指定日付のエピソードが存在するかチェック"""
-        for ep in episodes:
-            if not isinstance(ep, dict):
-                continue
-            date_str = ep.get('date', '').strip()
-
-            if date_str == target_date:
-                return True
-        return False
+        """指定日付の日次要約が存在するかチェック（特殊記憶は除外）。"""
+        return any(is_daily_episodic_memory(ep, target_date) for ep in episodes)
 
     # 1. まず新形式（月別ファイル）をチェック
     if os.path.exists(new_format_file):
@@ -368,10 +450,20 @@ def _get_effective_today_cutoff(room_name: str, silent: bool = False) -> str:
             print(f"Warning: Failed to check episodic memory (old format) for {yesterday_str}: {e}")
 
     if has_yesterday_memory:
-        if not silent: print(f"  - [Cutoff] 昨日({yesterday_str})のエピソード記憶: あり → カットオフ={today_str}")
+        if not silent:
+            print(
+                f"  - [Cutoff] 昨日({yesterday_str})の日次エピソード要約: あり "
+                f"→ カットオフ={today_str}",
+                flush=True,
+            )
         return today_str  # 昨日分は記憶化済み → 今日以降のみ
     else:
-        if not silent: print(f"  - [Cutoff] 昨日({yesterday_str})のエピソード記憶: なし → カットオフ={yesterday_str}")
+        if not silent:
+            print(
+                f"  - [Cutoff] 昨日({yesterday_str})の日次エピソード要約: なし "
+                f"（特殊記憶のみの場合を含む）→ カットオフ={yesterday_str}",
+                flush=True,
+            )
         return yesterday_str  # 昨日分は未処理 → 昨日以降も含める
 
 def _filter_messages_from_today(messages: list, today_str: str) -> list:
@@ -633,7 +725,15 @@ def _apply_auto_summary(
     return result_messages
 
 # --- 履歴構築 (Dual-Stateの核心) ---
-def convert_raw_log_to_lc_messages(raw_history: list, responding_character_id: str, add_timestamp: bool, send_thoughts: bool, provider: str = "google") -> list:
+def convert_raw_log_to_lc_messages(
+    raw_history: list,
+    responding_character_id: str,
+    add_timestamp: bool,
+    send_thoughts: bool,
+    provider: str = "google",
+    model_name: Optional[str] = None,
+    connection_id: Optional[str] = None,
+) -> list:
     """
     ログ(テキスト)からメッセージを復元し、signature_manager(JSON) から
     最新の思考署名とツール呼び出し情報を注入して、完全な状態のオブジェクトを返す。
@@ -641,17 +741,29 @@ def convert_raw_log_to_lc_messages(raw_history: list, responding_character_id: s
 
     Args:
         provider: "google" または "openai"。OpenAI互換の場合は履歴平滑化を無効にする。
+        model_name: 署名の生成元と照合する送信対象モデル名。
     """
     from langchain_core.messages import HumanMessage, AIMessage
     lc_messages = []
     timestamp_pattern = re.compile(r'\n\n\d{4}-\d{2}-\d{2} \(...\) \d{2}:\d{2}:\d{2}(?: \| .*)?$')
 
     # 1. JSONファイルから最新のターンコンテキストを取得
-    # これらは「直近にAIが行ったツール呼び出し」の情報
-    turn_context = signature_manager.get_turn_context(responding_character_id)
+    # これらは「直近にAIが行ったツール呼び出し」の情報。
+    # 署名はGoogleのgenerateContentだけで意味を持つため、他プロバイダへ
+    # 誤って再利用しない。model_name指定時は保存元モデルを厳密照合する。
+    turn_context = {}
+    if provider == "google":
+        signature_filter = {}
+        if model_name is not None:
+            signature_filter["model_name"] = model_name
+        if connection_id is not None:
+            signature_filter["connection_id"] = connection_id
+        turn_context = signature_manager.get_turn_context(responding_character_id, **signature_filter)
     # Gemini 3形式の署名を優先、なければ古い形式にフォールバック
     stored_signature = turn_context.get("gemini_function_call_thought_signatures") or turn_context.get("last_signature")
     stored_tool_calls = turn_context.get("last_tool_calls")
+    stored_signature_model = turn_context.get("signature_model_name")
+    stored_signature_connection = turn_context.get("signature_connection_id", "developer")
 
     # --- フェーズ1: 基本的なメッセージリストの構築 ---
     # 【追加項目】履歴の平滑化 (History Flattening)
@@ -810,23 +922,33 @@ def convert_raw_log_to_lc_messages(raw_history: list, responding_character_id: s
                             if not any(existing.get('id') == tc.get('id') for existing in msg.tool_calls):
                                 msg.tool_calls.append(tc)
 
-                if stored_signature:
-                    if not msg.additional_kwargs: msg.additional_kwargs = {}
+                if stored_signature or stored_signature_model:
+                    if not msg.additional_kwargs:
+                        msg.additional_kwargs = {}
 
-                    # 署名を SDK が期待する {tool_call_id: signature} の辞書形式に変換
-                    final_sig_dict = {}
-                    if isinstance(stored_signature, dict):
+                    # SDKが期待する {tool_call_id: signature} へ変換する。
+                    # 実ツールIDが分かる場合はIDで絞り込み、単一署名を
+                    # 並列tool callへ複製しない。古い履歴でtool call自体が
+                    # まだ復元されていない場合だけ、既存の辞書を保つ。
+                    if isinstance(stored_signature, dict) and not msg.tool_calls:
                         final_sig_dict = stored_signature
                     else:
-                        # 文字列やリストの場合は、現在の tool_calls と紐付ける
-                        sig_val = stored_signature[0] if isinstance(stored_signature, list) and stored_signature else stored_signature
-                        if msg.tool_calls:
-                            for tc in msg.tool_calls:
-                                tc_id = tc.get("id")
-                                if tc_id: final_sig_dict[tc_id] = sig_val
+                        final_sig_dict = tool_signature_map(stored_signature, msg.tool_calls)
 
                     if final_sig_dict:
-                        msg.additional_kwargs["__gemini_function_call_thought_signatures__"] = final_sig_dict
+                        msg.additional_kwargs[
+                            "__gemini_function_call_thought_signatures__"
+                        ] = final_sig_dict
+
+                    # graph側が送信直前にモデル境界を確認できるよう、由来を
+                    # AIMessageへ明示する。由来不明の旧形式には付与しない。
+                    signature_model = normalize_model_name(stored_signature_model or "")
+                    if signature_model:
+                        msg.additional_kwargs["__nexus_gemini_signature_model__"] = signature_model
+                    if stored_signature_connection:
+                        msg.additional_kwargs["__nexus_gemini_signature_connection__"] = str(
+                            stored_signature_connection
+                        )
                 break
 
     return merge_consecutive_messages(lc_messages, add_timestamp=add_timestamp)
@@ -898,6 +1020,15 @@ def merge_consecutive_messages(lc_messages: list, add_timestamp: bool = False) -
 
 def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
     from agent.graph import app
+    from api.lite_runtime_controls import (
+        LiteRequestStopped,
+        bind_lite_request_scope,
+        checkpoint_lite_request,
+        get_current_lite_request_scope,
+        mark_lite_external_request_finished,
+        mark_lite_external_request_started,
+        wait_lite_retry,
+    )
 
     # 引数展開
     room_to_respond = agent_args["room_to_respond"]
@@ -920,6 +1051,7 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
     shared_history_log_path = agent_args.get("shared_history_log_path")
     force_user_prompt_parts = agent_args.get("force_user_prompt_parts", False)
     autonomous_action_mode = bool(agent_args.get("autonomous_action", False))
+    lite_scope = agent_args.get("lite_request_scope") or get_current_lite_request_scope()
 
     all_participants_list = [soul_vessel_room] + active_participants
 
@@ -944,6 +1076,25 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
 
     # 【OpenAI互換対応】プロバイダを取得して履歴変換に渡す
     current_provider = config_manager.get_active_provider(room_to_respond)
+    gemini_connection = agent_args.get("_gemini_connection")
+    if gemini_connection is None and current_provider in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+        # 主応答の接続はこのターンで固定し、ストリームの再試行中に
+        # ルーム設定を読み直して別 backend へ切り替えない。
+        gemini_connection = _get_connection(room_name=room_to_respond, force_global=False)
+    is_vertex_connection = _is_vertex_connection(gemini_connection)
+    if is_vertex_connection:
+        # Vertex は Developer API キー台帳と独立するため、キー名も空にする。
+        current_retry_api_key_name = None
+    gemini_signature_connection_id = "developer"
+    if current_provider in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+        connection_module = _get_gemini_connection_module()
+        if connection_module is not None:
+            try:
+                gemini_signature_connection_id = str(
+                    connection_module.connection_id(gemini_connection)
+                )
+            except (AttributeError, TypeError, ValueError):
+                gemini_signature_connection_id = "vertex" if is_vertex_connection else "developer"
 
     # 自身のログ
     responding_ai_log_f, _, _, _, _, _, _ = room_manager.get_room_files_paths(room_to_respond)
@@ -965,7 +1116,15 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
             print(f"  [Warning] Lazy load failed, falling back to full load: {e}")
             own_history_raw = utils.load_chat_log(responding_ai_log_f)
 
-        messages = convert_raw_log_to_lc_messages(own_history_raw, room_to_respond, add_timestamp, send_thoughts_final, provider=current_provider)
+        messages = convert_raw_log_to_lc_messages(
+            own_history_raw,
+            room_to_respond,
+            add_timestamp,
+            send_thoughts_final,
+            provider=current_provider,
+            model_name=model_name,
+            connection_id=gemini_signature_connection_id,
+        )
 
     # 【重要】最終的なメッセージリストを走査し、ロールの重複を排除
     messages = merge_consecutive_messages(messages, add_timestamp=add_timestamp)
@@ -984,7 +1143,15 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
         except Exception:
             snapshot_history_raw = utils.load_chat_log(history_log_path)
 
-        snapshot_messages = convert_raw_log_to_lc_messages(snapshot_history_raw, room_to_respond, add_timestamp, send_thoughts_final, provider=current_provider)
+        snapshot_messages = convert_raw_log_to_lc_messages(
+            snapshot_history_raw,
+            room_to_respond,
+            add_timestamp,
+            send_thoughts_final,
+            provider=current_provider,
+            model_name=model_name,
+            connection_id=gemini_signature_connection_id,
+        )
         if snapshot_messages:
              messages.extend(snapshot_messages)
 
@@ -992,7 +1159,15 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
     # 応答者本人の記憶・履歴に、グループ開始後の共有発言だけを合成する。
     if shared_history_log_path and os.path.exists(shared_history_log_path) and shared_history_log_path != responding_ai_log_f:
         shared_history_raw = utils.load_chat_log(shared_history_log_path, single_file_only=True)
-        shared_messages = convert_raw_log_to_lc_messages(shared_history_raw, room_to_respond, add_timestamp, send_thoughts_final, provider=current_provider)
+        shared_messages = convert_raw_log_to_lc_messages(
+            shared_history_raw,
+            room_to_respond,
+            add_timestamp,
+            send_thoughts_final,
+            provider=current_provider,
+            model_name=model_name,
+            connection_id=gemini_signature_connection_id,
+        )
         if shared_messages:
             messages.extend(shared_messages)
 
@@ -1124,10 +1299,15 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
         auto_summary_applied = False  # Auto Summary が実際に適用されたかどうかのフラグ
         auto_summary_enabled = effective_settings.get("auto_summary_enabled", False)
         if auto_summary_enabled:
-            temp_clean_key_name = config_manager._clean_api_key_name(current_retry_api_key_name)
-            summary_api_key = config_manager.GEMINI_API_KEYS.get(temp_clean_key_name)
+            if is_vertex_connection:
+                # Vertex ADC/API-key は Developer キー台帳に存在しない。要約生成は
+                # 内部ロールの共通 Vertex 接続へ委譲するため、キーを要求しない。
+                summary_api_key = None
+            else:
+                temp_clean_key_name = config_manager._clean_api_key_name(current_retry_api_key_name)
+                summary_api_key = config_manager.GEMINI_API_KEYS.get(temp_clean_key_name)
 
-            if summary_api_key:
+            if summary_api_key or is_vertex_connection:
                 pre_summary_count = len(today_messages)
                 today_messages = _apply_auto_summary(
                     today_messages,
@@ -1223,9 +1403,14 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
 
     # --- [Phase 1.1] 枯渇チェック (以前の [2026-01-31 FIX] 部分) ---
     # [2026-02-15 FIX] Clean key name before checking exhaustion
-    clean_current_retry_api_key_name = config_manager._clean_api_key_name(current_retry_api_key_name)
-    clean_current_retry_api_key_name = config_manager._clean_api_key_name(current_retry_api_key_name)
-    if config_manager.is_key_exhausted(clean_current_retry_api_key_name, model_name=model_name):
+    clean_current_retry_api_key_name = (
+        config_manager._clean_api_key_name(current_retry_api_key_name)
+        if not is_vertex_connection else None
+    )
+    if not is_vertex_connection and config_manager.is_key_exhausted(
+        clean_current_retry_api_key_name,
+        model_name=model_name,
+    ):
         # Rotation有効確認
         enable_rotation = effective_settings.get("enable_api_key_rotation")
         if enable_rotation is None: # 個別未設定なら共通設定
@@ -1254,12 +1439,16 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
             yield ("values", {"messages": messages + [error_msg]})
             return
 
-    tried_keys = {current_retry_api_key_name}
-    # [2026-02-15 FIX] Clean key name before fetching from GEMINI_API_KEYS
-    clean_key_name = config_manager._clean_api_key_name(current_retry_api_key_name)
-    api_key = config_manager.GEMINI_API_KEYS.get(clean_key_name)
+    tried_keys = set() if is_vertex_connection else {current_retry_api_key_name}
+    if is_vertex_connection:
+        # ADC は API キーなしで動作する。API-key express も値は接続辞書内に保持される。
+        api_key = None
+    else:
+        # [2026-02-15 FIX] Clean key name before fetching from GEMINI_API_KEYS
+        clean_key_name = config_manager._clean_api_key_name(current_retry_api_key_name)
+        api_key = config_manager.GEMINI_API_KEYS.get(clean_key_name)
 
-    if not api_key or api_key.startswith("YOUR_API_KEY"):
+    if not is_vertex_connection and (not api_key or api_key.startswith("YOUR_API_KEY")):
         error_msg = AIMessage(content=f"[エラー: APIキー '{current_retry_api_key_name}' が無効です。]")
         yield ("initial_count", len(messages))
         yield ("values", {"messages": messages + [error_msg]})
@@ -1270,6 +1459,9 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
         "messages": messages, "room_name": room_to_respond,
         "api_key": api_key, "api_key_name": current_retry_api_key_name,
         "model_name": model_name,
+        # グラフ内の全ノードで同一接続を使う。Vertex 接続辞書自体は
+        # 外部ログへ出さず、状態引き渡し専用とする。
+        "_gemini_connection": gemini_connection,
         "generation_config": effective_settings,
         "send_core_memory": effective_settings.get("send_core_memory", True),
         "send_scenery": effective_settings.get("send_scenery", True),
@@ -1312,15 +1504,18 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
 
     # [2026-02-21 FIX] リトライ時に成功済みの状態（RAG検索結果等）を引き継ぐための変数
     latest_state_values = initial_state.copy()
+    retry_room = room_to_respond
 
     while retry_count <= max_retries:
         try:
+            checkpoint_lite_request(lite_scope)
             # 情景描写が未取得の場合は、現在のAPIキーで取得を試みる（ローテーション対象にするため）
             if not latest_state_values.get("scenery_text") or not latest_state_values.get("location_name"):
                 print(f"  - [Invoke] 情景描写を遅延生成中... (Key: {current_retry_api_key_name})")
                 from agent.scenery_manager import generate_scenery_context
                 loc_name, _, scen_text = generate_scenery_context(
-                    room_to_respond, api_key, season_en=season_en, time_of_day_en=time_of_day_en
+                    latest_state_values.get("room_name", room_to_respond), api_key,
+                    season_en=season_en, time_of_day_en=time_of_day_en,
                 )
                 latest_state_values["location_name"] = loc_name
                 latest_state_values["scenery_text"] = scen_text
@@ -1346,9 +1541,17 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
 
             def run_stream():
                 try:
-                    for s_mode, s_payload in app.stream(latest_state_values, stream_mode=["messages", "values"]):
-                        q.put((s_mode, s_payload))
-                    q.put(("DONE", None))
+                    with bind_lite_request_scope(lite_scope):
+                        checkpoint_lite_request(lite_scope)
+                        mark_lite_external_request_started(lite_scope)
+                        try:
+                            for s_mode, s_payload in app.stream(latest_state_values, stream_mode=["messages", "values"]):
+                                checkpoint_lite_request(lite_scope)
+                                q.put((s_mode, s_payload))
+                            checkpoint_lite_request(lite_scope)
+                            q.put(("DONE", None))
+                        finally:
+                            mark_lite_external_request_finished(lite_scope)
                 except Exception as stream_e:
                     thread_error.append(stream_e)
                     q.put(("ERROR", None))
@@ -1387,17 +1590,70 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
                                  # ツールコールがあれば抽出
                                  t_calls = msg.tool_calls if hasattr(msg, "tool_calls") else []
 
-                                 # 署名またはツールコールがあれば、ターンコンテキストとして永続化
-                                 if sig or t_calls:
-                                     signature_manager.save_turn_context(room_to_respond, sig, t_calls)
+                                 # Googleの署名だけを、実際に応答したモデル由来で永続化する。
+                                 # graphがfactoryの実モデルをmarkerへ記録している場合は、
+                                 # outer stateの要求モデルよりAIMessageの由来を優先する。
+                                 message_kwargs = getattr(msg, "additional_kwargs", {}) or {}
+                                 signature_model_marker = normalize_model_name(
+                                     str(message_kwargs.get("__nexus_gemini_signature_model__", "") or "")
+                                 )
+                                 response_model_name = (
+                                     signature_model_marker
+                                     or latest_state_values.get("model_name")
+                                     or model_name
+                                 )
+                                 signature_room = latest_state_values.get("room_name", room_to_respond)
+                                 signature_connection = latest_state_values.get("_gemini_connection", gemini_connection)
+                                 signature_id = _get_gemini_connection_module().connection_id(signature_connection)
+                                 signature_provider = config_manager.get_active_provider(signature_room)
+                                 origin_id = message_kwargs.get("__nexus_gemini_signature_connection__", signature_id)
+                                 if signature_provider in {"google", "Google (Gemini)", "Google (Gemini Native)"} and (sig or t_calls) and origin_id == signature_id:
+                                     signature_manager.save_turn_context(
+                                         signature_room, sig, t_calls,
+                                         model_name=response_model_name,
+                                         connection_id=signature_id,
+                                     )
 
-                    yield (mode, payload)
+                    checkpoint_lite_request(lite_scope)
+                    if mode == "values" and isinstance(payload, dict):
+                        # Vertex API key を含む接続スナップショットはグラフ内部だけで
+                        # 使用し、ストリーム利用者へ状態全体を返さない。
+                        public_payload = dict(payload)
+                        public_payload.pop("_gemini_connection", None)
+                        public_payload.pop("api_key", None)
+                        if isinstance(public_payload.get("generation_config"), dict):
+                            public_payload["generation_config"] = dict(public_payload["generation_config"])
+                            public_payload["generation_config"].pop("gemini_connection", None)
+                        yield (mode, public_payload)
+                    else:
+                        yield (mode, payload)
                 except queue.Empty:
+                    checkpoint_lite_request(lite_scope)
                     yield ("heartbeat", None)
 
             break # Success
 
         except Exception as e:
+            if isinstance(e, LiteRequestStopped):
+                raise
+            active_room = latest_state_values.get("room_name", room_to_respond)
+            gemini_connection = latest_state_values.get("_gemini_connection", gemini_connection)
+            is_vertex_connection = _is_vertex_connection(gemini_connection)
+            current_provider = config_manager.get_active_provider(active_room)
+            model_name = latest_state_values.get("model_name") or model_name
+            effective_settings = latest_state_values.get("generation_config") or effective_settings
+            current_retry_api_key_name = latest_state_values.get("api_key_name")
+            api_key = latest_state_values.get("api_key")
+            if active_room != retry_room:
+                tried_keys = set() if is_vertex_connection else {current_retry_api_key_name}
+                retry_count = 0
+                local_503_retry_count = 0
+                retry_room = active_room
+            if current_provider not in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+                yield ("values", {"messages": latest_state_values.get("messages", []) + [
+                    AIMessage(content="[エラー: 応答モデルの実行に失敗しました。接続先を確認してください。]"),
+                ]})
+                return
             # 429 エラーハンドリング（ローテーション）。
             # 判定を確実にし、SDKラップされた例外からも救い出す。
             from google.api_core.exceptions import ResourceExhausted
@@ -1420,6 +1676,29 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
             is_503 = _is_gemini_503_error(err_str, is_429=is_429)
             limit_type = _classify_gemini_429_limit(err_str) if is_429 else "RPM"
 
+            if is_vertex_connection:
+                diagnostic = _get_gemini_connection_module().vertex_error_message(e)
+                # Vertex の失敗は同一 project/location の接続エラーとして返す。
+                # Developer API キーの有料待機・枯渇記録・回転・モデル退避は行わない。
+                if is_429:
+                    msg_text = (
+                        f"[エラー: Vertex AI の割り当て制限(429)により応答できませんでした。"
+                        f" (モデル: {failed_model})]\n{diagnostic}"
+                    )
+                elif is_503:
+                    msg_text = (
+                        f"[エラー: Vertex AI が一時的に利用不可(503)です。"
+                        f" (モデル: {failed_model})]\n{diagnostic}"
+                    )
+                else:
+                    msg_text = f"[エラー: {diagnostic}]"
+                yield ("initial_count", len(latest_state_values.get("messages", [])))
+                yield (
+                    "values",
+                    {"messages": latest_state_values.get("messages", []) + [AIMessage(content=msg_text)]},
+                )
+                return
+
             if not is_429 and not is_503:
                 # 429以外のエラーは通常のエラーハンドリングへ
                 err_content = f"[エラー: AIモデル実行中にエラーが発生しました: {e}]"
@@ -1432,7 +1711,7 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
                 local_503_retry_count += 1
                 wait_time = local_503_retry_count * 2 # 2, 4, 6秒と待機を増やす
                 print(f"  [Warning] 503 UNAVAILABLE (Overloaded) detected. Retrying on SAME key '{current_retry_api_key_name}' (attempt {local_503_retry_count}/{max_local_503_retries}) after {wait_time}s...")
-                time.sleep(wait_time)
+                wait_lite_retry(wait_time, lite_scope)
                 continue # 同一キーで再試行
 
             if is_503 and not rotate_after_503_exhausted:
@@ -1459,7 +1738,7 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
                 retry_count += 1
                 wait_time = 5 * retry_count
                 print(f"  [Paid Key Backoff] 有料キー '{current_retry_api_key_name}' で 429 エラー。{wait_time}秒待機して再試行します... ({retry_count}/3)")
-                time.sleep(wait_time)
+                wait_lite_retry(wait_time, lite_scope)
                 continue
 
             retry_count += 1
@@ -1524,7 +1803,7 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
                          fallback_model = _get_autonomous_429_fallback_model()
                          if fallback_model and fallback_model != failed_model:
                              fallback_key_name = config_manager.get_active_gemini_api_key_name(
-                                 room_to_respond,
+                                 active_room,
                                  model_name=fallback_model,
                                  excluded_keys=set(),
                              )
@@ -1560,10 +1839,12 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
 
             tried_keys.add(next_key_name)
 
+            checkpoint_lite_request(lite_scope)
+
             # [2026-02-15 FIX] バックオフ待機を入れて安定化させる
             wait_time = 1.0 + (retry_count * 0.5)
             print(f"  [Rotation] Switching key: '{current_retry_api_key_name}' -> '{next_key_name}' (Wait {wait_time}s...)")
-            time.sleep(wait_time)
+            wait_lite_retry(wait_time, lite_scope)
 
             # 次の試行のために変数を更新
             current_retry_api_key_name = next_key_name
@@ -1578,6 +1859,8 @@ def invoke_nexus_agent_stream(agent_args: dict) -> Iterator[Dict[str, Any]]:
 
 
         except Exception as e:
+            if isinstance(e, LiteRequestStopped):
+                raise
             traceback.print_exc()
             yield ("initial_count", len(latest_state_values.get("messages", [])))
             yield ("values", {"messages": [AIMessage(content=f"[エラー: 予期せぬ例外が発生しました: {e}]")]})
@@ -1593,7 +1876,15 @@ def count_input_tokens(**kwargs):
     parts = kwargs.get("parts", [])
 
     api_key = config_manager.GEMINI_API_KEYS.get(api_key_name)
-    if not api_key or api_key.startswith("YOUR_API_KEY"): return "トークン数: (APIキーエラー)"
+    token_connection = None
+    try:
+        if config_manager.get_active_provider(room_name) in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+            token_connection = _get_connection(room_name=room_name, force_global=False)
+    except Exception:
+        token_connection = None
+    is_vertex_token_connection = _is_vertex_connection(token_connection)
+    if not is_vertex_token_connection and (not api_key or api_key.startswith("YOUR_API_KEY")):
+        return "トークン数: (APIキーエラー)"
 
     try:
         kwargs_for_settings = kwargs.copy()
@@ -1753,33 +2044,51 @@ def count_input_tokens(**kwargs):
 
         working_memory_section = ""
         active_wm_slot = room_manager.get_active_working_memory_slot(room_name)
+        from tools.working_memory_tools import (
+            get_working_memory_metadata,
+            is_working_memory_injectable,
+            load_injectable_working_memory,
+        )
+        wm_metadata = get_working_memory_metadata(room_name)
         wm_dir = os.path.join(constants.ROOMS_DIR, room_name, constants.NOTES_DIR_NAME, constants.WORKING_MEMORY_DIR_NAME)
         working_memory_path = os.path.join(wm_dir, f"{active_wm_slot}{constants.WORKING_MEMORY_EXTENSION}")
 
         available_slots = []
         if os.path.exists(wm_dir):
-            available_slots = [f.replace(constants.WORKING_MEMORY_EXTENSION, '') for f in os.listdir(wm_dir) if f.endswith(constants.WORKING_MEMORY_EXTENSION) and f != f"{active_wm_slot}{constants.WORKING_MEMORY_EXTENSION}"]
-
+            available_slots = [
+                slot_name
+                for slot_name in (
+                    f.replace(constants.WORKING_MEMORY_EXTENSION, "")
+                    for f in os.listdir(wm_dir)
+                    if f.endswith(constants.WORKING_MEMORY_EXTENSION)
+                    and f != f"{active_wm_slot}{constants.WORKING_MEMORY_EXTENSION}"
+                )
+                if is_working_memory_injectable(wm_metadata, slot_name)
+            ]
         if os.path.exists(working_memory_path):
-            with open(working_memory_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-                if content:
-                    working_memory_section = f"\n### 現在のプラン・ワーキングメモリ (アクティブスロット: {active_wm_slot})\n{content}\n"
-                    if available_slots:
-                        working_memory_section += f"\n※ 他の利用可能なスロット: {', '.join(available_slots)}\n"
-                    try:
-                        from tools.working_memory_tools import get_working_memory_metadata
-                        import memory_steward_observer
-                        memory_steward_observer.observe_working_memory(
-                            room_name,
-                            active_wm_slot,
-                            content,
-                            get_working_memory_metadata(room_name),
-                            event_type="wm_token_estimate",
-                            route="gemini_token_estimate",
-                        )
-                    except Exception:
-                        pass
+            content = load_injectable_working_memory(
+                room_name, active_wm_slot, mark_read=False
+            )
+            working_memory_section = _compose_working_memory_token_section(
+                active_wm_slot, content, available_slots
+            )
+            if content:
+                try:
+                    import memory_steward_observer
+                    memory_steward_observer.observe_working_memory(
+                        room_name,
+                        active_wm_slot,
+                        content,
+                        wm_metadata,
+                        event_type="wm_token_estimate",
+                        route="gemini_token_estimate",
+                    )
+                except Exception:
+                    pass
+        else:
+            working_memory_section = _compose_working_memory_token_section(
+                active_wm_slot, "", available_slots
+            )
 
 
         # --- [2026-01-18 FIX] より正確なコンテキスト見積もり ---
@@ -1893,8 +2202,7 @@ def count_input_tokens(**kwargs):
             THOUGHT_MANUAL_TAGGED_TEXT,
         )
         display_thoughts = effective_settings.get("display_thoughts", True)
-        model_name_lower = (model_name or "").lower()
-        is_native_thinking_prompt = _is_gemini_3_family_model(model_name) or "thinking" in model_name_lower
+        is_native_thinking_prompt = supports_native_thinking_parts(model_name)
         if not display_thoughts:
              thought_generation_manual_text = THOUGHT_MANUAL_DISABLED_TEXT
         elif is_native_thinking_prompt:
@@ -1980,7 +2288,12 @@ def count_input_tokens(**kwargs):
 
         # convert_raw_log_to_lc_messages を使用して一貫した履歴構築
         history_messages = convert_raw_log_to_lc_messages(
-            raw_history, room_name, add_timestamp, send_thoughts_final, provider=current_provider
+            raw_history,
+            room_name,
+            add_timestamp,
+            send_thoughts_final,
+            provider=current_provider,
+            model_name=model_name,
         )
 
         # メッセージ統合を適用（invoke_nexus_agent_stream と同様）
@@ -2002,7 +2315,12 @@ def count_input_tokens(**kwargs):
             # フォールバック分を先頭に追加（要約対象外の文脈バッファ）
             if fallback_raw_history:
                 fb_lc_messages = convert_raw_log_to_lc_messages(
-                    fallback_raw_history, room_name, add_timestamp, send_thoughts_final, provider=current_provider
+                    fallback_raw_history,
+                    room_name,
+                    add_timestamp,
+                    send_thoughts_final,
+                    provider=current_provider,
+                    model_name=model_name,
                 )
                 fb_lc_messages = merge_consecutive_messages(fb_lc_messages, add_timestamp=add_timestamp)
                 # messages の先頭（SystemMessage の直後）にフォールバック分を挿入
@@ -2053,35 +2371,29 @@ def count_input_tokens(**kwargs):
         traceback.print_exc()
         return 0
 
-def correct_punctuation_with_ai(text_to_fix: str, api_key: str, context_type: str = "body") -> Optional[str]:
+def correct_punctuation_with_ai(
+    text_to_fix: str,
+    api_key: str = None,
+    context_type: str = "body",
+    connection: dict | None = None,
+) -> Optional[str]:
     """
     読点が除去されたテキストを受け取り、AIを使って適切な読点を再付与する。
     """
-    if not text_to_fix or not api_key:
+    if not text_to_fix:
         return None
 
-    model_name = constants.INTERNAL_PROCESSING_MODEL
-    current_api_key = api_key
-    tried_keys = set()
+    if connection is None:
+        connection = _get_connection(force_global=True)
+    is_vertex_connection = _is_vertex_connection(connection)
+    if not is_vertex_connection and not api_key:
+        return None
 
-    # 元のキー名を特定（ローテーション用）
-    current_key_name = config_manager.get_key_name_by_value(current_api_key)
-    if current_key_name != "Unknown":
-        tried_keys.add(current_key_name)
+    context_instruction = "これはユーザーへの応答文です。自然な会話になるように読点を付与してください。"
+    if context_type == "thoughts":
+        context_instruction = "これはAI自身の思考ログです。思考の流れや内省的なモノローグとして自然になるように読点を付与してください。"
 
-    max_rotation_attempts = 5
-    for rotation_attempt in range(max_rotation_attempts):
-        client = genai.Client(api_key=current_api_key)
-        max_retries = 3
-        base_retry_delay = 5
-
-        context_instruction = "これはユーザーへの応答文です。自然な会話になるように読点を付与してください。"
-        if context_type == "thoughts":
-            context_instruction = "これはAI自身の思考ログです。思考の流れや内省的なモノローグとして自然になるように読点を付与してください。"
-
-        for attempt in range(max_retries):
-            try:
-                prompt = f"""あなたは、日本語の文章を校正する専門家です。あなたの唯一の任務は、以下の【読点除去済みテキスト】に対して、文脈が自然になるように読点（「、」）のみを追加することです。
+    prompt = f"""あなたは、日本語の文章を校正する専門家です。あなたの唯一の任務は、以下の【読点除去済みテキスト】に対して、文脈が自然になるように読点（「、」）のみを追加することです。
 
 【コンテキスト】
 {context_instruction}
@@ -2103,6 +2415,43 @@ def correct_punctuation_with_ai(text_to_fix: str, api_key: str, context_type: st
 
 【修正後のテキスト】
 """
+    if is_vertex_connection:
+        try:
+            from llm_factory import LLMFactory
+            response, _used_key = LLMFactory.invoke_internal_llm(
+                internal_role="processing", prompt=prompt,
+            )
+            response_text = utils.extract_text_from_llm_content(response.content)
+            match = re.search(r"<result>(.*?)</result>", response_text, re.DOTALL)
+            return (match.group(1) if match else response_text.replace("【修正後のテキスト】", "")).strip()
+        except Exception:
+            print("--- Vertex AIで読点を修正できませんでした。接続設定と認証を確認してください。 ---")
+            return None
+
+    model_name = constants.INTERNAL_PROCESSING_MODEL
+    current_api_key = None if is_vertex_connection else api_key
+    tried_keys = set()
+
+    # 元のキー名を特定（ローテーション用）
+    current_key_name = (
+        "Vertex"
+        if is_vertex_connection
+        else config_manager.get_key_name_by_value(current_api_key)
+    )
+    if current_key_name != "Unknown":
+        tried_keys.add(current_key_name)
+
+    max_rotation_attempts = 5
+    for rotation_attempt in range(max_rotation_attempts):
+        client = _create_google_client(
+            connection=connection,
+            api_key=None if is_vertex_connection else current_api_key,
+        )
+        max_retries = 3
+        base_retry_delay = 5
+
+        for attempt in range(max_retries):
+            try:
                 response = client.models.generate_content(
                     model=f"models/{model_name}",
                     contents=[prompt]
@@ -2121,6 +2470,10 @@ def correct_punctuation_with_ai(text_to_fix: str, api_key: str, context_type: st
             except (google.genai.errors.ClientError, google.genai.errors.ServerError) as e:
                 err_str = str(e).upper()
                 is_429 = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
+
+                if is_vertex_connection:
+                    # Vertex の割り当てエラーを Developer キーへ漏らさず終了する。
+                    return None
 
                 # 有料キーの判定
                 paid_key_names = config_manager.CONFIG_GLOBAL.get("paid_api_key_names", [])
@@ -2220,13 +2573,18 @@ def translate_thought_log_with_ai(thought_text: str, agent_name: str, api_key: s
         from config_manager import get_effective_internal_model
         provider, model_name_raw, _ = get_effective_internal_model("translation")
         sanitized_model_name = utils.sanitize_model_name(model_name_raw or "")
+        translation_connection = None
+        is_vertex_translation = False
+        if provider in {"google", "Google (Gemini)", "Google (Gemini Native)"}:
+            translation_connection = _get_connection(force_global=True)
+            is_vertex_translation = _is_vertex_connection(translation_connection)
 
         # 初期キーの取得とセットアップ
-        current_api_key = api_key
+        current_api_key = None if is_vertex_translation else api_key
         tried_keys = set()
-        current_key_name = "Unknown"
+        current_key_name = "Vertex" if is_vertex_translation else "Unknown"
 
-        if provider == "google":
+        if provider in {"google", "Google (Gemini)", "Google (Gemini Native)"} and not is_vertex_translation:
             if current_api_key:
                 current_key_name = config_manager.get_key_name_by_value(current_api_key)
             else:
@@ -2241,7 +2599,8 @@ def translate_thought_log_with_ai(thought_text: str, agent_name: str, api_key: s
             llm = LLMFactory.create_chat_model_with_fallback(
                 internal_role="translation",
                 temperature=0.2, # 翻訳タスクなので少し低めに設定
-                api_key=current_api_key
+                api_key=current_api_key,
+                gemini_connection_config=translation_connection,
             )
 
             max_retries = 3
@@ -2271,7 +2630,11 @@ def translate_thought_log_with_ai(thought_text: str, agent_name: str, api_key: s
                     # 429かどうかの判定。langchainのエラーラッパーも考慮
                     is_429 = "429" in err_str or "RESOURCE_EXHAUSTED" in err_str
 
-                    if provider == "google" and is_429:
+                    if is_vertex_translation:
+                        # Vertex の失敗は Developer キーの枯渇・有料待機・回転へ流さない。
+                        return None
+
+                    if provider in {"google", "Google (Gemini)", "Google (Gemini Native)"} and is_429:
                         # 有料キーの判定
                         paid_key_names = config_manager.CONFIG_GLOBAL.get("paid_api_key_names", [])
                         clean_current_key_name = config_manager._clean_api_key_name(current_key_name)
@@ -2284,7 +2647,7 @@ def translate_thought_log_with_ai(thought_text: str, agent_name: str, api_key: s
                             time.sleep(wait_time)
                             continue
 
-                        limit_type = "RPD" if ("QUOTA EXCEEDED" in err_str_upper or "PERDAY" in err_str_upper or "DAILY" in err_str_upper) else "RPM"
+                        limit_type = "RPD" if ("QUOTA EXCEEDED" in err_str or "PERDAY" in err_str or "DAILY" in err_str) else "RPM"
                         # 枯渇マーク（有料キーは永続化されない。特定のモデルに対してのみマーク）
                         config_manager.mark_key_as_exhausted(clean_current_key_name, model_name=sanitized_model_name, limit_type=limit_type)
 
@@ -2325,9 +2688,10 @@ def translate_thought_log_with_ai(thought_text: str, agent_name: str, api_key: s
 
 def get_configured_llm(
     model_name: str,
-    api_key: str,
-    generation_config: dict,
+    api_key: str = None,
+    generation_config: dict = None,
     cached_content: str | None = None,
+    connection: dict | None = None,
 ):
     """
     LangChain/LangGraph用の、設定済みChatGoogleGenerativeAIインスタンスを生成する。
@@ -2366,7 +2730,13 @@ def get_configured_llm(
     # extra_params で渡すのではなく、コンストラクタ引数として直接指定する。
     # 署名（Thought Signatures）の循環は minimal 設定時でも必須（公式ドキュメント）。
     # 参照: https://ai.google.dev/gemini-api/docs/thinking
+    response_reasoning_effort = config.get("_response_reasoning_effort")
+    explicit_provider_default = response_reasoning_effort == "default"
     thinking_level = config.get("thinking_level", "auto")
+    if response_reasoning_effort and not explicit_provider_default:
+        # 応答モデルの明示levelは、legacy family判定から分離して
+        # Gemini 4 Argon等にも同じ第一級thinking_levelを適用する。
+        thinking_level = response_reasoning_effort
 
     # Gemini 3 / 3.1 / 2.5 判定
     effective_temp = config.get("temperature", 0.8)
@@ -2379,7 +2749,24 @@ def get_configured_llm(
     param_thinking_level = None
     param_include_thoughts = None
 
-    if is_flash_reasoning:
+    if explicit_provider_default:
+        # 未登録（sentinelなし）の既存挙動と区別し、明示defaultだけ
+        # thinkingConfigをSDKへ送らず、providerの既定値へ委ねる。
+        if is_reasoning_model:
+            effective_temp = 1.0
+            print("  - [Thinking] Gemini provider default selected; thinkingConfig is omitted.")
+    elif response_reasoning_effort in {"minimal", "low", "medium", "high"}:
+        # 新しい応答設定はSDKの既存family変換に依存しない。未登録の
+        # 旧generation_configはこの分岐へ入らず、従来の挙動を保つ。
+        param_thinking_level = response_reasoning_effort
+        param_include_thoughts = True
+        effective_temp = 1.0
+        if is_reasoning_model or response_reasoning_effort:
+            print(
+                f"  - [Thinking] Response model level={response_reasoning_effort}, "
+                "include_thoughts=True, temp=1.0"
+            )
+    elif is_flash_reasoning:
         # Gemini 3 Flash: thinking 制御
         # 署名の循環は必須（even when set to minimal）。
         # 以前は安定性優先で minimal 固定にしていたが、minimal では
@@ -2430,9 +2817,16 @@ def get_configured_llm(
     else:
         flash_loop_guard_max_tokens = config.get("max_output_tokens", 65536) if is_reasoning_model else config.get("max_output_tokens")
 
-    return ChatGoogleGenerativeAI(
+    if connection is not None:
+        connection = _get_gemini_connection_module().normalize_connection(connection, require_valid=True)
+    chat_kwargs = dict(
+        vertexai=False,
         model=model_name,
         google_api_key=api_key,
+        # LangGraphのmessages callbackはinvokeでも暗黙streamを選ぶ。
+        # Flashの既存単発実行方針をモデル属性で固定し、停止scope・署名・
+        # 最終メッセージ通知を保ったままSDKのstream応答変換エラーを避ける。
+        disable_streaming=is_flash_reasoning,
         cached_content=cached_content,
         convert_system_message_to_human=False,
         max_retries=1,
@@ -2444,4 +2838,23 @@ def get_configured_llm(
         thinking_level=param_thinking_level,
         include_thoughts=param_include_thoughts,
     )
+
+    # Vertex は connection 境界の SDK/client を使う。Developer 経路で
+    # ChatGoogleGenerativeAI を monkeypatch する既存テストと互換を保つため、
+    # connection 未指定時は従来の直接コンストラクタを維持する。
+    if connection is not None and _is_vertex_connection(connection):
+        module = _get_gemini_connection_module()
+        if module is not None:
+            # 明示キャッシュは Developer 接続専用のため Vertex へ送らない。
+            chat_kwargs["google_api_key"] = None
+            chat_kwargs["cached_content"] = None
+            return module.build_chat_model(connection, **chat_kwargs)
+
+    if uses_argon_request_rules(model_name):
+        # Developerにも同じ送信制約を適用する。旧モデルの直接constructorは保持。
+        module = _get_gemini_connection_module()
+        chat_kwargs["cached_content"] = None
+        return module.build_chat_model(connection or {"backend": "developer"}, **chat_kwargs)
+
+    return ChatGoogleGenerativeAI(**chat_kwargs)
 

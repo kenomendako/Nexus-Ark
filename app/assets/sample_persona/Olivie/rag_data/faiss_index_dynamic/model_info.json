@@ -1,4 +1,5 @@
 {
-  "model_id": "google:gemini-embedding-2-preview",
-  "updated_at": "2026-07-14 21:51:00"
+  "model_id": "google:gemini-embedding-2",
+  "updated_at": "2026-10-31 20:29:47",
+  "knowledge_digest": "956e1d03c357a80e1c4c15c03827465e336f8165972ab7624e046d911ed9a432"
 }

@@ -50,7 +50,7 @@ ENUMS = {
     "postcondition_evidence": {"verified", "reported_only", "missing", "not_applicable", "unknown"},
     "reported_status": {"ok", "error"},
     "time_bucket": {"all_day", "morning", "afternoon", "evening", "overnight", "unknown"},
-    "store_type": {"working_memory", "core_memory", "diary_rag", "conversation", "entity", "episodic", "dream", "goal", "research_thread", "notepad", "unknown"},
+    "store_type": {"working_memory", "core_memory", "diary_rag", "knowledge", "conversation", "entity", "episodic", "dream", "goal", "research_thread", "notepad", "unknown"},
     "selection_route": {"static_prompt", "rag", "keyword", "suggestive", "tool", "unknown"},
 }
 REF_FIELDS = {"turn_ref", "room_ref", "slot_ref", "content_ref", "event_ref", "series_ref", "calendar_ref", "source_ref", "action_ref"}

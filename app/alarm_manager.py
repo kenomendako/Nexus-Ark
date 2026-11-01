@@ -16,8 +16,13 @@ import constants
 import room_manager
 import gemini_api
 import utils
+from agent.scenery_image_context import (
+    commit_scenery_image_context,
+    get_scenery_image_context,
+)
 import re
 import dreaming_manager
+import lite_travel
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, List, Dict
 from pathlib import Path
@@ -73,6 +78,11 @@ def _parse_maintenance_timestamp(value: str) -> datetime.datetime | None:
         return datetime.datetime.fromisoformat(str(value))
     except Exception:
         return None
+
+
+def _is_dream_failure_result(result: Any) -> bool:
+    """DreamingManager が明示した致命的エラーだけを失敗として扱う。"""
+    return isinstance(result, str) and result.startswith(dreaming_manager.DREAM_FAILURE_PREFIX)
 
 
 def _record_maintenance_job_result(
@@ -166,10 +176,12 @@ RESEARCH_SUBSCRIPTION_COMPLETION_WAKE_PROMPT = (
     "あなたが継続している研究テーマ「{topic}」について、定期リサーチが完了しました。\n"
     "(1) `check_agent_task_status`（ID不要）で結果と保存されたレポート（`research_report.md`）を確認してください。\n"
     "    - 委任結果は別の作業エージェントによる内部資料です。原文の人称・呼称・口調を継承せず、事実だけを抽出すること。\n"
-    "(2) 調べて分かったことを、**あなた自身の言葉で**、このテーマの研究スレッドに追記してください：\n"
-    "    `append_thread_note(thread_id=\"{thread_id}\", relation_type=..., content=...）`\n"
-    "    - relation_type は内容に応じて選ぶ：CONTINUE（続報・最新動向）/ DEEPEN（既出の深掘り）/ "
-    "NEW（新規トピック）/ CONTRADICT（既出と矛盾）/ EVIDENCE（既出の裏付け）。\n"
+    "(2) `read_research_thread(thread_id=\"{thread_id}\")` で既存内容を確認し、調べて分かったことを、"
+    "**あなた自身の言葉で**、このテーマの研究スレッドに追記してください：\n"
+    "    `plan_research_notes_edit(thread_id=\"{thread_id}\", context_type=..., "
+    "intent_and_reasoning=..., modification_request=..., evidence_of_prior_read=...)`\n"
+    "    - context_type は内容に応じて選ぶ：CONTINUE（続報・最新動向）/ DEEPEN（既出の深掘り・裏付け）/ "
+    "NEW（新規トピック）/ CONTRADICT（既出と矛盾）。\n"
     "    - 既存スレッドの内容を踏まえ、重複は避け、今回新しく分かった点を中心にまとめる。\n"
     "    - 目立った新情報が無かった場合は、無理に追記せず「今回は目立った新情報なし」と短く記録してよい。\n"
     "(3) ユーザーにとって重要な発見があれば `send_user_notification` で報告してください"
@@ -352,7 +364,8 @@ def maybe_wake_on_delegation_complete(task: dict[str, Any]) -> None:
             return
 
         api_key_name = config_manager.get_active_gemini_api_key_name(room_name)
-        if not api_key_name:
+        from gemini_connection import is_vertex
+        if not api_key_name and not is_vertex(room_name):
             decision = _record_delegation_wake_decision(task, "missing_api_key", woke=False)
             delegation_manager._append_log(task_id, "wake decision", decision)
             return
@@ -897,21 +910,23 @@ def _summarize_watchlist_content(name: str, url: str, new_content: str, diff_sum
         return fallback
     
     try:
-        from google import genai
+        import google.genai as genai
+        from gemini_connection import is_vertex
+        vertex_mode = is_vertex()
         
         # APIキーを取得
         api_key_name = config_manager.get_latest_api_key_name_from_config()
-        if not api_key_name:
+        if not api_key_name and not vertex_mode:
             print(f"  ⚠️ {name}: APIキー未設定（フォールバック使用）")
             return _create_fallback_content(new_content)
         
         api_key = config_manager.GEMINI_API_KEYS.get(api_key_name)
-        if not api_key:
+        if not api_key and not vertex_mode:
             print(f"  ⚠️ {name}: APIキーが見つからない（フォールバック使用）")
             return _create_fallback_content(new_content)
         
         # 軽量モデルを使用
-        client = genai.Client(api_key=api_key)
+        client = None if vertex_mode else genai.Client(vertexai=False, api_key=api_key)
         
         # コンテンツを制限（トークン節約）
         content_preview = new_content[:3000] if len(new_content) > 3000 else new_content
@@ -931,6 +946,14 @@ def _summarize_watchlist_content(name: str, url: str, new_content: str, diff_sum
 - 専門用語があれば簡単に説明
 - 新しい情報や重要な更新を優先
 - 出力は2〜3パラグラフ以内"""
+
+        if vertex_mode:
+            from llm_factory import LLMFactory
+            response, _used_key = LLMFactory.invoke_internal_llm(
+                internal_role="processing", prompt=prompt,
+            )
+            text = utils.extract_text_from_llm_content(response.content).strip()
+            return text or _create_fallback_content(new_content)
 
         # リトライループ
         last_error = None
@@ -1111,6 +1134,15 @@ def send_notification(room_name, message_text, alarm_config, notification_kind="
         return _send_discord_notification(webhook_url, notification_message)
 
 def trigger_alarm(alarm_config, current_api_key_name):
+    room_name = str(alarm_config.get("room_name") or alarm_config.get("character") or "")
+    if room_name and lite_travel.is_presence_locked(room_name):
+        lite_travel.record_deferred_home_event(
+            room_name,
+            "alarm_deferred",
+            {"alarm_id": str(alarm_config.get("id") or ""), "title": str(alarm_config.get("name") or "")[:200]},
+        )
+        print(f"--- [Lite Travel] 単一存在ロック中のアラーム応答を延期: {room_name} ---")
+        return
     from langchain_core.messages import AIMessage # 忘れずインポート
     room_name = alarm_config.get("character")
     alarm_id = alarm_config.get("id")
@@ -1130,6 +1162,14 @@ def trigger_alarm(alarm_config, current_api_key_name):
 
     # --- [Lazy Scenery] ---
     season_en, time_of_day_en = utils._get_current_time_context(room_name)
+    effective_settings = config_manager.get_effective_settings(room_name)
+    scenery_context = get_scenery_image_context(
+        room_name,
+        settings=effective_settings,
+        season_en=season_en,
+        time_of_day_en=time_of_day_en,
+        include_virtual=False,
+    )
     location_name = None
     scenery_text = None
 
@@ -1143,7 +1183,10 @@ def trigger_alarm(alarm_config, current_api_key_name):
         "api_history_limit": str(constants.DEFAULT_ALARM_API_HISTORY_TURNS),
         "debug_mode": False,
         "history_log_path": log_f,
-        "user_prompt_parts": [{"type": "text", "text": synthesized_user_message}],
+        "user_prompt_parts": [
+            *scenery_context.parts,
+            {"type": "text", "text": synthesized_user_message},
+        ],
         "soul_vessel_room": room_name,
         "active_participants": [],
         "active_attachments": [],
@@ -1227,7 +1270,8 @@ def trigger_alarm(alarm_config, current_api_key_name):
     response_text = utils.clean_persona_text(raw_response)
 
     # AIの応答生成に成功した場合
-    if response_text and not response_text.startswith("[エラー"):
+    if response_text and not response_text.startswith(("[エラー", "[ERROR")):
+        commit_scenery_image_context(room_name, scenery_context)
         utils.save_message_to_log(log_f, "## SYSTEM:alarm", message_for_log)
         
         # 【修正】AIが既にタイムスタンプを生成している場合は除去し、正しいモデル名でシステムタイムスタンプを追加
@@ -1282,6 +1326,9 @@ def trigger_autonomous_action(
     completion_wake_context: dict = None,
 ):
     """自律行動を実行させる"""
+    if lite_travel.is_presence_locked(room_name):
+        print(f"--- [Lite Travel] 単一存在ロック中の自律行動を停止: {room_name} ---")
+        return
     from motivation_manager import MotivationManager
     _log_autonomy_memory("start", room_name)
     is_completion_wake = wake_trigger == "delegation_complete"
@@ -1309,8 +1356,8 @@ def trigger_autonomous_action(
     user_memo = ""
     memo_path = os.path.join(constants.ROOMS_DIR, room_name, "user_memo.txt")
     if os.path.exists(memo_path):
-        with open(memo_path, "r", encoding="utf-8") as f:
-            user_memo = f.read().strip()
+        from file_lock_utils import safe_text_read
+        user_memo = safe_text_read(memo_path).strip()
 
     # プロンプトの構築
     now_str = datetime.datetime.now().strftime('%H:%M')
@@ -1521,14 +1568,22 @@ def trigger_autonomous_action(
         utils.save_message_to_log(log_f, "## USER:書き置き", memo_log_content)
         print(f"  📝 書き置きをログに記録しました")
         
-        # ファイルをクリア
-        with open(memo_path, "w", encoding="utf-8") as f:
-            f.write("")
-        print(f"  ✅ 書き置きをクリアしました")
+        # 読込後にLiteや本体から更新された新しい手紙は消さない。
+        if _clear_consumed_user_memo(memo_path, user_memo):
+            print("  ✅ 読み込んだ書き置きをクリアしました")
+        else:
+            print("  📝 新しい書き置きがあるため保持しました")
 
     # 共通処理（情景生成など）
     # --- [Lazy Scenery] ---
     season_en, time_of_day_en = utils._get_current_time_context(room_name)
+    scenery_context = get_scenery_image_context(
+        room_name,
+        settings=effective_settings,
+        season_en=season_en,
+        time_of_day_en=time_of_day_en,
+        include_virtual=False,
+    )
     location_name = None
     scenery_text = None
     global_model = config_manager.get_current_global_model()
@@ -1540,7 +1595,10 @@ def trigger_autonomous_action(
         "api_history_limit": str(constants.DEFAULT_ALARM_API_HISTORY_TURNS),
         "debug_mode": False,
         "history_log_path": log_f,
-        "user_prompt_parts": [{"type": "text", "text": system_instruction}],
+        "user_prompt_parts": [
+            *scenery_context.parts,
+            {"type": "text", "text": system_instruction},
+        ],
         "soul_vessel_room": room_name,
         "active_participants": [],
         "active_attachments": [],
@@ -1621,6 +1679,16 @@ def trigger_autonomous_action(
 
     # 結果の判定と保存
     clean_text = utils.remove_thoughts_from_text(final_response_text)
+
+    # A deliberate [SILENT] is still a completed provider turn.  Commit the
+    # prepared image only after a final state exists and no provider error was
+    # returned; exceptions and empty/interrupted streams remain retryable.
+    if (
+        final_state
+        and clean_text
+        and not clean_text.strip().startswith(("[エラー", "[ERROR"))
+    ):
+        commit_scenery_image_context(room_name, scenery_context)
     
     # "SILENT" が含まれているか、空の場合は何もしない
     if not clean_text or "[SILENT]" in clean_text or "[silent]" in clean_text:
@@ -1894,7 +1962,7 @@ def _run_sleep_maintenance(
                         f"{SLEEP_MAINTENANCE_TIMEOUT_SECONDS // 60}分タイムアウト",
                     )
                     return
-                if result and ("エラー" in result or "失敗" in result):
+                if _is_dream_failure_result(result):
                     print(f"  ❌ {room_folder}: 夢想プロセスがエラーで終了しました: {result}")
                     _record_maintenance_job_result(room_folder, "dream", "夢想プロセス", False, result)
                 else:
@@ -2074,7 +2142,12 @@ def check_alarms():
     current_api_key = config_manager.get_latest_api_key_name_from_config()
 
     # 安全装置：もし有効なAPIキーが一つもなければ、警告を出して処理を中断する
-    if not current_api_key:
+    from gemini_connection import is_vertex
+    vertex_available = is_vertex() or any(
+        is_vertex(room_id) for _label, room_id in room_manager.get_room_list_for_ui()
+        if room_id and not str(room_id).startswith("__")
+    ) if not current_api_key else False
+    if not current_api_key and not vertex_available:
         if not _api_missing_warning_shown:
             print("警告 [アラーム]: 有効なAPIキーが設定されていないため、アラームチェックをスキップします。（以降、キーが設定されるまで警告を省略します）")
             _api_missing_warning_shown = True
@@ -2146,6 +2219,8 @@ def check_autonomous_actions():
 
     for _, room_folder in all_rooms:
         try:
+            if lite_travel.is_presence_locked(room_folder):
+                continue
             effective_settings = config_manager.get_effective_settings(room_folder)
             auto_settings = effective_settings.get("autonomous_settings", {})
             
@@ -2188,7 +2263,8 @@ def check_autonomous_actions():
 
                 current_api_key = config_manager.get_active_gemini_api_key_name(room_folder)
                 api_key_val = config_manager.GEMINI_API_KEYS.get(current_api_key)
-                if not api_key_val:
+                from gemini_connection import is_vertex
+                if not api_key_val and not is_vertex():
                     continue
 
                 dm = dreaming_manager.DreamingManager(room_folder, api_key_val)
@@ -2586,3 +2662,15 @@ def stop_alarm_scheduler_thread():
         alarm_thread_stop_event.set()
         start_alarm_scheduler_thread.scheduler_thread.join()
         print("アラームスケジューラスレッドの停止を要求しました.")
+
+
+def _clear_consumed_user_memo(memo_path: str, consumed_text: str) -> bool:
+    """自律処理が読んだ手紙だけを消し、その後の新しい置き手紙は保持する。"""
+    from file_lock_utils import locked_file, safe_text_write
+
+    with locked_file(memo_path) as path:
+        current = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        if current != consumed_text.strip():
+            return False
+        safe_text_write(memo_path, "")
+        return True

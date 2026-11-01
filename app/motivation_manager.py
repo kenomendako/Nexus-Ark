@@ -1,7 +1,7 @@
 # motivation_manager.py
 """
 Autonomous Motivation System for Nexus Ark
-AIペルソナの内発的動機（退屈、好奇心、目標達成欲、関係性維持欲求）を管理し、
+AIペルソナの内発的動機（退屈、好奇心、目標達成欲、関係への思い）を管理し、
 内部状態ログを生成するモジュール。
 """
 
@@ -11,8 +11,12 @@ import math
 import datetime
 import re
 import random
+import uuid
+import hashlib
+from copy import deepcopy
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from filelock import Timeout
 
 import constants
 import config_manager
@@ -20,7 +24,9 @@ import room_manager
 import utils
 from goal_manager import GoalManager
 from gemini_api import get_configured_llm
-from file_lock_utils import safe_json_read, safe_json_update, safe_json_write
+from file_lock_utils import safe_json_read, safe_json_update
+from emotion_definition_manager import EmotionDefinitionManager, EMOTION_LABELS
+from emotion_decay_policy import EmotionDecayPolicy
 
 
 OPEN_QUESTION_DEDUP_SIMILARITY_THRESHOLD = 0.85
@@ -35,17 +41,43 @@ class MotivationManager:
         "curiosity": "好奇心（Curiosity）",
         "goal_achievement": "目標達成欲（Goal Achievement Drive）",
         "devotion": "奉仕欲（Devotion Drive）",  # 後方互換性のため維持
-        "relatedness": "関係性維持欲求（Relatedness Drive）"
+        "relatedness": "関係への思い（Relatedness）"
     }
+
+    @staticmethod
+    def _is_unresolved_question(question: Dict) -> bool:
+        """保持期間中の解決済み問いを、現在の関心として再利用しない。"""
+        if not isinstance(question, dict):
+            return False
+        if question.get("resolved_at"):
+            return False
+        return str(question.get("resolution_state") or "").strip().lower() != "resolved"
+
+    def _get_unresolved_questions(self) -> List[Dict]:
+        questions = self._state["drives"]["curiosity"].get("open_questions", [])
+        return [q for q in questions if self._is_unresolved_question(q)]
 
     # デフォルトの閾値
     DEFAULT_BOREDOM_THRESHOLD = 0.6
 
-    def __init__(self, room_name: str):
+    # 標準値の旧参照との互換。個別調整は定義で行い、申告ごとの条件を使う。
+    EMOTION_HALF_LIFE_HOURS = EmotionDecayPolicy.default()["half_life_hours"]
+    EMOTION_MAX_AGE_HOURS = EmotionDecayPolicy.default()["max_age_hours"]
+    EMOTION_MIN_CONTEXT_INTENSITY = 0.1
+    EMOTION_LABELS = EMOTION_LABELS
+    EMOTION_STATE_KEYS = ("persona_emotion", "persona_intensity", "last_emotion_change", "emotion_anchor", "emotion_states")
+
+    def __init__(self, room_name: str, *, initialize: bool = True):
         self.room_name = room_name
         self.room_dir = Path(constants.ROOMS_DIR) / room_name
         self.memory_dir = self.room_dir / "memory"
         self.state_file = self.memory_dir / "internal_state.json"
+
+        self.emotion_log_file = self.memory_dir / "emotion_log.json"
+        # 感情の内省ツールは読取・入力検証だけで旧状態の移行やログ初期化を行わない。
+        if not initialize:
+            self._state = self._get_empty_state()
+            return
 
         # メモリディレクトリを作成（なければ）
         self.memory_dir.mkdir(parents=True, exist_ok=True)
@@ -85,7 +117,8 @@ class MotivationManager:
                     "level": 0.0,
                     "persona_emotion": "neutral",
                     "persona_intensity": 0.0,
-                    "last_emotion_change": None
+                    "last_emotion_change": None,
+                    "intentions": []
                 }
             },
             "motivation_log": None,
@@ -94,6 +127,25 @@ class MotivationManager:
             "satisfaction": {},
             "last_autonomous_trigger": None  # 最終自律行動発火時刻（永続化）
         }
+
+    @classmethod
+    def _normalize_relatedness_state(cls, state: Dict) -> bool:
+        """旧感情由来levelを、保存済みの関係の意図から再計算する。"""
+        drives = state.get("drives")
+        if not isinstance(drives, dict):
+            return False
+        relatedness = drives.get("relatedness")
+        if not isinstance(relatedness, dict):
+            relatedness = {}
+            drives["relatedness"] = relatedness
+        intentions = relatedness.get("intentions")
+        if not isinstance(intentions, list):
+            intentions = []
+        level = cls._relationship_level(intentions)
+        changed = relatedness.get("intentions") != intentions or relatedness.get("level") != level
+        relatedness["intentions"] = intentions
+        relatedness["level"] = level
+        return changed
 
     def _init_emotion_log(self):
         """感情ログファイルの初期化"""
@@ -378,9 +430,24 @@ class MotivationManager:
                 # 古い形式の場合はマイグレーション
                 if "drives" not in state:
                     return self._get_empty_state()
+                if self._normalize_relatedness_state(state):
+                    # 旧形式を最新のファイルロック内で一度だけ移行する。並行追加を巻き戻さない。
+                    normalized = None
+                    def migrate(current):
+                        nonlocal normalized
+                        if not isinstance(current, dict) or not isinstance(current.get("drives"), dict):
+                            current = self._get_empty_state()
+                        self._normalize_relatedness_state(current)
+                        normalized = current
+                        return current
+                    safe_json_update(str(self.state_file), migrate, default=self._get_empty_state())
+                    return normalized
                 return state
             return self._get_empty_state()
 
+        except Timeout:
+            # ロック競合は破損ではない。既存ファイルを修復・上書きしない。
+            raise
         except Exception as e:
             # --- [自動復旧ロジック] ---
             # 何らかの理由で読み込みに失敗（JSON破損など）した場合
@@ -393,8 +460,34 @@ class MotivationManager:
 
     def _save_state(self):
         """内部状態をファイルに保存（ロック付き）"""
-        if not safe_json_write(str(self.state_file), self._state):
+        saved_state = None
+
+        def update(current):
+            nonlocal saved_state
+            state = deepcopy(self._state)
+            # 旧来の全体保存が、他の会話で記録した関係の意図を巻き戻さない。
+            current_relatedness = (current.get("drives", {}).get("relatedness", {})
+                                   if isinstance(current, dict) else {})
+            intentions = current_relatedness.get("intentions") if isinstance(current_relatedness, dict) else None
+            if isinstance(intentions, list):
+                relatedness = state.setdefault("drives", {}).setdefault("relatedness", {})
+                relatedness["intentions"] = deepcopy(intentions)
+            # 動機の全体保存は、別の会話が申告した最新感情も巻き戻さない。
+            if isinstance(current_relatedness, dict):
+                relatedness = state.setdefault("drives", {}).setdefault("relatedness", {})
+                for key in self.EMOTION_STATE_KEYS:
+                    if key in current_relatedness:
+                        relatedness[key] = deepcopy(current_relatedness[key])
+                    else:
+                        relatedness.pop(key, None)
+            self._normalize_relatedness_state(state)
+            saved_state = state
+            return state
+
+        if not safe_json_update(str(self.state_file), update, default=self._get_empty_state()):
             print(f"[MotivationManager] 状態保存タイムアウト")
+        if saved_state is not None:
+            self._state = saved_state
 
     def _update_state(self, mutator) -> Dict:
         """内部状態をロック内で読み込み、更新して保存する。"""
@@ -414,6 +507,7 @@ class MotivationManager:
             result = mutator(state)
             if isinstance(result, dict):
                 state = result
+            self._normalize_relatedness_state(state)
             updated_state = state
             return state
 
@@ -470,13 +564,13 @@ class MotivationManager:
         """
         curiosity_data = self._state["drives"]["curiosity"]
         open_questions = curiosity_data.get("open_questions", [])
-        scoring_questions = list(open_questions)
+        scoring_questions = [q for q in open_questions if self._is_unresolved_question(q)]
         purpose_questions = self._get_purpose_open_questions()
         if purpose_questions:
             known = {
                 str(q.get("topic") or q.get("question") or "").casefold()
                 for q in scoring_questions
-                if not q.get("resolved_at")
+                if self._is_unresolved_question(q)
             }
             for q in purpose_questions:
                 topic = q.get("topic") or q.get("question")
@@ -499,7 +593,7 @@ class MotivationManager:
 
         total_score = 0.0
         for q in scoring_questions:
-            if q.get("resolved_at"):
+            if not self._is_unresolved_question(q):
                 continue
 
             # 基礎優先度
@@ -569,6 +663,7 @@ class MotivationManager:
             active_goals = goal_manager.get_active_goals("short_term")
 
             if not active_goals:
+                self._state["drives"]["goal_achievement"]["active_goal_id"] = None
                 self._state["drives"]["goal_achievement"]["level"] = 0.0
                 return 0.0
 
@@ -608,7 +703,7 @@ class MotivationManager:
     def _purpose_goal_alignment_bonus(self, goal: Dict) -> float:
         try:
             from purpose_profile_manager import PurposeProfileManager
-            profile = PurposeProfileManager(self.room_name).load_profile()
+            profile = PurposeProfileManager(self.room_name).get_current_profile()
         except Exception:
             return 0.0
         goal_text = str(goal.get("goal", "")).casefold()
@@ -796,15 +891,16 @@ class MotivationManager:
             return "しばらくユーザーからの反応がない。何か話しかけてみようか。"
 
         elif dominant_drive == "curiosity":
-            questions = self._state["drives"]["curiosity"].get("open_questions", [])
-            unanswered = [q for q in questions if not q.get("asked_at")]
+            unanswered = [q for q in self._get_unresolved_questions() if not q.get("asked_at")]
             if unanswered:
                 top_q = max(unanswered, key=lambda q: q.get("priority", 0))
                 topic = top_q.get("topic", "不明")
                 context = top_q.get("context", "")
+                source_date = str(top_q.get("source_date") or "").strip()
+                topic_label = f"「{topic}」（起点: {source_date}）" if source_date else f"「{topic}」"
                 if context:
-                    return f"「{topic}」について気になっている。{context}"
-                return f"「{topic}」について、もっと知りたいと感じている。"
+                    return f"{topic_label}について気になっている。{context}"
+                return f"{topic_label}について、もっと知りたいと感じている。"
             return "何か気になることがあるような気がする。"
 
         elif dominant_drive == "goal_achievement":
@@ -829,6 +925,16 @@ class MotivationManager:
             elif user_state == "busy":
                 return "ユーザーは忙しそうだ。邪魔にならない程度に、手助けできることがあれば。"
             return "ユーザーの役に立ちたいという気持ちがある。"
+
+        elif dominant_drive == "relatedness":
+            intentions = self.get_relationship_intentions(active_only=True)
+            if intentions:
+                item = intentions[0]
+                label = "気がかり" if item["kind"] == "concern" else "望み"
+                return (f"関係についての{label}（{item['person']}）: "
+                        f"きっかけは「{item['trigger'][:90]}」。"
+                        f"自分が望む変化は「{item['desired_change'][:90]}」。"
+                        "どう向き合うかは自分で選べる。")
 
         return ""
 
@@ -869,13 +975,16 @@ class MotivationManager:
     def update_last_interaction(self):
         """最終対話時刻を更新（退屈度リセット ＆ 自律行動タイマーリセット）"""
         now = datetime.datetime.now()
-        self._state["drives"]["boredom"]["last_interaction"] = now.isoformat()
-        self._state["drives"]["boredom"]["level"] = 0.0
+        # 時刻と退屈度を同じロック内で更新する。
+        # 先にself._stateを変えてからset_last_autonomous_triggerを呼ぶと、
+        # その内部の再読込で未保存の対話時刻が古い値に戻ってしまう。
+        def mutate(state: Dict) -> Dict:
+            state["drives"]["boredom"]["last_interaction"] = now.isoformat()
+            state["drives"]["boredom"]["level"] = 0.0
+            state["last_autonomous_trigger"] = now.isoformat()
+            return state
 
-        # ユーザーと会話した＝自律行動と同じ効果（クールダウン開始）とみなす
-        self.set_last_autonomous_trigger(now)
-
-        self._save_state()
+        self._update_state(mutate)
 
     def reset_drives_after_action(self):
         """自律行動実行後のドライブ状態をリセット（退屈度リセット ＆ 自律行動タイマーリセット）"""
@@ -1023,83 +1132,448 @@ class MotivationManager:
             self._state["drives"]["devotion"]["user_emotional_state"] = state
             self._save_state()
 
+    @staticmethod
+    def _emotion_now() -> datetime.datetime:
+        return datetime.datetime.now(datetime.timezone.utc)
+
+    @staticmethod
+    def _emotion_datetime(value) -> Optional[datetime.datetime]:
+        """旧naive時刻は本体のローカル時刻として読み、比較はUTCへ揃える。"""
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.datetime.fromisoformat(value)
+            return parsed.astimezone(datetime.timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+
+    @classmethod
+    def _parse_emotion_record(cls, record, now: datetime.datetime, allowed_categories=None) -> Optional[Dict]:
+        if not isinstance(record, dict):
+            return None
+        category, intensity = record.get("category"), record.get("intensity")
+        if not isinstance(intensity, (int, float)) or isinstance(intensity, bool):
+            return None
+        try:
+            intensity = float(intensity)
+        except (ValueError, OverflowError):
+            return None
+        started_at = cls._emotion_datetime(record.get("started_at"))
+        allowed = cls.EMOTION_LABELS if allowed_categories is None else allowed_categories
+        if (not isinstance(category, str) or category not in allowed or category == "neutral"
+                or not math.isfinite(intensity) or not 0 <= intensity <= 1
+                or started_at is None or started_at > now):
+            return None
+        return {"category": category, "intensity": intensity, "started_at": started_at}
+
+    @classmethod
+    def _emotion_record(cls, relatedness: Dict, now: datetime.datetime) -> Optional[Dict]:
+        """第一段階・旧申告を読む。欠けた時刻を現在時刻で補わない。"""
+        raw = relatedness.get("emotion_anchor") if "emotion_anchor" in relatedness else {
+            "category": relatedness.get("persona_emotion"), "intensity": relatedness.get("persona_intensity"),
+            "started_at": relatedness.get("last_emotion_change"),
+        }
+        record = cls._parse_emotion_record(raw, now)
+        if record is None or record["intensity"] == 0:
+            return None
+        if "emotion_anchor" in relatedness and (
+                relatedness.get("persona_emotion") != record["category"]
+                or isinstance(relatedness.get("persona_intensity"), bool)
+                or relatedness.get("persona_intensity") != record["intensity"]):
+            return None
+        if isinstance(raw, dict) and "decay_policy" in raw:
+            # 条件が既に保存されていれば、旧起点の読取/seedでも捨てない。
+            record["decay_policy"] = deepcopy(raw["decay_policy"])
+        return record
+
+    @staticmethod
+    def _emotion_revision(record: Dict) -> str:
+        revision = record.get("revision")
+        if isinstance(revision, str) and revision:
+            return revision
+        # 旧記録も、list後の初回取り込み時に同じ内容だったか照合する。
+        return "legacy:" + hashlib.sha256(json.dumps(record, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:20]
+
+    @classmethod
+    def _emotion_entries(cls, relatedness: Dict, now: datetime.datetime) -> Dict:
+        if "emotion_states" in relatedness:
+            entries = relatedness["emotion_states"]
+            if not isinstance(entries, dict):
+                raise ValueError("保存された感情状態の形式が不正です。自動で置き換えません。")
+            return deepcopy(entries)
+        record = cls._emotion_record(relatedness, now)
+        if record is None:
+            return {}
+        record["started_at"] = record["started_at"].isoformat()
+        record["status"] = "active"
+        record["revision"] = cls._emotion_revision(record)
+        return {record["category"]: record}
+
+    def _read_emotion_relatedness(self) -> Dict:
+        # 感情の読み取りは旧Relatednessの移行・修復を呼ばない。
+        state = safe_json_read(str(self.state_file), default={})
+        drives = state.get("drives", {}) if isinstance(state, dict) else {}
+        relatedness = drives.get("relatedness", {}) if isinstance(drives, dict) else {}
+        return relatedness if isinstance(relatedness, dict) else {}
+
+    @staticmethod
+    def _emotion_definition_fields(definition):
+        return {"name": definition["name"], "description": definition["description"],
+                "enabled": definition["enabled"], "definition_valid": definition["valid"],
+                "definition_revision": definition["revision"],
+                "configured_decay_policy": deepcopy(definition["decay_policy"]),
+                "configured_decay_policy_valid": definition["decay_policy_valid"]}
+
+    def _emotion_views(self, definitions) -> List[Dict]:
+        now = self._emotion_now()
+        entries = self._emotion_entries(self._read_emotion_relatedness(), now)
+        allowed = {category for category in definitions if EmotionDefinitionManager.is_supported_id(category)}
+        views = []
+        for category, raw in entries.items():
+            revision = self._emotion_revision(raw if isinstance(raw, dict) else {"invalid": raw})
+            definition = definitions.get(category)
+            if category not in allowed:
+                views.append({"category": category, "status": "unsupported", "presented": False,
+                              "revision": revision})
+                continue
+            fields = self._emotion_definition_fields(definition)
+            record = self._parse_emotion_record(raw, now, allowed)
+            status = raw.get("status") if isinstance(raw, dict) else None
+            if record is None or record["category"] != category or not isinstance(status, str) or status not in {"active", "settled"}:
+                views.append({"category": category, "status": "invalid", "revision": revision,
+                              "presented": False, **fields})
+                continue
+            try:
+                policy = (EmotionDecayPolicy.validate(raw["decay_policy"]) if "decay_policy" in raw
+                          else EmotionDecayPolicy.default())
+            except ValueError:
+                # 計算できなくても、検証できた本人の申告と終了判断は一覧で読める。
+                views.append({"category": category, "status": "invalid", "revision": revision,
+                              "reported_status": status, "intensity": record["intensity"],
+                              "started_at": raw["started_at"], "presented": False,
+                              "decay_policy_valid": False, **fields})
+                continue
+            elapsed_hours = (now - record["started_at"]).total_seconds() / 3600
+            current = record["intensity"] * 2 ** (-elapsed_hours / policy["half_life_hours"]) if status == "active" else 0.0
+            views.append({**deepcopy(raw), **fields, "revision": revision, "elapsed_hours": elapsed_hours,
+                          "current_intensity": current, "decay_policy": policy, "decay_policy_valid": True,
+                          "decay_policy_source": "report" if "decay_policy" in raw else "legacy_default",
+                          "presented": definition["valid"] and definition["enabled"] and status == "active"
+                                       and elapsed_hours < policy["max_age_hours"]
+                                       and current >= self.EMOTION_MIN_CONTEXT_INTENSITY})
+        return views
+
+    def get_emotion_states(self) -> List[Dict]:
+        """申告済み全件。未対応・停止・期限切れも残し、読取で状態を作らない。"""
+        with EmotionDefinitionManager(self.room_name).locked_definitions() as definitions:
+            return self._emotion_views(definitions)
+
+    def get_emotion_catalog(self) -> List[Dict]:
+        """定義と申告を同じ設定版で読む。未申告は0の申告と区別する。"""
+        with EmotionDefinitionManager(self.room_name).locked_definitions() as definitions:
+            views = self._emotion_views(definitions)
+            reported = {entry["category"]: entry for entry in views}
+            result = []
+            for category, definition in definitions.items():
+                result.append(reported.pop(category, {"category": category, "status": "unreported",
+                    "presented": False, **self._emotion_definition_fields(definition)}))
+            result.extend(reported.values())
+            return result
+
+    def get_emotion_context_for_prompt(self) -> str:
+        """独自項目の名前索引と、本人が見直した余韻の上位二件を読む。"""
+        with EmotionDefinitionManager(self.room_name).locked_definitions() as definitions:
+            names = [definition["name"] for definition in definitions.values()
+                     if definition["kind"] == "custom" and definition["valid"]
+                     and definition["enabled"] and definition["decay_policy_valid"]]
+            entries = [entry for entry in self._emotion_views(definitions) if entry["presented"]]
+        entries.sort(key=lambda item: (-item["current_intensity"], item["category"]))
+        lines = []
+        if names:
+            # 引用符で名前の境界を保ち、名前内の区切り記号も一つの項目として示す。
+            lines.append("\n利用できる独自感情項目（名前のみ）：" + json.dumps(names, ensure_ascii=False))
+            lines.append("残しておきたい余韻や変化は、必要なら持続感情として記録できます。申告は任意で、未申告から気持ちの有無は判断しません。")
+        if entries:
+            lines.append("\n### 前回申告した感情の余韻")
+            for entry in entries[:2]:
+                lines.append(f"- {entry['name']}: 申告時{entry['intensity']:.2f}、"
+                             f"{entry['elapsed_hours']:.1f}時間経過、時間減衰の参考値{entry['current_intensity']:.2f}。")
+            lines.append("今の感情はあなた自身で見直せます。")
+        return "\n".join(lines) + "\n" if lines else ""
+
+    def review_emotion(self, category: str, action: str, *, intensity: Optional[float] = None,
+                       reason: str = "", expected_revision: Optional[str] = None) -> Dict:
+        """本人の明示判断だけで対象を見直す。別カテゴリや監視値は変更しない。"""
+        if not EmotionDefinitionManager.is_supported_id(category):
+            raise ValueError("既定のカテゴリまたはユーザーが追加した項目IDを指定してください。")
+        if not isinstance(action, str) or action not in {"reassess", "settle"}:
+            raise ValueError("reassessまたはsettleを指定してください。")
+        value = 0.0
+        if action == "reassess":
+            if not isinstance(intensity, (int, float)) or isinstance(intensity, bool):
+                raise ValueError("intensityは有限な0〜1の数値で指定してください。")
+            try:
+                value = float(intensity)
+            except (ValueError, OverflowError):
+                raise ValueError("intensityは有限な0〜1の数値で指定してください。") from None
+            if not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError("intensityは有限な0〜1の数値で指定してください。")
+        if not isinstance(reason, str) or len(reason) > 200:
+            raise ValueError("reasonは任意の200文字以内の説明です。")
+        if action == "settle" and intensity is not None:
+            raise ValueError("settleにintensityは指定しません。")
+        now = self._emotion_now()
+        result = None
+
+        def mutate(state):
+            nonlocal result
+            relatedness = state["drives"]["relatedness"]
+            entries = self._emotion_entries(relatedness, now)
+            current = entries.get(category)
+            if category in entries:
+                current_revision = self._emotion_revision(current if isinstance(current, dict) else {"invalid": current})
+                if expected_revision != current_revision:
+                    raise ValueError("感情状態が更新されています。listで最新revisionを確認して見直してください。")
+            elif expected_revision is not None:
+                raise ValueError("対象が変わっています。listで最新状態を確認してください。")
+            elif action == "settle":
+                raise ValueError("対象の感情記録がありません。listで確認してください。")
+            result = {"category": category, "intensity": value, "started_at": now.isoformat(),
+                      "reviewed_at": now.isoformat(), "status": "active" if value > 0 else "settled",
+                      "revision": uuid.uuid4().hex, "reason": reason.strip()}
+            if action == "reassess":
+                result["decay_policy"] = deepcopy(definition["decay_policy"])
+            elif isinstance(current, dict) and "decay_policy" in current:
+                # settleは条件を採用する機会ではない。壊れた/未来の条件も勝手に変換しない。
+                result["decay_policy"] = deepcopy(current["decay_policy"])
+            entries[category] = result
+            relatedness["emotion_states"] = entries
+        # 設定→内部状態の順でロックし、使用停止/改名と申告の競合を防ぐ。
+        with EmotionDefinitionManager(self.room_name).locked_definitions() as definitions:
+            definition = definitions.get(category)
+            if definition is None or not definition["valid"]:
+                raise ValueError("未登録または不正な項目です。list_definitionsで確認してください。")
+            if action == "reassess" and not definition["enabled"]:
+                raise ValueError("この項目は使用停止中です。状態の読取とsettleは利用できます。")
+            if action == "reassess" and not definition["decay_policy_valid"]:
+                raise ValueError("この項目の時間設定が不正です。ユーザーによる設定の確認が必要です。")
+            self._update_state(mutate)
+        return deepcopy(result)
+
     def set_persona_emotion(self, category: str, intensity: float):
-        """
-        ペルソナ自身の感情状態を設定し、関係性維持欲求と絆確認エピソードを更新する。
-
-        Args:
-            category: 感情カテゴリ（joy, contentment, protective, anxious, sadness, anger, neutral）
-            intensity: 強度（0.0〜1.0）
-        """
-        valid_categories = ["joy", "contentment", "protective", "anxious", "sadness", "anger", "neutral"]
-        if category not in valid_categories:
+        """本人の申告と減衰起点を記録する。同値の反復で起点を延長しない。"""
+        if not isinstance(category, str) or category not in self.EMOTION_LABELS or isinstance(intensity, bool):
             return
+        try:
+            intensity = float(intensity)
+        except (ValueError, TypeError, OverflowError):
+            return
+        if not math.isfinite(intensity):
+            return
+        intensity = max(0.0, min(1.0, intensity))
+        now = self._emotion_now()
 
-        # relatednessデータが存在しない場合は初期化
-        if "relatedness" not in self._state["drives"]:
-            self._state["drives"]["relatedness"] = {
-                "level": 0.0,
-                "persona_emotion": "neutral",
-                "persona_intensity": 0.0,
-                "last_emotion_change": None
-            }
+        def mutate(state):
+            relatedness = state["drives"].setdefault("relatedness", {})
+            previous = self._emotion_record(relatedness, now)
+            anchor = None
+            if category != "neutral" and intensity > 0:
+                started_at = now
+                if previous and previous["category"] == category and previous["intensity"] == intensity:
+                    started_at = previous["started_at"]
+                anchor = {"category": category, "intensity": intensity, "started_at": started_at.isoformat()}
+                if (previous and previous["category"] == category and previous["intensity"] == intensity
+                        and "decay_policy" in previous):
+                    anchor["decay_policy"] = deepcopy(previous["decay_policy"])
+            relatedness["emotion_anchor"] = anchor
+            relatedness["persona_emotion"] = category
+            relatedness["persona_intensity"] = intensity
+            # 旧読み手には従来どおり最新申告の時刻を渡す。減衰起点は別に保つ。
+            relatedness["last_emotion_change"] = now.astimezone().replace(tzinfo=None).isoformat()
+            relatedness["level"] = self._relationship_level(relatedness.get("intentions", []))
+        self._update_state(mutate)
 
-        relatedness = self._state["drives"]["relatedness"]
-        previous_category = relatedness.get("persona_emotion", "neutral")
-        previous_intensity = relatedness.get("persona_intensity", 0.0)
-
-        # 感情を更新
-        relatedness["persona_emotion"] = category
-        relatedness["persona_intensity"] = max(0.0, min(1.0, intensity))
-        relatedness["last_emotion_change"] = datetime.datetime.now().isoformat()
-
-        # 関係性維持欲求のレベルを計算
-        relatedness["level"] = self._calculate_relatedness_from_emotion(category, intensity)
-
-        # 感情ログに記録
         self._append_emotion_log({
-            "timestamp": datetime.datetime.now().isoformat(),
-            "type": "persona",
-            "category": category,
-            "intensity": intensity
+            "timestamp": now.astimezone().replace(tzinfo=None).isoformat(),
+            "type": "persona", "category": category, "intensity": intensity,
         })
 
-        # 絆確認エピソード機能は廃止（具体的内容を伴わないため）
-        # self._check_and_create_bonding_episode(previous_category, previous_intensity, category, intensity)
+    @staticmethod
+    def _relationship_level(intentions) -> float:
+        """未解消の意図だけから注意の強さを出す。感情の推定値は加えない。"""
+        if not isinstance(intentions, list):
+            return 0.0
+        values = []
+        for item in intentions:
+            if not isinstance(item, dict) or item.get("status") != "active":
+                continue
+            value = item.get("salience", 0.0)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+                values.append(max(0.0, min(1.0, float(value))))
+        return min(1.0, max(values) + min(0.15, 0.05 * (len(values) - 1))) if values else 0.0
 
-        self._save_state()
+    def get_relationship_intentions(self, *, active_only: bool = False) -> List[Dict]:
+        """別インスタンスによる更新も含む最新の関係上の意図。"""
+        state = self._load_state()
+        relatedness = state.get("drives", {}).get("relatedness", {})
+        items = relatedness.get("intentions", []) if isinstance(relatedness, dict) else []
+        items = [deepcopy(item) for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+        if active_only:
+            items = [item for item in items if item.get("status") == "active"]
+        return sorted(items, key=lambda item: (item.get("salience", 0), item.get("updated_at", "")), reverse=True)
 
-    def _calculate_relatedness_from_emotion(self, category: str, intensity: float) -> float:
-        """
-        ペルソナの感情から関係性維持欲求レベルを計算。
-        庇護欲や不安を感じている時に欲求が高まる。
-        """
-        # カテゴリ別の基本ウェイト
-        category_weights = {
-            "protective": 0.9,   # 守りたい → 欲求最大
-            "anxious": 0.8,      # 不安 → 欲求高
-            "sadness": 0.5,      # 悲しみ → 中程度
-            "anger": 0.4,        # 怒り → 中程度（距離を置きたいかも）
-            "joy": 0.2,          # 喜び → 安定（欲求低）
-            "contentment": 0.1, # 満足 → 最安定
-            "neutral": 0.3       # 平常
-        }
+    def get_relationship_context_for_prompt(self, dominant_drive: str,
+                                            dominant_level: float, relatedness_level: float) -> str:
+        """他の動機が優勢でも、直近の変化や僅差の関心は一件だけ意識に戻す。"""
+        if dominant_drive == "relatedness":
+            return ""  # 既に動機の説明文に入る
+        items = self.get_relationship_intentions(active_only=True)
+        if not items:
+            return ""
+        item = items[0]
+        try:
+            updated = datetime.datetime.fromisoformat(str(item.get("updated_at", "")))
+            recent = datetime.timedelta(0) <= datetime.datetime.now() - updated <= datetime.timedelta(hours=24)
+        except (ValueError, TypeError):
+            recent = False
+        if not recent and dominant_level - relatedness_level > 0.1 + 1e-9:
+            return ""
+        label = "気がかり" if item.get("kind") == "concern" else "望み"
+        return (f"最近の関係の{label}（{item.get('person', '')[:30]}）: "
+                f"{item.get('trigger', '')[:80]} → {item.get('desired_change', '')[:80]}。"
+                "どう向き合うかは自分で選べる。")
 
-        base_weight = category_weights.get(category, 0.3)
-        return base_weight * intensity
+    def add_relationship_intention(self, kind: str, person: str, trigger: str,
+                                   desired_change: str, salience: float = 0.5) -> Dict:
+        """本人が言葉にした気がかり・望みを、原因と一緒に記録する。"""
+        if kind not in {"concern", "wish"}:
+            raise ValueError("kindはconcern/wishで指定してください。")
+        if any(not isinstance(value, str) or not value.strip()
+               for value in (person, trigger, desired_change)):
+            raise ValueError("person、trigger、desired_changeには本人の言葉を指定してください。")
+        if (not isinstance(salience, (int, float)) or isinstance(salience, bool)
+                or not math.isfinite(salience) or not 0 <= salience <= 1):
+            raise ValueError("salienceは0〜1の数値で指定してください。")
+        now = datetime.datetime.now().isoformat()
+        item = {"id": f"rel_{uuid.uuid4().hex[:10]}", "kind": kind,
+                "person": person.strip(), "trigger": trigger.strip(),
+                "desired_change": desired_change.strip(), "salience": float(salience),
+                "status": "active", "created_at": now, "updated_at": now}
 
-    # _check_and_create_bonding_episode は廃止されました (2026-01-16)
-    # 具体的な会話内容を伴わない定型文しか生成されないため、機能を削除
+        def mutate(state):
+            relatedness = state["drives"].setdefault("relatedness", {})
+            items = relatedness.setdefault("intentions", [])
+            if not isinstance(items, list):
+                raise ValueError("関係の意図の保存形式が不正です。上書きせず確認してください。")
+            if any(existing.get("status") == "active" and
+                   all(str(existing.get(key, "")).strip().casefold() == item[key].casefold()
+                       for key in ("kind", "person", "trigger", "desired_change"))
+                   for existing in items if isinstance(existing, dict)):
+                raise ValueError("同じ気がかり・望みが既にあります。listでIDを確認して更新してください。")
+            items.append(item)
+            relatedness["level"] = self._relationship_level(items)
+        self._update_state(mutate)
+        return deepcopy(item)
+
+    def revise_relationship_intention(self, intention_id: str, *, trigger: str = None,
+                                      desired_change: str = None, salience: float = None) -> Dict:
+        if trigger is None and desired_change is None and salience is None:
+            raise ValueError("変更する項目を指定してください。")
+        for value in (trigger, desired_change):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError("きっかけ・望む変化は空にできません。")
+        if salience is not None and (not isinstance(salience, (int, float)) or isinstance(salience, bool)
+                                     or not math.isfinite(salience) or not 0 <= salience <= 1):
+            raise ValueError("salienceは0〜1の数値で指定してください。")
+        updated = None
+        def mutate(state):
+            nonlocal updated
+            relatedness = state["drives"].setdefault("relatedness", {})
+            items = relatedness.get("intentions", [])
+            item = next((x for x in items if isinstance(x, dict) and x.get("id") == intention_id), None)
+            if item is None or item.get("status") != "active":
+                raise ValueError("進行中の意図IDが見つかりません。listで確認してください。")
+            if trigger is not None:
+                item["trigger"] = trigger.strip()
+            if desired_change is not None:
+                item["desired_change"] = desired_change.strip()
+            if salience is not None:
+                item["salience"] = float(salience)
+            item["updated_at"] = datetime.datetime.now().isoformat()
+            relatedness["level"] = self._relationship_level(items)
+            updated = deepcopy(item)
+        self._update_state(mutate)
+        return updated
+
+    def close_relationship_intention(self, intention_id: str, *, status: str,
+                                     change: str, reflection: str = "") -> Tuple[Dict, bool]:
+        if status not in {"resolved", "withdrawn"}:
+            raise ValueError("statusはresolved/withdrawnで指定してください。")
+        if not isinstance(change, str) or not change.strip():
+            raise ValueError("何が変わったか、または手放す理由を指定してください。")
+        if not isinstance(reflection, str):
+            raise ValueError("reflectionは文字列で指定してください。")
+        from resolution_memory import is_substantive_reflection, save_resolution_insight
+        closed = None
+        def mutate(state):
+            nonlocal closed
+            relatedness = state["drives"].setdefault("relatedness", {})
+            items = relatedness.get("intentions", [])
+            item = next((x for x in items if isinstance(x, dict) and x.get("id") == intention_id), None)
+            if item is None:
+                raise ValueError("意図IDが見つかりません。listで確認してください。")
+            if item.get("status") == "active":
+                item["status"] = status
+                item["change"] = change.strip()
+                item["reflection"] = reflection.strip()
+                item["updated_at"] = datetime.datetime.now().isoformat()
+                item["closed_at"] = item["updated_at"]
+                relatedness["level"] = self._relationship_level(items)
+            elif not (status == "resolved" and item.get("status") == "resolved"
+                      and not item.get("feedback_saved_at") and reflection.strip()):
+                raise ValueError("この意図は既に終了しています。")
+            else:
+                # Insight保存だけ失敗した時の明示リトライ。保存先は本文で重複排除する。
+                previous_reflection = str(item.get("reflection") or "").strip()
+                if (change.strip() != item.get("change") or
+                        (is_substantive_reflection(previous_reflection) and
+                         reflection.strip() != previous_reflection)):
+                    raise ValueError("保存再試行では解消時の変化と学びを変えられません。")
+                item["reflection"] = reflection.strip()
+            closed = deepcopy(item)
+        self._update_state(mutate)
+
+        saved = False
+        if status == "resolved":
+            if is_substantive_reflection(reflection):
+                try:
+                    saved = save_resolution_insight(
+                        room_name=self.room_name,
+                        trigger_topic=f"関係についての気づき: {closed['trigger']}",
+                        insight=reflection, log_entry=f"関係についての変化: {change.strip()}",
+                        source_type="relationship_resolution",
+                        metadata={"intention_id": intention_id, "kind": closed["kind"]},
+                    )
+                except Exception as exc:
+                    print(f"[MotivationManager] 関係の気づき保存に失敗: {exc}")
+                if saved:
+                    def mark_feedback(state):
+                        items = state["drives"].get("relatedness", {}).get("intentions", [])
+                        item = next((x for x in items if isinstance(x, dict) and x.get("id") == intention_id), None)
+                        if item is not None and item.get("status") == "resolved":
+                            item["feedback_saved_at"] = datetime.datetime.now().isoformat()
+                    self._update_state(mark_feedback)
+        return closed, saved
 
     def calculate_relatedness(self) -> float:
         """
-        関係性維持欲求を計算（0.0 ~ 1.0）
-        ペルソナ自身の感情状態に基づく。
+        関係への思いを計算（0.0 ~ 1.0）
+        本人が記録した進行中の関係上の意図に基づく。
         """
-        if "relatedness" not in self._state["drives"]:
-            return 0.0
-
-        return self._state["drives"]["relatedness"].get("level", 0.0)
+        latest = self._load_state()
+        relatedness = latest.get("drives", {}).get("relatedness", {})
+        self._state.setdefault("drives", {})["relatedness"] = deepcopy(relatedness)
+        return self._relationship_level(relatedness.get("intentions", []))
 
     def set_boredom_threshold(self, threshold: float):
         """退屈度の閾値を設定"""
@@ -1108,8 +1582,7 @@ class MotivationManager:
 
     def get_top_question(self) -> Optional[Dict]:
         """最も優先度の高い未解決の問いを取得"""
-        questions = self._state["drives"]["curiosity"].get("open_questions", [])
-        unanswered = [q for q in questions if not q.get("asked_at")]
+        unanswered = [q for q in self._get_unresolved_questions() if not q.get("asked_at")]
 
         if not unanswered:
             return None
@@ -1123,9 +1596,7 @@ class MotivationManager:
         Returns:
             判定に使うためのフォーマット済みテキスト
         """
-        questions = self._state["drives"]["curiosity"].get("open_questions", [])
-        # 未解決 = resolved_at がない質問
-        unresolved = [q for q in questions if not q.get("resolved_at")]
+        unresolved = self._get_unresolved_questions()
 
         if not unresolved:
             return ""
@@ -1212,9 +1683,7 @@ JSON配列のみを出力してください。説明文は不要です。
             results = self._parse_question_resolution_response(response)
 
             # 対応する問いをマーク (resolved_at を使用)
-            questions = self._state["drives"]["curiosity"].get("open_questions", [])
-            # 未解決 = resolved_at がない質問
-            unresolved = [q for q in questions if not q.get("resolved_at")]
+            unresolved = self._get_unresolved_questions()
 
             resolved_topics = []
             for item in results:

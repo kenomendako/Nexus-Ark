@@ -1,11 +1,13 @@
 """Approximate API pricing used for per-turn cost display.
 
-Prices are approximate as of 2026-06 and are listed in USD per
-1,000,000 tokens. Update this file when provider pricing changes.
+Prices are in USD per 1,000,000 tokens. New Gemini prices were verified
+2026-10-19; dated rates and billing routes must not be inferred from model families.
 """
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+import math
 from typing import Optional
 
 
@@ -22,6 +24,7 @@ MODEL_PRICES = {
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0},
     # Google Gemini API, Standard tier text/image/video prices where applicable.
     "gemini-3.5-flash": {"input": 1.50, "output": 9.00},
+    "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50},
     "gemini-3-flash-preview": {"input": 0.50, "output": 3.00},
     "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50},
     "gemini-3.1-flash-lite-preview": {"input": 0.25, "output": 1.50},
@@ -90,17 +93,76 @@ def infer_pricing_provider(model_name: str, cache_mode: str = "") -> Optional[st
     return None
 
 
-def get_model_price(model_name: str) -> Optional[dict]:
+# Standard online inference only. Batch/Flex/Priority are not sent by the app.
+# Sources (verified 2026-10-19):
+# https://ai.google.dev/gemini-api/docs/pricing
+# https://cloud.google.com/gemini-enterprise-agent-platform/generative-ai/pricing
+# https://openrouter.ai/google/gemini-3.8-flash
+# https://openrouter.ai/google/gemini-4-argon
+GEMINI_DATED_PRICES = {
+    "gemini-3.8-flash": {
+        "start": date(2026, 9, 2), "change": date(2027, 1, 1),
+        "intro": {"input": 0.75, "output": 3.75, "cache_read": 0.075, "storage": 0.50},
+        "standard": {"input": 1.50, "output": 7.50, "cache_read": 0.15, "storage": 1.0},
+    },
+    "gemini-4-argon": {
+        "start": date(2026, 10, 13), "change": date(2026, 12, 1),
+        "intro": {"input": 2.0, "output": 10.0, "cache_read": 0.10},
+        "standard": {"input": 4.0, "output": 20.0, "cache_read": 0.20},
+    },
+}
+
+
+def _pricing_date(value=None) -> date | None:
+    if value is None:
+        return datetime.now(timezone.utc).date()
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def get_model_price(model_name: str, *, billing_backend: str = "", billing_location: str = "",
+                    pricing_date=None) -> Optional[dict]:
     normalized = normalize_model_name(model_name)
+    backend = billing_backend or ("openrouter" if str(model_name).strip().lower().startswith("google/") else "developer")
+    # Only this explicitly registered free route has a verified zero rate.
+    if str(model_name).strip().lower() == "google/gemma-3-27b-it:free" and backend in {"developer", "openrouter"}:
+        return {"input": 0.0, "output": 0.0}
+    if ":" in str(model_name):
+        return None
+    dated = GEMINI_DATED_PRICES.get(normalized)
+    if dated:
+        day = _pricing_date(pricing_date)
+        if day is None or day < dated["start"]:
+            return None
+        if backend not in {"developer", "vertex", "openrouter"}:
+            return None
+        if backend == "vertex" and not billing_location:
+            return None
+        # OpenRouter routing/discounts may change independently of Google.
+        if backend == "openrouter" and day >= dated["change"]:
+            return None
+        # Vertex promotion is issued as later credits, not a lower usage charge.
+        # Estimate gross list spend, without assuming the account receives credits.
+        rates = dict(dated["standard"] if backend == "vertex" or day >= dated["change"] else dated["intro"])
+        if backend == "vertex" and billing_location != "global":
+            rates = {key: value * 1.1 for key, value in rates.items()}
+        return rates
+    if backend not in {"developer", "anthropic", "openai_official"}:
+        return None
     if normalized in MODEL_PRICES:
         return MODEL_PRICES[normalized]
+    # Explicit aliases only; a well-formed but unregistered date is not evidence
+    # of a model's price. Source: https://platform.claude.com/docs/en/models/sonnet-4-5/overview
+    aliases = {"claude-sonnet-4-5-20250929": "claude-sonnet-4-5"}
+    alias = aliases.get(normalized)
+    return MODEL_PRICES.get(alias) if alias else None
 
-    # Claude API model IDs often append release dates. Keep the table compact
-    # while still matching the corresponding family price.
-    for key in sorted(MODEL_PRICES, key=len, reverse=True):
-        if normalized.startswith(f"{key}-"):
-            return MODEL_PRICES[key]
-    return None
 
 
 def get_image_price(model_name: str) -> Optional[float]:
@@ -128,58 +190,77 @@ def usage_int(usage: dict, *keys: str) -> int:
 
 
 def estimate_turn_cost(usage: dict) -> Optional[dict]:
-    """Return approximate turn cost and cache savings for supported models."""
+    """Estimate verified usage; unavailable routes/rates/usage return None."""
     if not isinstance(usage, dict):
         return None
-
     model_name = usage.get("model_name") or usage.get("model")
     if not model_name:
         return None
-
+    backend = str(usage.get("billing_backend") or "")
     cache_mode = str(usage.get("cache_mode") or "")
     provider = infer_pricing_provider(str(model_name), cache_mode=cache_mode)
-    model_price = get_model_price(str(model_name))
+    if backend == "openrouter":
+        # The charged OpenRouter cost already includes routing, caching and fees.
+        reported = usage.get("reported_cost")
+        if isinstance(reported, (int, float)) and not isinstance(reported, bool) and math.isfinite(reported) and reported >= 0:
+            discount = usage.get("reported_cache_discount")
+            savings = float(discount) if isinstance(discount, (int, float)) and math.isfinite(discount) else 0.0
+            return {"cost": float(reported), "savings": savings, "is_registration": savings < 0,
+                    "is_paid": True, "provider": "openrouter", "cost_estimate_basis": "provider_reported"}
+    model_price = get_model_price(str(model_name), billing_backend=backend,
+                                  billing_location=str(usage.get("billing_location") or ""),
+                                  pricing_date=usage.get("pricing_date"))
     multipliers = CACHE_MULTIPLIERS.get(provider or "")
     if not provider or not model_price or not multipliers:
+        return None
+    if usage.get("usage_status") == "missing" or not any(key in usage for key in (
+        "prompt_tokens", "prompt", "input_tokens", "prompt_token_count", "completion_tokens", "completion", "output_tokens", "candidates_token_count"
+    )):
+        return None
+    if usage.get("pricing_tier", "standard") != "standard":
         return None
 
     prompt_tokens = usage_int(usage, "prompt_tokens", "prompt", "input_tokens", "prompt_token_count")
     completion_tokens = usage_int(usage, "completion_tokens", "completion", "output_tokens", "candidates_token_count")
     cache_read_tokens = usage_int(usage, "cache_read_tokens")
     cache_creation_tokens = usage_int(usage, "cache_creation_tokens")
-    total_input_tokens = usage_int(usage, "total_input_tokens", "cache_total_input_tokens")
-    if not total_input_tokens:
-        total_input_tokens = prompt_tokens or cache_read_tokens + cache_creation_tokens
-
+    if min(prompt_tokens, completion_tokens, cache_read_tokens, cache_creation_tokens) < 0:
+        return None
+    total_input_tokens = usage_int(usage, "total_input_tokens", "cache_total_input_tokens") or prompt_tokens
+    is_gemini = provider.startswith("gemini")
+    if is_gemini and cache_read_tokens > total_input_tokens:
+        return None
+    if normalize_model_name(str(model_name)) == "gemini-4-argon" and cache_mode == "gemini_explicit":
+        return None
+    if backend == "openrouter" and cache_creation_tokens:
+        # Per-provider write/storage semantics cannot be inferred from read rates.
+        return None
     is_registration = bool(usage.get("cache_just_created")) or cache_creation_tokens > 0
-    if provider == "gemini_explicit" and usage.get("cache_just_created") is True and cache_creation_tokens <= 0:
-        cache_creation_tokens = cache_read_tokens or total_input_tokens
-        cache_read_tokens = 0
-
     if provider == "anthropic":
         non_cached_tokens = max(0, total_input_tokens - cache_read_tokens - cache_creation_tokens)
+    elif is_gemini:
+        # Google prompt count includes cached tokens. A newly created explicit
+        # cache can be read in the same request; do not turn that read into a write.
+        non_cached_tokens = max(0, total_input_tokens - cache_read_tokens)
+        cache_creation_tokens = 0  # storage is separate; not a second input charge
     else:
-        non_cached_tokens = max(0, prompt_tokens - cache_read_tokens - cache_creation_tokens)
-        if not prompt_tokens and total_input_tokens:
-            non_cached_tokens = max(0, total_input_tokens - cache_read_tokens - cache_creation_tokens)
+        non_cached_tokens = max(0, total_input_tokens - cache_read_tokens - cache_creation_tokens)
 
     input_rate = float(model_price["input"]) / 1_000_000
     output_rate = float(model_price["output"]) / 1_000_000
-    actual_input_cost = (
-        non_cached_tokens * input_rate
-        + cache_read_tokens * input_rate * float(multipliers["read"])
-        + cache_creation_tokens * input_rate * float(multipliers["write"])
-    )
+    read_rate = float(model_price.get("cache_read", model_price["input"] * multipliers["read"])) / 1_000_000
+    actual_input_cost = (non_cached_tokens * input_rate + cache_read_tokens * read_rate
+                         + cache_creation_tokens * input_rate * float(multipliers["write"]))
     output_cost = completion_tokens * output_rate
     baseline_input_cost = (non_cached_tokens + cache_read_tokens + cache_creation_tokens) * input_rate
     savings = baseline_input_cost - actual_input_cost
-
     return {
-        "cost": actual_input_cost + output_cost,
-        "savings": savings,
+        "cost": actual_input_cost + output_cost, "savings": savings,
         "is_registration": is_registration or savings < 0,
-        "is_paid": bool(usage.get("is_paid", True)),
-        "provider": provider,
+        "is_paid": True if backend in {"vertex", "openrouter"} or normalize_model_name(str(model_name)) == "gemini-4-argon" else bool(usage.get("is_paid", True)),
+        "provider": backend if backend in {"vertex", "openrouter"} else provider,
+        "cost_estimate_basis": "vertex_list_before_credits" if backend == "vertex" else "catalog",
+        "storage_excluded": provider == "gemini_explicit",
     }
 
 

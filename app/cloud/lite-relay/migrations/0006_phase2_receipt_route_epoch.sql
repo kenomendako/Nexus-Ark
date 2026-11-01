@@ -1,0 +1,1 @@
+ALTER TABLE usage_receipts ADD COLUMN route_epoch INTEGER NOT NULL DEFAULT 0;

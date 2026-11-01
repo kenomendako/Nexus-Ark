@@ -13,6 +13,45 @@ class RoomSummary(BaseModel):
     current_location: str = ""
 
 
+class LiteStandbyPrepareRequest(BaseModel):
+    room_ids: List[str] = Field(min_length=1, max_length=3)
+    parallel_room_ids: List[str] = Field(default_factory=list, max_length=3)
+    retention_days: int = Field(default=7, ge=1, le=30)
+    automatic: bool = False
+    include_core_memory: bool = True
+    include_episodic_memory: bool = True
+    episodic_memory_days: int = Field(default=2, ge=0, le=30)
+    recent_message_limit: int = Field(default=40, ge=0, le=40)
+
+
+class LiteTravelReturnRequest(BaseModel):
+    travel_session_id: str = Field(min_length=1, max_length=100)
+
+
+PersistentEmotionState = Literal["active", "settled", "unreported", "invalid", "unsupported"]
+PersistentEmotionPresentationStatus = Literal[
+    "active",
+    "unreported",
+    "settled",
+    "expired",
+    "below_threshold",
+    "disabled",
+    "invalid",
+    "unsupported",
+]
+
+
+class PersistentEmotionStatus(BaseModel):
+    category: str
+    name: str
+    enabled: bool = False
+    status: PersistentEmotionState
+    presentation_status: PersistentEmotionPresentationStatus
+    intensity: Optional[float] = None
+    started_at: Optional[str] = None
+    current_intensity: Optional[float] = None
+
+
 class RoomStatus(BaseModel):
     room_id: str
     display_name: str
@@ -20,6 +59,10 @@ class RoomStatus(BaseModel):
     drives: Dict[str, float] = Field(default_factory=dict)
     current_expression: str = "neutral"
     arousal: float = 0.5
+    persistent_emotions_available: bool = False
+    persistent_emotions: List[PersistentEmotionStatus] = Field(default_factory=list)
+    arousal_sample_count: Optional[int] = None
+    arousal_date: Optional[str] = None
     active_goals_count: int = 0
     profile_image_path: Optional[str] = None
     updated_at: datetime
@@ -63,6 +106,7 @@ class ChatHistoryMessage(BaseModel):
     role: str
     speaker: str = ""
     content: str
+    thoughts: str = ""
     message_id: str = ""
     timestamp: Optional[datetime] = None
     model: Optional[str] = None
@@ -230,7 +274,7 @@ class MemorySearchResponse(BaseModel):
     results: List[Dict[str, Any]]
 
 
-NoteType = Literal["research", "creative", "diary", "notepad"]
+NoteType = Literal["research", "creative", "diary", "notepad", "dream", "episodic"]
 
 
 class NoteResponse(BaseModel):

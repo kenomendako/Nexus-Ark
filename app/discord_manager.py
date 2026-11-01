@@ -15,13 +15,17 @@ import struct
 import shutil
 from typing import Optional, List, Dict, Any
 
+import aiohttp
+
 import config_manager
 import gemini_api
 from discord import app_commands
+from discord.utils import MISSING
 from langchain_core.messages import AIMessage
 import room_manager
 import utils
 import constants
+from tls_security import create_tls_context
 
 try:
     import discord.ext.voice_recv as voice_recv
@@ -699,6 +703,32 @@ class NexusDiscordClient(discord.Client):
         self.voice_input_session: Optional[Dict[str, Any]] = None
         self.tree = app_commands.CommandTree(self)
         self._register_application_commands()
+
+    async def _async_setup_hook(self) -> None:
+        """Configure Discord's aiohttp connector before the first login.
+
+        ``discord.Client.login`` creates the HTTP session immediately after
+        this hook, while ``setup_hook`` itself runs *after* that session has
+        already been created.  Setting the connector here therefore closes
+        the otherwise implicit OS trust-store path on Windows without
+        touching a running event loop from another thread.
+        """
+        await super()._async_setup_hook()
+        connector = getattr(self.http, "connector", MISSING)
+        if connector is MISSING or connector is None or getattr(connector, "closed", False):
+            self.http.connector = aiohttp.TCPConnector(limit=0, ssl=create_tls_context())
+
+    async def close(self) -> None:
+        """Close the session and an early-created connector on every path."""
+        connector = getattr(getattr(self, "http", None), "connector", MISSING)
+        try:
+            await super().close()
+        finally:
+            # If login failed before ClientSession was constructed,
+            # discord.py's HTTPClient.close() has nothing to close.  The
+            # connector created in _async_setup_hook still owns resources.
+            if connector is not MISSING and connector is not None and not getattr(connector, "closed", True):
+                await connector.close()
 
     async def setup_hook(self):
         try:
@@ -2165,7 +2195,13 @@ def _start_single_bot(room_name: Optional[str], settings: dict, scope: str):
         finally:
             with _sessions_lock:
                 _bot_sessions.pop(key, None)
-            loop.close()
+            try:
+                # start() may fail before discord.py enters its session
+                # cleanup path. Close this thread's own client before its
+                # event loop disappears, including an early TLS connector.
+                loop.run_until_complete(client.close())
+            finally:
+                loop.close()
 
     thread = threading.Thread(target=run_event_loop, daemon=True)
     with _sessions_lock:

@@ -9,6 +9,7 @@ import time
 import shutil 
 import datetime 
 import re
+from urllib.parse import urlsplit, urlunsplit
 
 import constants
 import file_lock_utils
@@ -29,7 +30,7 @@ DISCORD_BOT_TOKEN = ""
 DISCORD_AUTHORIZED_USER_IDS = []
 DISCORD_BOT_LINKED_ROOM = None
 AVAILABLE_MODELS_GLOBAL = []
-DEFAULT_MODEL_GLOBAL = "gemini-3.1-flash-lite-preview"
+DEFAULT_MODEL_GLOBAL = "gemini-3.1-flash-lite"
 NOTIFICATION_SERVICE_GLOBAL = "discord"
 NOTIFICATION_WEBHOOK_URL_GLOBAL = None
 PUSHOVER_CONFIG = {}
@@ -43,11 +44,21 @@ NIM_API_KEY = ""       # [Phase 4] Nvidia NIM 用APIキー
 XAI_API_KEY = ""       # [Phase 4] X.ai (Grok) 用APIキー
 AVAILABLE_ZHIPU_MODELS = constants.ZHIPU_MODELS
 
+
+def get_lite_default_model(provider: Any = "gemini") -> str:
+    """Lite初回候補を返す。利用可否の確定はWorkerで行う。
+
+    本体の共通モデル既定値とは分離し、Lite初回設定の候補に限定する。
+    使用可能と断定せず、出発前のliveカタログ照合を通過した経路のみ送信できる。
+    """
+    return constants.LITE_DEFAULT_GEMINI_MODEL if str(provider or "").strip().lower() == "gemini" else ""
+
 ROOM_AI_PROVIDER_SETTING_KEYS = {
     "provider",
     "api_key_name",
     "model_name",
     "enable_api_key_rotation",
+    "gemini_connection",
     "openai_settings",
     "anthropic_settings",
     "claude_subscription_settings",
@@ -872,6 +883,86 @@ def update_config_keys(updates: Dict[str, Any]) -> bool:
     CONFIG_GLOBAL.update(applied_updates)
     return True
 
+
+def update_nested_config_keys(parent_key: str, updates: Dict[str, Any]) -> bool:
+    """最新configのネスト辞書へ指定した子キーだけを差分保存する。"""
+    global CONFIG_GLOBAL
+
+    parent = str(parent_key or "").strip()
+    if not parent or not isinstance(updates, dict) or not updates:
+        return "no_change"
+
+    with file_lock_utils.locked_file(constants.CONFIG_FILE, timeout=CONFIG_LOCK_TIMEOUT):
+        config = _load_config_file_unlocked()
+        current = config.get(parent)
+        merged = dict(current) if isinstance(current, dict) else {}
+        merged.update(updates)
+        if current == merged:
+            if CONFIG_GLOBAL is None:
+                CONFIG_GLOBAL = {}
+            CONFIG_GLOBAL[parent] = merged
+            return "no_change"
+        config[parent] = merged
+        _write_config_file_unlocked(config)
+
+    if CONFIG_GLOBAL is None:
+        CONFIG_GLOBAL = {}
+    CONFIG_GLOBAL[parent] = merged
+    return True
+
+def upsert_nested_config_list_item(
+    parent_key: str,
+    list_key: str,
+    item: Dict[str, Any],
+    identity_key: str,
+    *,
+    merge_existing: bool = False,
+) -> bool | str:
+    """最新設定のネストlistへ同一IDの1件だけを原子的に追加・更新する。
+
+    ``merge_existing=True`` の場合、同一IDの既存辞書へ渡されたキーだけを
+    最新ファイル上で差分適用する。通常の置換動作は既存呼び出しとの互換性
+    のため維持する。
+    """
+    global CONFIG_GLOBAL
+
+    parent, child, identity = (str(value or "").strip() for value in (parent_key, list_key, identity_key))
+    if not parent or not child or not identity or not isinstance(item, dict) or not item.get(identity):
+        raise ValueError("設定listの更新対象が不正です。")
+    replacement = dict(item)
+    with file_lock_utils.locked_file(constants.CONFIG_FILE, timeout=CONFIG_LOCK_TIMEOUT):
+        config = _load_config_file_unlocked()
+        current = config.get(parent)
+        if current is not None and not isinstance(current, dict):
+            raise ValueError("更新対象の設定が辞書ではありません。")
+        merged = dict(current or {})
+        existing = merged.get(child)
+        if existing is not None and not isinstance(existing, list):
+            raise ValueError("更新対象の設定がlistではありません。")
+        values = list(existing or [])
+        match = [index for index, value in enumerate(values)
+                 if isinstance(value, dict) and value.get(identity) == replacement[identity]]
+        if len(match) > 1:
+            raise ValueError("更新対象の設定IDが重複しています。")
+        if match:
+            if merge_existing and isinstance(values[match[0]], dict):
+                values[match[0]] = {**values[match[0]], **replacement}
+            else:
+                values[match[0]] = replacement
+        else:
+            values.append(replacement)
+        merged[child] = values
+        changed = current != merged
+        if changed:
+            config[parent] = merged
+            _write_config_file_unlocked(config)
+
+        if CONFIG_GLOBAL is None:
+            CONFIG_GLOBAL = {}
+        CONFIG_GLOBAL[parent] = merged
+    return True if changed else "no_change"
+
+
 # --- 公開APIキー管理関数 ---
 def add_or_update_gemini_key(key_name: str, key_value: str):
     global GEMINI_API_KEYS
@@ -1019,6 +1110,100 @@ def get_theme_object(theme_name: str):
     return gr.themes.Soft()
 
 
+# --- 応答推論metadataの取得済みcache ---
+def _reasoning_metadata_from_model_info(model_info: Any) -> dict[str, Any]:
+    """/models応答から推論能力に関係する安全な項目だけを抜き出す。"""
+
+    if not isinstance(model_info, dict):
+        return {}
+    metadata: dict[str, Any] = {}
+    for key in ("supported_efforts", "supports_max_tokens", "mandatory"):
+        if key in model_info:
+            metadata[key] = model_info[key]
+
+    for key in ("reasoning", "reasoning_config"):
+        value = model_info.get(key)
+        if isinstance(value, dict):
+            nested = {
+                nested_key: value[nested_key]
+                for nested_key in ("supported_efforts", "supports_max_tokens", "mandatory")
+                if nested_key in value
+            }
+            if nested:
+                metadata["reasoning"] = nested
+                break
+    return metadata
+
+
+def _normalise_model_metadata_url(base_url: Any) -> str:
+    value = str(base_url or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = urlsplit(value if "://" in value else f"//{value}")
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return value.lower().rstrip("/")
+        port = parsed.port
+        netloc = host
+        if port is not None and not ((parsed.scheme == "https" and port == 443) or (parsed.scheme == "http" and port == 80)):
+            netloc = f"{host}:{port}"
+        return urlunsplit((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", ""))
+    except ValueError:
+        return value.lower().rstrip("/")
+
+
+def _cache_model_reasoning_metadata(base_url: str, metadata_by_model: dict[str, dict[str, Any]]) -> None:
+    """取得済みmetadataを純粋判定registryと設定profileへ同期する。"""
+
+    if not metadata_by_model:
+        return
+    try:
+        from response_reasoning import register_model_metadata
+    except ImportError:
+        register_model_metadata = None
+
+    for model, metadata in metadata_by_model.items():
+        if register_model_metadata:
+            register_model_metadata(base_url, model, metadata)
+
+    normalized_url = _normalise_model_metadata_url(base_url)
+    if not normalized_url or not isinstance(CONFIG_GLOBAL, dict):
+        return
+    for profile in CONFIG_GLOBAL.get("openai_provider_settings", []):
+        if not isinstance(profile, dict):
+            continue
+        if _normalise_model_metadata_url(profile.get("base_url")) != normalized_url:
+            continue
+        cached = profile.setdefault("reasoning_metadata", {})
+        if not isinstance(cached, dict):
+            cached = {}
+            profile["reasoning_metadata"] = cached
+        for model, metadata in metadata_by_model.items():
+            cached[model] = dict(metadata)
+
+
+def _hydrate_model_reasoning_metadata_registry(profiles: Any) -> None:
+    """保存済みprofile cacheを、起動後の純粋能力判定registryへ戻す。"""
+
+    try:
+        from response_reasoning import register_model_metadata
+    except ImportError:
+        return
+    if not isinstance(profiles, list):
+        return
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        metadata = profile.get("reasoning_metadata")
+        if not isinstance(metadata, dict):
+            continue
+        base_url = profile.get("base_url")
+        for model, model_metadata in metadata.items():
+            if isinstance(model_metadata, dict):
+                register_model_metadata(base_url, model, model_metadata)
+
+
 # --- モデルリスト取得（API経由） ---
 def fetch_models_from_api(base_url: str, api_key: str = "", free_only: bool = False) -> list[str]:
     """
@@ -1053,10 +1238,19 @@ def fetch_models_from_api(base_url: str, api_key: str = "", free_only: bool = Fa
         
         # OpenAI互換APIのレスポンス形式: {"data": [{"id": "model-name", ...}, ...]}
         models = []
+        reasoning_metadata: dict[str, dict[str, Any]] = {}
         for model_info in data.get("data", []):
+            if not isinstance(model_info, dict):
+                continue
             model_id = model_info.get("id", "")
             if model_id:
                 models.append(model_id)
+                model_metadata = _reasoning_metadata_from_model_info(model_info)
+                # metadataの無い応答も負のcacheとして記録し、以前の取得で
+                # 推論対応だった値を再利用し続けない。
+                reasoning_metadata[model_id] = model_metadata or {"reasoning": {}}
+
+        _cache_model_reasoning_metadata(base_url, reasoning_metadata)
         
         if free_only:
             if "openrouter.ai" in base_url.lower():
@@ -1092,7 +1286,10 @@ def fetch_gemini_models(api_key: str, free_only: bool = False, exclude_special: 
                         continue
                     # [2026-04-28] 特殊用途モデル（embedding, tts, computer, image, customtools, robotics）の除外オプション
                     if exclude_special:
-                        if any(kw in model_id.lower() for kw in ["embedding", "tts", "computer", "image", "customtools", "robotics"]):
+                        if is_image_generation_model(model_id) or any(
+                            kw in model_id.lower()
+                            for kw in ["embedding", "tts", "computer", "customtools", "robotics"]
+                        ):
                             continue
                     models.append(model_id)
         return sorted(models)
@@ -1155,9 +1352,11 @@ def fetch_image_models(provider: str, base_url: str = "", api_key: str = "", fre
     
     elif provider == "gemini":
         all_models = fetch_gemini_models(api_key, free_only=free_only, exclude_special=False)
-        # 画像生成に関係ありそうなものをフィルタ
-        image_keywords = ["image", "vision"]
-        image_models = [m for m in all_models if any(kw in m.lower() for kw in image_keywords)]
+        # 画像生成判定を共通化し、従来の vision 候補も保持する。
+        image_models = [
+            m for m in all_models
+            if is_image_generation_model(m) or "vision" in m.lower()
+        ]
         return sorted(image_models) if image_models else sorted(all_models)
         
     return []
@@ -1361,6 +1560,8 @@ def load_config():
             "timeout_seconds": 600,
             "deleg_auto_tune_limits": True,
             "allow_web_tools": False,
+            "native_spawn_canary_enabled": True,
+            "native_spawn_canary_mode": "read",
             "model": "",
             "deleg_exec_provider_cat": "",
             "deleg_exec_openai_profile": "",
@@ -1377,7 +1578,8 @@ def load_config():
             "deleg_rlimit_cpu_seconds": 120,
             "deleg_rlimit_as_mb": 2048,
             "deleg_rlimit_fsize_mb": 512,
-            "deleg_rss_limit_mb": 2048,
+            "deleg_rss_limit_mb": 3072,
+            "deleg_rss_headroom_mb": 768,
         },
         "memory_watchdog_settings": {
             "enabled": True,
@@ -1494,9 +1696,9 @@ def load_config():
             "gemini-2.5-flash-lite",
             "gemini-3-flash-preview", 
             "gemini-3.1-pro-preview",
-            "gemini-3.1-flash-lite-preview"
+            "gemini-3.1-flash-lite"
         ],
-        "default_model": "gemini-3.1-flash-lite-preview",
+        "default_model": "gemini-3.1-flash-lite",
         # --- 画像生成設定（マルチプロバイダ対応）---
         "image_generation_provider": "gemini",  # gemini | openai | pollinations | huggingface | disabled
         "image_generation_model": "gemini-2.5-flash-image",  # 使用するモデル名
@@ -1540,7 +1742,7 @@ def load_config():
             "tool_metadata": {}
         },
         "last_room": "Default",
-        "last_model": "gemini-3.1-flash-lite-preview",
+        "last_model": "gemini-3.1-flash-lite",
         "last_api_key_name": None,
         "thinking_level": constants.DEFAULT_THINKING_LEVEL,
         "last_send_thoughts_to_api": True,
@@ -1630,6 +1832,20 @@ def load_config():
             "event_notification_default_cooldown_seconds": 300,
             "event_notification_cooldowns": {},
             "response_notification_preview_enabled": True
+        },
+        "lite_travel_settings": {
+            "worker_url": "",
+            "owner_token": "",
+            "bundle_signing_key": "",
+            "bundle_signing_key_previous": [],
+            "credential_profile_id": "gemini-personal-1",
+            "model_id": "",
+            "retention_days": 7,
+            "wrangler_config_path": "cloud/lite-relay/wrangler.phase2.jsonc",
+            "standby_home_instance_id": "",
+            "standby_retention_days": 7,
+            "standby_refresh_on_lite_start": False,
+            "standby_refresh_min_interval_hours": 6,
         },
         "atelier_serve_settings": {
             "enabled": False,
@@ -1747,6 +1963,19 @@ def load_config():
                 default_models = set(default_p.get("available_models", []))
                 user_models = set(user_p.get("available_models", []))
                 merged_p["available_models"] = sorted(list(default_models | user_models))
+
+                # /models取得時に保存した推論metadataは対象モデル単位で保持する。
+                # APIキーやレスポンス本文はここへ入れず、ユーザー側のcacheだけを
+                # デフォルト値へマージする。
+                default_reasoning_metadata = default_p.get("reasoning_metadata", {})
+                user_reasoning_metadata = user_p.get("reasoning_metadata", {})
+                if isinstance(default_reasoning_metadata, dict) or isinstance(user_reasoning_metadata, dict):
+                    merged_reasoning_metadata = {}
+                    if isinstance(default_reasoning_metadata, dict):
+                        merged_reasoning_metadata.update(default_reasoning_metadata)
+                    if isinstance(user_reasoning_metadata, dict):
+                        merged_reasoning_metadata.update(user_reasoning_metadata)
+                    merged_p["reasoning_metadata"] = merged_reasoning_metadata
                 
                 merged_providers.append(merged_p)
         
@@ -1790,7 +2019,7 @@ def load_config():
     if _migrate_legacy_embedding_default(merged_internal):
         config_keys_changed = True
         print(
-            "--- [Config Manager] 旧出荷デフォルト gemini-embedding-001 を "
+            "--- [Config Manager] 旧Google出荷デフォルトを "
             f"{constants.EMBEDDING_MODEL} へ移行しました ---"
         )
     config["internal_model_settings"] = merged_internal
@@ -1802,6 +2031,10 @@ def load_config():
     merged_agent_delegation = default_agent_delegation.copy()
     if isinstance(user_agent_delegation, dict):
         merged_agent_delegation.update(user_agent_delegation)
+    if _migrate_agent_delegation_memory_settings(merged_agent_delegation, user_agent_delegation):
+        config_keys_changed = True
+    if _migrate_native_spawn_canary_defaults(merged_agent_delegation, user_agent_delegation):
+        config_keys_changed = True
     try:
         if int(merged_agent_delegation.get("max_turns") or 20) <= 8:
             merged_agent_delegation["max_turns"] = 20
@@ -1861,6 +2094,7 @@ def load_config():
 
     # ステップ8：グローバル変数を更新
     CONFIG_GLOBAL = config
+    _hydrate_model_reasoning_metadata_registry(config.get("openai_provider_settings", []))
     GEMINI_API_KEYS = config.get("gemini_api_keys", {})
     GEMINI_KEY_STATES = {k: {'exhausted': False} for k in GEMINI_API_KEYS}
     # [2026-02-11 FIX] 初期化後にファイルから枯渇状態を復元
@@ -1926,7 +2160,7 @@ def get_default_available_models() -> List[str]:
         "gemini-2.5-flash-lite",
         "gemini-3-flash-preview", 
         "gemini-3.1-pro-preview",
-        "gemini-3.1-flash-lite-preview"
+        "gemini-3.1-flash-lite"
     ]
 
 
@@ -2020,6 +2254,8 @@ def get_effective_settings(room_name: str, **kwargs) -> dict:
             "enabled": False,
             "permission_tier": "read",
             "allow_web_tools": False,
+            "native_spawn_canary_enabled": True,
+            "native_spawn_canary_mode": "read",
             "wake_on_completion": False,
             "wake_respect_quiet_hours": True,
             "deleg_exec_provider_cat": "default",
@@ -2071,7 +2307,8 @@ def get_effective_settings(room_name: str, **kwargs) -> dict:
             for k, v in override_settings.items():
                 if (
                     v is not None
-                    and k != "model_name"
+                    # 認証辞書は専用resolverと内部stateに限定し、汎用設定へ混ぜない。
+                    and k not in {"model_name", "gemini_connection"}
                     and not (
                         room_provider is None
                         and k in ROOM_AI_PROVIDER_SETTING_KEYS
@@ -2620,7 +2857,9 @@ def set_active_provider(provider: str):
 
 def get_openai_settings_list() -> List[Dict]:
     """OpenAI互換プロバイダの設定リストを返す"""
-    return CONFIG_GLOBAL.get("openai_provider_settings", [])
+    profiles = CONFIG_GLOBAL.get("openai_provider_settings", [])
+    _hydrate_model_reasoning_metadata_registry(profiles)
+    return profiles
 
 def is_pollinations_openai_profile(profile: Dict) -> bool:
     """OpenAI互換プロファイルがPollinations.ai向けかを判定する。"""
@@ -2785,11 +3024,48 @@ def is_tool_use_enabled(room_name: str = None) -> bool:
 # --- [Phase 2] 内部処理モデル設定管理 ---
 
 
+def _migrate_agent_delegation_memory_settings(
+    merged_settings: Dict[str, Any],
+    user_settings: Any,
+) -> bool:
+    """旧native RSS既定を移行し、増分上限キーを永続化対象にする。"""
+
+    if not isinstance(user_settings, dict) or "deleg_rss_headroom_mb" in user_settings:
+        return False
+    # 旧出荷既定の2GBだけを3GBへ移行する。0（ガード無効）やユーザー調整値は維持する。
+    try:
+        if int(user_settings.get("deleg_rss_limit_mb") or 0) == 2048:
+            merged_settings["deleg_rss_limit_mb"] = 3072
+    except (TypeError, ValueError):
+        pass
+    return True
+
+
+def _migrate_native_spawn_canary_defaults(
+    merged_settings: Dict[str, Any],
+    user_settings: Any,
+) -> bool:
+    """Enable only a missing spawn key while preserving every explicit user choice."""
+
+    existing = user_settings if isinstance(user_settings, dict) else {}
+    changed = False
+    if "native_spawn_canary_enabled" not in existing:
+        merged_settings["native_spawn_canary_enabled"] = True
+        changed = True
+    if "native_spawn_canary_mode" not in existing:
+        merged_settings["native_spawn_canary_mode"] = "read"
+        changed = True
+    return changed
+
+
 def _migrate_legacy_embedding_default(settings: Dict[str, Any]) -> bool:
     """旧Google出荷デフォルトだけを現行既定へ移行し、ユーザー独自設定は保つ。"""
     if (
         settings.get("embedding_provider", "google") in {"google", "gemini"}
-        and settings.get("embedding_model") == "gemini-embedding-001"
+        and settings.get("embedding_model") in {
+            "gemini-embedding-001",
+            "gemini-embedding-2-preview",
+        }
     ):
         settings["embedding_provider"] = "google"
         settings["embedding_model"] = constants.EMBEDDING_MODEL
@@ -3801,11 +4077,19 @@ def save_atelier_serve_settings(
 
 
 def is_image_generation_model(model_name: str) -> bool:
-    """指定されたモデル名が画像生成用（Imagen等）であるか判定する"""
-    if not model_name: return False
-    # Google SDKのImagenモデルは通常名前に "image" を含む
-    # 例: gemini-2.5-flash-image, imagen-3.0-generate-001
-    return "image" in model_name.lower()
+    """画像生成用モデルを従来の image 名と Gemini の新しい系列名で判定する。"""
+    if not model_name:
+        return False
+    normalized = model_name.strip().lower()
+    if "image" in normalized:
+        return True
+    # Nano Banana は image を含まない。数値版と既知の版接尾辞だけを
+    # 許可し、同名系列の text/embedding や他プロバイダの名前とは区別する。
+    model_id = normalized.removeprefix("models/")
+    return re.fullmatch(
+        r"gemini-nano-banana-\d+(?:\.\d+)*(?:-(?:\d+|preview|exp|latest))*",
+        model_id,
+    ) is not None
 
 def get_key_name_by_value(key_value: str) -> str:
     """APIキーの値を元に、対応するキー設定名を取得する"""

@@ -3,11 +3,15 @@
 from langchain_core.tools import tool
 import google.genai as genai
 from google.genai import types
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
 import traceback
 import time
 import config_manager
 import constants
-from ddgs import DDGS
 
 # Tavilyのインポート（インストールされていない場合のフォールバック対応）
 try:
@@ -27,7 +31,8 @@ except ImportError:
 
 # Playwright（JS主体の動的ページ取得のフォールバック）
 try:
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import sync_playwright as _playwright_available
+    from playwright_utils import sync_playwright
     PLAYWRIGHT_AVAILABLE = True
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
@@ -158,32 +163,109 @@ def _search_with_tavily(query: str) -> str:
         return f"[エラー: Tavily検索中に問題が発生しました。詳細: {e}]"
 
 
-def _search_with_ddg(query: str) -> str:
-    """DuckDuckGoを使用して検索を実行する内部関数"""
+_DDG_WORKER_TIMEOUT_SECONDS = 35
+_DDG_WORKER_MAX_RESULTS = 5
+_DDG_ENV_ALLOWLIST = (
+    "PATH",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+)
+
+
+def _ddg_worker_environment() -> dict[str, str]:
+    """Return a minimal child environment without ambient trust overrides."""
+
+    environment = {
+        key: value
+        for key in _DDG_ENV_ALLOWLIST
+        if (value := os.environ.get(key))
+    }
+    # Ensure child stdout is predictable on both Windows and Linux.
+    environment["PYTHONIOENCODING"] = "utf-8"
+    return environment
+
+
+def _run_ddg_worker(query: str, *, max_results: int = _DDG_WORKER_MAX_RESULTS) -> tuple[str, list[dict[str, str]]]:
+    """Run DDGS in an isolated process and return ``(status, results)``."""
+
+    worker = Path(__file__).with_name("ddg_search_worker.py")
+    request = {
+        "query": query,
+        "max_results": max_results,
+        # This is an explicit DDGS setting, passed through stdin rather than
+        # command arguments.  Other proxy and CA variables are dropped.
+        "proxy": os.environ.get("DDGS_PROXY"),
+    }
+    command = [sys.executable, "-I", "-X", "utf8", str(worker)]
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        results = DDGS().text(query, max_results=5)
-        if not results:
-            return "[情報: DuckDuckGo検索で結果が見つかりませんでした]"
-        
-        formatted_results = []
-        citations = []
-        for i, res in enumerate(results):
-            title = res.get('title', 'No Title')
-            href = res.get('href', '#')
-            body = res.get('body', '')
-            formatted_results.append(f"### {title}\n{body}")
-            citations.append(f"- [{title}]({href})")
-        
-        final_response = "\n\n".join(formatted_results)
-        if citations:
-            final_response += "\n\n**引用元 (DuckDuckGo):**\n" + "\n".join(citations)
-        
-        return final_response
-        
-    except Exception as e:
-        print(f"  - DuckDuckGo検索でエラー: {e}")
-        traceback.print_exc()
-        return f"[エラー: DuckDuckGo検索中に問題が発生しました。詳細: {e}]"
+        completed = subprocess.run(
+            command,
+            input=json.dumps(request, ensure_ascii=False),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=_DDG_WORKER_TIMEOUT_SECONDS,
+            env=_ddg_worker_environment(),
+            creationflags=creationflags,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "timeout", []
+    except OSError:
+        return "worker-error", []
+
+    try:
+        payload = json.loads(completed.stdout)
+    except (TypeError, ValueError):
+        return "worker-error", []
+    if completed.returncode != 0 or not isinstance(payload, dict) or payload.get("ok") is not True:
+        error = payload.get("error") if isinstance(payload, dict) else None
+        return str(error or "provider-error"), []
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return "worker-error", []
+    return "ok", [item for item in results if isinstance(item, dict)]
+
+
+def _search_with_ddg(query: str) -> str:
+    """DuckDuckGoを使用して検索を実行する内部関数。
+
+    primpのnative root storeはプロセス内で初回生成後に保持されるため、
+    メインプロセスへDDGSを直接作らず、certifiを最初に選ぶ短命workerで実行する。
+    """
+
+    status, results = _run_ddg_worker(query)
+    if status != "ok":
+        print(f"  - DuckDuckGo検索を完了できませんでした ({status})")
+        if status == "timeout":
+            return "[エラー: DuckDuckGo検索が時間内に完了しませんでした]"
+        return "[エラー: DuckDuckGo検索を実行できませんでした]"
+    if not results:
+        return "[情報: DuckDuckGo検索で結果が見つかりませんでした]"
+
+    formatted_results = []
+    citations = []
+    for res in results:
+        title = res.get("title", "No Title")
+        href = res.get("href", "#")
+        body = res.get("body", "")
+        formatted_results.append(f"### {title}\n{body}")
+        citations.append(f"- [{title}]({href})")
+
+    final_response = "\n\n".join(formatted_results)
+    if citations:
+        final_response += "\n\n**引用元 (DuckDuckGo):**\n" + "\n".join(citations)
+    return final_response
 
 
 def _search_with_google(query: str) -> str:
@@ -194,6 +276,11 @@ def _search_with_google(query: str) -> str:
     モデル混雑は同一キーで短く再試行し上限で諦める。従来は initial_api_key_name_global の
     1キー固定・ローテーション無しで、無料枠0のモデル等で即 429 失敗していた。
     """
+    import gemini_connection
+    connection = gemini_connection.normalize_connection(
+        gemini_connection.get_connection(force_global=True), require_valid=True,
+    )
+    vertex_mode = connection["backend"] == "vertex"
     # 検索モデルは設定で上書き可能（モデル廃止・移行に追従）。未設定なら既定値。
     search_model = str(config_manager.CONFIG_GLOBAL.get("search_model") or "").strip() or constants.SEARCH_MODEL
     rotation_enabled = config_manager.CONFIG_GLOBAL.get("enable_api_key_rotation", True)
@@ -202,27 +289,27 @@ def _search_with_google(query: str) -> str:
     generation_config_with_tool = types.GenerateContentConfig(tools=[search_tool_for_api])
 
     # 共通設定のキーから開始（内部処理と同方針）。無ければ従来の初期キーへフォールバック。
-    api_key = config_manager.get_active_gemini_api_key(None, model_name=search_model)
-    if not api_key:
+    api_key = None if vertex_mode else config_manager.get_active_gemini_api_key(None, model_name=search_model)
+    if not api_key and not vertex_mode:
         api_key = config_manager.GEMINI_API_KEYS.get(config_manager.initial_api_key_name_global)
-    if not api_key or api_key.startswith("YOUR_API_KEY"):
+    if not vertex_mode and (not api_key or api_key.startswith("YOUR_API_KEY")):
         return "[エラー: 有効なGoogle APIキーが設定されていません]"
 
     tried_keys = set()
     models_tried = set()
     server_error_retries = 0
     MAX_SERVER_ERROR_RETRIES = 3
-    max_attempts = max(3, len(config_manager.GEMINI_API_KEYS)) + 2
+    max_attempts = 1 if vertex_mode else max(3, len(config_manager.GEMINI_API_KEYS)) + 2
     last_error = None
 
     for attempt in range(max_attempts):
         models_tried.add(search_model)
-        key_name = config_manager.get_key_name_by_value(api_key)
+        key_name = "Vertex AI" if vertex_mode else config_manager.get_key_name_by_value(api_key)
         if key_name != "Unknown":
             tried_keys.add(key_name)
 
         # 枯渇キーは事前にローテーション
-        if config_manager.is_key_exhausted(key_name, model_name=search_model):
+        if not vertex_mode and config_manager.is_key_exhausted(key_name, model_name=search_model):
             if not rotation_enabled:
                 return "[エラー：Web検索キーが枯渇しています（共通設定でローテーション無効）]"
             nxt = config_manager.get_next_available_gemini_key(
@@ -234,9 +321,9 @@ def _search_with_google(query: str) -> str:
             tried_keys.add(nxt)
 
         try:
-            client = genai.Client(api_key=api_key)
+            client = gemini_connection.create_client(connection) if vertex_mode else genai.Client(vertexai=False, api_key=api_key)
             response = client.models.generate_content(
-                model=f'models/{search_model}',
+                model=search_model if vertex_mode else f'models/{search_model}',
                 contents=[query],
                 config=generation_config_with_tool
             )
@@ -262,6 +349,8 @@ def _search_with_google(query: str) -> str:
             return final_response.strip()
 
         except Exception as e:
+            if vertex_mode:
+                return "[エラー: Vertex AIでのGoogle検索に失敗しました。認証・検索モデル・リージョンを確認してください]"
             last_error = e
             err = str(e).upper()
             # モデル未提供（廃止・無効・そのティアで利用不可）はキーを替えても解決しない。
@@ -329,18 +418,23 @@ def test_search_model(model: str, api_key_name: str | None = None) -> tuple[bool
     戻り値: (成功したか, ユーザー向けメッセージ)
     """
     model_name = str(model or "").strip() or constants.SEARCH_MODEL
+    import gemini_connection
+    connection = gemini_connection.normalize_connection(
+        gemini_connection.get_connection(force_global=True), require_valid=True,
+    )
+    vertex_mode = connection["backend"] == "vertex"
     try:
         key_name = api_key_name or config_manager.initial_api_key_name_global
         api_key = config_manager.GEMINI_API_KEYS.get(key_name)
-        if not api_key or api_key.startswith("YOUR_API_KEY"):
+        if not vertex_mode and (not api_key or api_key.startswith("YOUR_API_KEY")):
             return False, f"有効なGoogle APIキー '{key_name}' が設定されていません。"
 
-        client = genai.Client(api_key=api_key)
+        client = gemini_connection.create_client(connection) if vertex_mode else genai.Client(vertexai=False, api_key=api_key)
         search_tool_for_api = types.Tool(google_search=types.GoogleSearch())
         config = types.GenerateContentConfig(tools=[search_tool_for_api])
 
         response = client.models.generate_content(
-            model=f"models/{model_name}",
+            model=model_name if vertex_mode else f"models/{model_name}",
             contents=["今日のニュースを1つ教えて"],
             config=config,
         )
@@ -356,6 +450,8 @@ def test_search_model(model: str, api_key_name: str | None = None) -> tuple[bool
         return True, f"モデル「{model_name}」で呼び出しは成功しましたが、応答テキストは空でした。"
 
     except Exception as e:
+        if vertex_mode:
+            return False, "Vertex AIの検索接続を確認できませんでした。認証・モデル・リージョンを確認してください。"
         return False, f"モデル「{model_name}」では検索を実行できませんでした。詳細: {e}"
 
 

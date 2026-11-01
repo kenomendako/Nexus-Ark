@@ -128,6 +128,14 @@ def get_disabled_reason(room_name: str, model_name: Optional[str] = None) -> Opt
         return "room_disabled"
     if config_manager.get_active_provider(room_name) != "google":
         return "provider_not_google"
+    from gemini_connection import is_vertex
+    if is_vertex(room_name):
+        return "vertex_not_supported"
+    from gemini_model_features import uses_argon_request_rules
+    if model_name is None:
+        model_name = config_manager.get_effective_settings(room_name).get("model_name", "")
+    if uses_argon_request_rules(model_name):
+        return "model_not_supported"
     if is_room_rotation_enabled(room_name, model_name=model_name):
         return "api_key_rotation_enabled"
     return None

@@ -30,6 +30,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 import gradio as gr
 import datetime
 from PIL import Image, ImageOps
+from chat_completion_diagnostics import ChatCompletionProbe
+from scenery_refresh_jobs import SceneryRefreshState
 import threading
 import filetype
 
@@ -49,19 +51,26 @@ import uuid
 import base64
 import io
 import secrets
+import socket
 from pathlib import Path
 import textwrap
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from tools.image_tools import generate_image as generate_image_tool_func
 import pytz
 import ijson
 import time
 import rag_manager
 import utils
+from chat_typewriter import TypewriterTarget, iter_typewriter_history, split_timestamp, validate_delay
 import atelier_app_grants
 import agent_delegation.manager as agent_delegation_manager
 import pricing
 import usage_ledger
+import lite_travel
+import lite_travel_operations
+import lite_cloud_setup
+import file_lock_utils
+import version_manager
 from weather_service import WeatherService
 from tts_key_rotation import generate_audio_with_key_rotation
 from tts_text_policy import TTS_MODE_SPLIT, prepare_tts_text_plan
@@ -243,9 +252,44 @@ from room_manager import get_room_files_paths, get_world_settings_path
 from memory_manager import load_memory_data_safe, save_memory_data
 from episodic_memory_manager import EpisodicMemoryManager
 from motivation_manager import MotivationManager
-from update_manager import UpdateManager
+from update_manager import UpdateManager, inspect_update_host_status
+from .app_updates import (
+    handle_app_update_host_check,
+    handle_app_update_host_migration,
+    update_host_guidance,
+)
+from .browser_runtime import (
+    handle_browser_runtime_apply,
+    handle_browser_runtime_status_check,
+    handle_browser_runtime_status_check_with_progress,
+)
 
 GROUP_SUPERVISOR_MAX_ROUNDS_HARD_LIMIT = 3
+
+
+def _has_vertex_chat_connection(room_name: str | None = None) -> bool:
+    """接続設定だけを確認する。認証ロードや外部通信は行わない。"""
+    if config_manager.get_active_provider(room_name) != "google":
+        return False
+    try:
+        import gemini_connection
+        connection = gemini_connection.get_connection(room_name)
+        gemini_connection.normalize_connection(connection, require_valid=True)
+        return connection["backend"] == "vertex"
+    except (ValueError, TypeError, OSError, gemini_connection.GeminiConnectionError):
+        return False
+
+
+def refresh_chat_connection_input(room_name: str):
+    """接続保存後に、履歴を読み直さず入力可否だけ更新する。"""
+    if config_manager.get_active_provider(room_name) != "google":
+        return gr.update()
+    available = _has_vertex_chat_connection(room_name) or config_manager.has_valid_api_key()
+    return gr.update(
+        interactive=available,
+        placeholder=("メッセージを入力してください..." if available
+                     else "まず、左の「設定」からAPI接続を設定してください。"),
+    )
 
 # --- 通知デバウンス用 ---
 # 同一ルームへの連続通知を抑制するための変数
@@ -879,7 +923,9 @@ def _convert_room_setting_delta(field: str, value: Any) -> Tuple[str, Any, str]:
         value = value or "wav"
     elif field == "voice_style_prompt":
         value = value.strip() if value else ""
-    elif field in ("temperature", "top_p", "streaming_speed"):
+    elif field == "streaming_speed":
+        value = validate_delay(value)
+    elif field in ("temperature", "top_p"):
         value = float(value)
     elif field.startswith("safety_block_threshold_"):
         value = _SAFETY_VALUE_MAP.get(value)
@@ -892,7 +938,7 @@ def _convert_room_setting_delta(field: str, value: Any) -> Tuple[str, Any, str]:
     elif field == "thinking_level":
         value = next((k for k, v in constants.THINKING_LEVEL_OPTIONS.items() if v == value), "auto")
     elif field == "provider":
-        value = "default" if value == "default" else value
+        value = "google" if value == "vertex" else value
     elif field == "api_key_name":
         value = config_manager._clean_api_key_name(value) if value else None
     elif field == "enable_api_key_rotation":
@@ -1061,8 +1107,12 @@ def _gemini_explicit_cache_status_text(room_name: str) -> str:
             return "現在の状態: 休眠中（TTL満了まで保持 / 再ONで再利用）"
         return "現在の状態: OFF"
     reason = gemini_explicit_cache_manager.get_disabled_reason(room_name)
+    if reason == "vertex_not_supported":
+        return "現在の状態: ON（Vertex AIでは使用しません）"
     if reason == "provider_not_google":
         return "現在の状態: ON（Googleプロバイダ選択時のみ使用）"
+    if reason == "model_not_supported":
+        return "現在の状態: ON（このモデルでは明示キャッシュを使用しません）"
     if reason == "api_key_rotation_enabled":
         return "現在の状態: ON（APIキーローテーション有効中は使用しません）"
     state = gemini_explicit_cache_manager.load_state(room_name)
@@ -1182,15 +1232,25 @@ def _format_usd_estimate(value: float) -> str:
 def _format_turn_cost_display(usage: dict) -> str:
     estimate = _estimate_turn_cost(usage)
     if not estimate:
+        if usage.get("model_name") or usage.get("model"):
+            return " / 💰 概算なし（料金・使用量未確認）"
         return ""
-    display = f" / 💰 概算 {_format_usd_estimate(float(estimate['cost']))}"
+    basis = estimate.get("cost_estimate_basis")
+    if basis == "provider_reported":
+        display = f" / 💰 OpenRouter報告 ${float(estimate['cost']):.6f}"
+    elif basis == "vertex_list_before_credits":
+        display = f" / 💰 概算（クレジット適用前） {_format_usd_estimate(float(estimate['cost']))}"
+    else:
+        display = f" / 💰 概算 {_format_usd_estimate(float(estimate['cost']))}"
     savings = float(estimate.get("savings") or 0.0)
     if estimate.get("is_registration"):
-        suffix = "（登録コスト）"
+        suffix = "（新規登録ターン）" if estimate.get("storage_excluded") else "（登録コスト）"
     elif savings > 0:
         suffix = f"（節約 {_format_usd_estimate(savings)}）"
     else:
         suffix = ""
+    if estimate.get("storage_excluded"):
+        suffix += "（保存料別）"
     if estimate.get("is_paid") is False:
         suffix += "（無料キー・課金なし／参考）"
     if suffix:
@@ -1331,6 +1391,9 @@ def _usage_provider_label(provider: str) -> str:
     return {
         "anthropic": "Anthropic",
         "openai": "OpenAI",
+        "openrouter": "OpenRouter",
+        "vertex": "Vertex AI",
+        "mixed": "複数接続先",
         "gemini_implicit": "Gemini暗黙",
         "gemini_explicit": "Gemini明示",
         "gemini_image": "Gemini画像",
@@ -1346,11 +1409,20 @@ def _usage_source_label(source: str) -> str:
         "internal": "内部処理",
         "delegation": "委任",
         "image": "画像生成",
+        "travel": "お出かけ",
     }.get(str(source or ""), str(source or "不明"))
 
 def _usage_table_cell(value: object) -> str:
     """API使用量のMarkdown表で区切り文字が列を壊さないようにする。"""
     return str(value or "-").replace("|", "\\|").replace("\n", " ")
+
+def _usage_bucket_amount(data: dict) -> str:
+    amount = pricing.format_usd_estimate(float(data.get("cost") or 0.0))
+    unknown = int(data.get("unknown_price_count") or 0)
+    if unknown:
+        return f"{amount}＋不明{unknown}件" if float(data.get("cost") or 0.0) else f"不明{unknown}件"
+    return amount
+
 
 def _usage_period_label(period: str, aggregate: dict, *, include_month: bool = False) -> str:
     label = str(aggregate.get("period_label") or period)
@@ -1367,6 +1439,9 @@ def _format_usage_detail_card(period: str, aggregate: dict) -> str:
     if count <= 0:
         lines.append("まだ記録がありません。")
         return "\n".join(lines)
+    unknown_price_count = int(aggregate.get("unknown_price_count") or 0)
+    if unknown_price_count:
+        lines.append(f"⚠️ 金額不明: **{unknown_price_count}件**（既知額へは加算していません）")
 
     # 内訳（用途別・モデル別・プロバイダ別）は有料キー分のみ集計される。
     # 有料利用が無い期間は見出しだけが浮いて次セクションと紛らわしいため、明示する。
@@ -1381,7 +1456,7 @@ def _format_usage_detail_card(period: str, aggregate: dict) -> str:
         for source, data in sorted(by_source.items()):
             lines.append(
                 f"| {_usage_table_cell(_usage_source_label(source))} | "
-                f"{pricing.format_usd_estimate(float(data.get('cost') or 0.0))} |"
+                f"{_usage_bucket_amount(data)} |"
             )
 
     by_model = aggregate.get("by_model") or {}
@@ -1396,7 +1471,7 @@ def _format_usage_detail_card(period: str, aggregate: dict) -> str:
             lines.append(
                 f"| `{_usage_table_cell(model)}` | "
                 f"{_usage_table_cell(_usage_provider_label(data.get('provider', '')))} | "
-                f"{pricing.format_usd_estimate(float(data.get('cost') or 0.0))} | "
+                f"{_usage_bucket_amount(data)} | "
                 f"{pricing.format_usd_estimate(max(0.0, float(data.get('savings') or 0.0)))} | "
                 f"{int(data.get('count') or 0)} | {_format_token_number(data.get('prompt_tokens'))} | "
                 f"{_format_token_number(data.get('completion_tokens'))} |"
@@ -1408,7 +1483,7 @@ def _format_usage_detail_card(period: str, aggregate: dict) -> str:
         for provider, data in sorted(by_provider.items()):
             lines.append(
                 f"| {_usage_table_cell(_usage_provider_label(provider))} | "
-                f"{pricing.format_usd_estimate(float(data.get('cost') or 0.0))} | "
+                f"{_usage_bucket_amount(data)} | "
                 f"{pricing.format_usd_estimate(max(0.0, float(data.get('savings') or 0.0)))} |"
             )
     return "\n".join(lines)
@@ -1435,6 +1510,9 @@ def _format_usage_summary_compact(period_aggregates: list[tuple[str, dict]]) -> 
         label = _usage_period_label(period, aggregate)
         # 有料キー基準の金額のみ表示（`or`での無料額フォールバックは誤表示になるため禁止）
         amount = _format_usage_compact_cost(aggregate.get("total_cost_paid") or 0.0)
+        unknown = int(aggregate.get("unknown_price_count") or 0)
+        if unknown:
+            amount += f"＋金額不明{unknown}件"
         items.append(
             f'<span class="usage-summary-period">{_usage_table_cell(label)} '
             f'<span class="usage-summary-amount">{amount}</span></span>'
@@ -1447,8 +1525,8 @@ def _format_usage_summary_detail(period_aggregates: list[tuple[str, dict]]) -> s
         "# 📊 API使用量の概算",
         "",
         "## 概算サマリー",
-        "| 期間 | 概算（有料キー） | 節約 | 無料キー参考 | 回数 |",
-        "|---|---:|---:|---:|---:|",
+        "| 期間 | 概算（有料キー） | 金額不明 | 節約 | 無料キー参考 | 回数 |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for period, aggregate in period_aggregates:
         # 注意: `or` フォールバック禁止。有料額0のとき無料額を「有料キー」列に
@@ -1456,6 +1534,7 @@ def _format_usage_summary_detail(period_aggregates: list[tuple[str, dict]]) -> s
         parts.append(
             f"| {_usage_table_cell(_usage_period_label(period, aggregate, include_month=True))} | "
             f"{pricing.format_usd_estimate(float(aggregate.get('total_cost_paid') or 0.0))} | "
+            f"{int(aggregate.get('unknown_price_count') or 0)}件 | "
             f"{pricing.format_usd_estimate(max(0.0, float(aggregate.get('total_savings_paid') or 0.0)))} | "
             f"{pricing.format_usd_estimate(float(aggregate.get('total_cost_free') or 0.0))} | "
             f"{int(aggregate.get('count') or 0)} |"
@@ -1465,10 +1544,11 @@ def _format_usage_summary_detail(period_aggregates: list[tuple[str, dict]]) -> s
     parts.extend([
         "",
         "---",
-        "⚠️ これは概算です（価格は `pricing.py` の目安で、モデルにより変動します）。",
-        "本処理・自律・内部処理・委任・画像生成を集計し、金額は有料キー基準、無料キー分は参考表示です。",
+        "⚠️ 概算は接続先別の登録料金で計算します。料金不明分は合計に含みません。Vertexはクレジット適用前、明示キャッシュの保存料は別です。",
+        "本処理・自律・内部処理・委任・画像生成・お出かけを集計し、金額は有料キー基準、無料キー分は参考表示です。",
+        "料金・使用量が未確認の呼出は0円とみなさず、既知額とは別に件数を表示します。",
         "画像生成は登録済みモデルの代表的な1枚単価で概算し、単価未登録モデルは金額0で回数だけ記録します。",
-        "音声合成（TTS）は集計に含みません。価格未登録のテキストモデル・ローカルモデルも含みません。最終的な請求は各プロバイダの画面で確認してください。",
+        "音声合成（TTS）は集計に含みません。料金不明のテキスト・ローカル呼出は件数だけ記録し、概算額の合計には加算しません。最終的な請求は各プロバイダの画面で確認してください。",
     ])
     return "\n".join(parts)
 
@@ -3107,6 +3187,23 @@ def _room_switch_display_history_limit(limit_key: Any) -> Any:
     return limit_key
 
 
+def _reset_note_browser_views():
+    """ルーム変更時は表示と読込元だけを消去し、ノート走査は明示読込まで待つ。"""
+    updates = []
+    for _kind in ("creative", "research"):
+        updates.extend((
+            gr.update(choices=["すべて"], value="すべて"),
+            gr.update(choices=["すべて"], value="すべて"),
+            gr.update(choices=[], value=None),
+            "「🔄 一覧を更新」を押すと、過去分を含む記録を読み込みます。",
+            None,
+            "",
+            None,
+            gr.update(open=False),
+        ))
+    return tuple(updates)
+
+
 def _update_chat_tab_for_room_change(
     room_name: str,
     api_key_name: str,
@@ -3179,7 +3276,7 @@ def _update_chat_tab_for_room_change(
     room_api_key_ui_value = room_draft_api_key_name or effective_api_key_name
 
     api_key = config_manager.GEMINI_API_KEYS.get(effective_api_key_name)
-    has_valid_key = api_key and not api_key.startswith("YOUR_API_KEY")
+    has_valid_key = _has_vertex_chat_connection(room_name) or bool(api_key and not api_key.startswith("YOUR_API_KEY"))
 
     if not has_valid_key:
         _perf_log("_update_chat_tab_for_room_change: invalid key return total", t0)
@@ -3188,7 +3285,8 @@ def _update_chat_tab_for_room_change(
         return (
             room_name, [], [],  # チャット履歴を空にしてオンボーディングガイドのみ表示
             gr.update(interactive=False, placeholder="まず、左の「設定」からAPIキーを設定してください。"),
-            get_avatar_html(room_name, state="idle"), "", "", "", "", "", gr.update(choices=[], value=None), "", "", "",
+            get_avatar_html(room_name, state="idle"), "", "", "", "", "", gr.update(choices=[], value=None), "",
+            load_system_prompt_content(room_name), load_core_memory_content(room_name),
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
             gr.update(choices=room_manager.get_room_list_for_ui(), value=room_name),
@@ -3348,6 +3446,9 @@ def _update_chat_tab_for_room_change(
             None, # image_path
             gr.update(selected="virtual_location_tab"), # tabs
             gr.update(value=effective_settings.get("include_knowledge_in_auto_retrieval", False)),
+            gr.update(value="一時的現在地: 未適用（写真なし）"), # temporary location status
+            gr.update(value=""), # temporary location name
+            *_reset_note_browser_views(),
         )
 
     # --- 【通常モード】 (APIキー有効) ---
@@ -3418,9 +3519,9 @@ def _update_chat_tab_for_room_change(
     t_step = _perf_log("_update_chat_tab_for_room_change: get_avatar_html", t_step)
     notepad_content = load_notepad_content(room_name)
     t_step = _perf_log("_update_chat_tab_for_room_change: notepad file", t_step)
-    creative_notes_content = load_creative_notes_content(room_name)
+    creative_notes_content = ""  # 記録一覧の明示読込まで本文を取得しない。
     t_step = _perf_log("_update_chat_tab_for_room_change: creative notes file", t_step)
-    research_notes_content = load_research_notes_content(room_name)
+    research_notes_content = ""  # 記録一覧の明示読込まで本文を取得しない。
     t_step = _perf_log("_update_chat_tab_for_room_change: research notes file", t_step)
 
     # location_dd_val を、ファイルから読み込んだ（または初期化した）値に修正
@@ -3592,6 +3693,14 @@ def _update_chat_tab_for_room_change(
     t_step = _perf_log("_update_chat_tab_for_room_change: research dropdown choices", t_step)
     temp_location_state = get_temp_location_ui_state(room_name)
     t_step = _perf_log("_update_chat_tab_for_room_change: get_temp_location_ui_state", t_step)
+    (
+        temp_scenery_value,
+        temp_saved_locations_update,
+        temp_image_update,
+        temp_tabs_update,
+        temp_status_update,
+        temp_location_name_update,
+    ) = temp_location_state
     _perf_log("_update_chat_tab_for_room_change: total", t0)
 
     tts_profile_val = effective_settings.get("tts_profile_name")
@@ -3663,7 +3772,7 @@ def _update_chat_tab_for_room_change(
         gr.update(choices=list(config_manager.AVAILABLE_MODELS_GLOBAL), value=_google_model_val),  # room_model_dropdown (Dropdown)
         # [Phase 3] 個別プロバイダ設定
         # null (None) の場合に "default" にフォールバックさせて UI の選択が消えるのを防ぐ
-        gr.update(value=return_provider),  # room_provider_radio
+        gr.update(value=__import__("gemini_connection").provider_choice(room_name)),  # room_provider_radio
         gr.update(visible=(return_provider == "google")),  # room_google_settings_group
         gr.update(visible=(return_provider == "openai")),  # room_openai_settings_group
         gr.update(choices=config_manager.get_api_key_choices_for_ui(), value=room_api_key_ui_value),  # room_api_key_dropdown
@@ -3765,8 +3874,14 @@ def _update_chat_tab_for_room_change(
         creative_dropdown_update, # creative_notes_file_dropdown
         research_dropdown_update, # research_notes_file_dropdown
         # --- [新規] 一時的現在地 UI 同期用 ---
-        *temp_location_state, # scenery, saved_locations, image_path, tabs (4要素)
+        temp_scenery_value, # scenery
+        temp_saved_locations_update, # saved_locations
+        temp_image_update, # image_path
+        temp_tabs_update, # tabs
         gr.update(value=effective_settings.get("include_knowledge_in_auto_retrieval", False)),
+        temp_status_update, # temporary location status
+        temp_location_name_update, # temporary location name
+        *_reset_note_browser_views(),
     )
 
 
@@ -3820,7 +3935,7 @@ def handle_room_change_chat_fast(room_name: str, api_key_val: str, request: gr.R
         effective_api_key_name = list(config_manager.GEMINI_API_KEYS.keys())[0]
 
     api_key = config_manager.GEMINI_API_KEYS.get(effective_api_key_name)
-    has_valid_key = bool(api_key and not api_key.startswith("YOUR_API_KEY"))
+    has_valid_key = _has_vertex_chat_connection(room_name) or bool(api_key and not api_key.startswith("YOUR_API_KEY"))
     chat_input_update = gr.update(
         interactive=has_valid_key,
         placeholder=(
@@ -3858,7 +3973,7 @@ def _get_safe_dropdown_update(room_name: str, note_type: str, default_filename: 
         return gr.update()
 
 
-def handle_initial_load(room_name: str = None, expected_count: int = 230, request: gr.Request = None):
+def handle_initial_load(room_name: str = None, expected_count: int = 250, request: gr.Request = None):
     """
     【v11: 時間デフォルト対応版】
     UIセッションが開始されるたびに、UIコンポーネントの初期状態を完全に再構築する、唯一の司令塔。
@@ -3928,7 +4043,7 @@ def handle_initial_load(room_name: str = None, expected_count: int = 230, reques
     )
 
     # --- 3. オンボーディングと廃止済みトークン表示 ---
-    has_valid_key = config_manager.has_valid_api_key()
+    has_valid_key = _has_vertex_chat_connection(safe_initial_room) or config_manager.has_valid_api_key()
     # 新しいモーダルオンボーディングを使用するため、古いガイドは常に非表示
     token_count_text, onboarding_guide_update, chat_input_update = (_hide_token_count_display(safe_initial_room), gr.update(visible=False), gr.update(interactive=False))
 
@@ -4067,7 +4182,9 @@ def handle_initial_load(room_name: str = None, expected_count: int = 230, reques
         # [Added for working memory sync v3]
         wm_slots_update, # room_working_memory_slot_dropdown
         wm_content_update, # room_working_memory_content_editor
-        wm_active_label # active_working_memory_status
+        wm_active_label, # active_working_memory_status
+        safe_initial_room, # system_prompt_editor_room
+        safe_initial_room, # core_memory_editor_room
     )
 
     # 初期化完了: 以降の設定変更では通知を表示する（ただし直後のgrace periodは除く）
@@ -4152,7 +4269,7 @@ def handle_initial_chat_load(room_name: str = None, request: gr.Request = None):
     )
     t_step = _perf_log("handle_initial_chat_load: reload_chat_log", t_step)
 
-    has_valid_key = config_manager.has_valid_api_key()
+    has_valid_key = _has_vertex_chat_connection(safe_initial_room) or config_manager.has_valid_api_key()
     chat_input_update = gr.update(
         interactive=has_valid_key,
         placeholder=(
@@ -4328,7 +4445,7 @@ def _get_room_settings_fast_updates(room_name: str, api_key_name: str = None):
         *room_delegation_model_updates,
         gr.update(value=format_agent_delegation_backend_info(room_name)),
         gr.update(choices=config_manager.AVAILABLE_MODELS_GLOBAL, value=overrides.get("model_name") or effective_settings.get("model_name")),
-        gr.update(value=provider),
+        gr.update(value=__import__("gemini_connection").provider_choice(room_name)),
         gr.update(visible=(provider == "google")),
         gr.update(visible=(provider == "openai")),
         gr.update(visible=(provider == "anthropic")),
@@ -4975,11 +5092,18 @@ def _stream_and_handle_response(
     enable_supervisor: bool = False, # Supervisor機能の有効/無効
     group_supervisor_rounds: int = 1,
     # [v22] 翻訳不整合対策
-    translation_cache: dict = None
+    translation_cache: dict = None,
+    on_success=None,
+    deferred_scenery_state=None,
 ) -> Iterator[Tuple]:
     import time
     perf_start = time.time()
     print(f"--- [PERF] _stream_and_handle_response start (room={room_to_respond}) ---")
+    completion_probe = ChatCompletionProbe()
+    scenery_token = (
+        deferred_scenery_state.begin(soul_vessel_room)
+        if isinstance(deferred_scenery_state, SceneryRefreshState) else None
+    )
     log_memory_diagnostics(
         "chat_stream:start",
         soul_vessel_room,
@@ -5016,7 +5140,8 @@ def _stream_and_handle_response(
 
     # [v20] 動画アバター対応: thinking状態のアバターHTMLを生成
     # 動画がない場合は静止画にフォールバックし、CSSアニメーションで表現
-    current_profile_update = gr.update(value=get_avatar_html(soul_vessel_room, state="thinking"))
+    current_profile_update = gr.update(value=completion_probe.run(
+        "initial_avatar", get_avatar_html, soul_vessel_room, state="thinking"))
 
 
     try:
@@ -5086,6 +5211,9 @@ def _stream_and_handle_response(
             last_group_speaker = None
 
         for i, scheduled_room in enumerate(response_turn_slots):
+            if i > 0 and _stop_generation_event.is_set():
+                break
+            typewriter_completed_successfully = False
             if group_supervisor_enabled:
                 current_room = _select_group_speaker_with_director(
                     soul_vessel_room=soul_vessel_room,
@@ -5475,7 +5603,12 @@ def _stream_and_handle_response(
 
                 # 表示処理
                 # ログが更新された可能性があるので、UI表示の直前に必ず再読み込みする
-                chatbot_history, mapping_list = reload_chat_log(soul_vessel_room, api_history_limit, add_timestamp, display_thoughts, screenshot_mode, redaction_rules)
+                completion_probe.mark("response_saved")
+                typewriter_targets = []
+                chatbot_history, mapping_list = completion_probe.run("display_history", reload_chat_log,
+                    soul_vessel_room, api_history_limit, add_timestamp, display_thoughts,
+                    screenshot_mode, redaction_rules, typewriter_targets=typewriter_targets,
+                )
 
                 last_ai_message = None
 
@@ -5489,60 +5622,19 @@ def _stream_and_handle_response(
 
                 text_to_display = utils.get_content_as_string(last_ai_message) if last_ai_message else ""
 
-                if text_to_display:
-                    # 【修正v2】二重表示防止ロジック（Gemini 2.5 Pro対応）
-                    if enable_typewriter_effect and streaming_speed > 0:
-                        # タイプライターONの場合:
-                        # reload_chat_logで取得したフォーマット済みの最後のメッセージを保存し、
-                        # それを文字ずつ表示する（生テキストではなくフォーマット済みを使用）
-                        formatted_last_message = None
-                        if chatbot_history:
-                            # 最後のメッセージを取り出す（後で文字ずつ表示）
-                            formatted_last_message = chatbot_history.pop()
-
-                        # フォーマット済みテキストを取得（AI応答なので[1]がテキスト）
-                        formatted_text = _chatbot_content(formatted_last_message) or ""
-
-                        if formatted_text:
-                            # アニメーション用のカーソルを追加して開始
-                            chatbot_history.append(_chatbot_message("assistant", "▌"))
-                            streamed_text = ""  # ★重要: 毎回初期化
-
-                            # --- [v29] 思考ログの一括表示対応 ---
-                            # <details> タグで囲まれた思考ログ部分と、それ以外の通常テキストを分離する
-                            # 正規表現のグループ化により、デリミタ自体も保持する
-                            parts = re.split(r'(<details class="thought-details"[\s\S]*?</details>)', formatted_text)
-
-                            for part in parts:
-                                if not part:
-                                    continue
-
-                                if part.startswith('<details class="thought-details"'):
-                                    # 思考ログ部分は一括で追加し、ウェイトを置かない
-                                    streamed_text += part
-                                    _replace_last_chatbot_message(chatbot_history, "assistant", streamed_text + "▌")
-                                    yield (chatbot_history, mapping_list, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), translation_cache)
-                                else:
-                                    # 通常テキストは1文字ずつタイピング表示
-                                    for char in part:
-                                        streamed_text += char
-                                        _replace_last_chatbot_message(chatbot_history, "assistant", streamed_text + "▌")
-                                        yield (chatbot_history, mapping_list, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), translation_cache)
-                                        time.sleep(streaming_speed)
-                            # -----------------------------------
-
-                            # タイプライター完了後、フォーマット済みの最終形を表示
-                            # （生テキストではなく、reload_chat_logから取得したフォーマット済みを使用）
-                            chatbot_history[-1] = formatted_last_message
-                            yield (chatbot_history, mapping_list, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), translation_cache)  # [v22] 17要素
-
-                        typewriter_completed_successfully = True
-
-                    else:
-                        # タイプライターOFFの場合:
-                        # 何もしない。直前の reload_chat_log で既に完了形のメッセージが表示されているため、
-                        # ここで append すると二重になってしまう。
-                        pass
+                if (text_to_display and enable_typewriter_effect
+                        and not text_to_display.lstrip().startswith("(System):")):
+                    # 直近のAGENT発言を整形時の境界で選ぶ。思考/画像しかない
+                    # 場合も候補を残し、過去の本文やツール案内へ遡らない。
+                    target = next((target for target in reversed(typewriter_targets)
+                                   if target.responder == current_room), None)
+                    for frame in iter_typewriter_history(
+                        chatbot_history, target, streaming_speed, _stop_generation_event,
+                    ):
+                        yield (frame, mapping_list, gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), translation_cache)
+                    typewriter_completed_successfully = not _stop_generation_event.is_set()
+                    if _stop_generation_event.is_set():
+                        break
 
                 # 【重要】タイプライター完了後のreloadは、finallyブロックに任せる。
                 # これにより、エラー時やキャンセル時も正しくログから読み込まれる。
@@ -5625,7 +5717,7 @@ def _stream_and_handle_response(
             final_mapping_list = mapping_list
         else:
             # エラー時、キャンセル時、タイプライターOFF時など: ログから再読み込み
-            final_chatbot_history, final_mapping_list = reload_chat_log(
+            final_chatbot_history, final_mapping_list = completion_probe.run("final_history", reload_chat_log,
                 room_name=soul_vessel_room,
                 api_history_limit_value=api_history_limit,
                 add_timestamp=add_timestamp,
@@ -5655,14 +5747,9 @@ def _stream_and_handle_response(
         except Exception as _notice_e:
             print(f"--- [System Notice] 応答後の通知表示でエラー: {_notice_e} ---")
 
-        api_key = config_manager.GEMINI_API_KEYS.get(api_key_name)
-        new_scenery_text, scenery_image, token_count_text = "（更新失敗）", None, _hide_token_count_display(soul_vessel_room)
-        try:
-            season_en, time_of_day_en = utils._get_current_time_context(soul_vessel_room)
-            _, _, new_scenery_text = generate_scenery_context(soul_vessel_room, api_key, season_en=season_en, time_of_day_en=time_of_day_en)
-            scenery_image = utils.find_scenery_image(soul_vessel_room, utils.get_current_location(soul_vessel_room), season_en=season_en, time_of_day_en=time_of_day_en)
-        except Exception as e:
-            print(f"--- 警告: 応答後の情景更新に失敗しました (API制限の可能性): {e} ---")
+        # 情景・天気取得は会話の完了を待たせない。完了後にsession専用workerへ渡す。
+        new_scenery_text, scenery_image = gr.update(), gr.update()
+        completion_probe.mark("scenery_deferred")
 
         final_df_with_ids = render_alarms_as_dataframe()
         final_df = get_display_df(final_df_with_ids)
@@ -5687,15 +5774,15 @@ def _stream_and_handle_response(
         except Exception as e:
             print(f"--- [Avatar] 表情抽出エラー: {e} ---")
 
-        final_profile_update = gr.update(value=get_avatar_html(soul_vessel_room, state=final_expression))
+        final_profile_update = gr.update(value=completion_probe.run(
+            "final_avatar", get_avatar_html, soul_vessel_room, state=final_expression))
 
         # [v21] 現在地連動背景: ツール使用後に背景CSSも更新
-        effective_settings_for_style = config_manager.get_effective_settings(soul_vessel_room)
-        style_css_update = gr.update(value=_generate_style_from_settings(soul_vessel_room, effective_settings_for_style))
+        style_css_update = gr.update()
 
         token_count_text = _format_token_display(soul_vessel_room)
-        _release_rag_cache_after_chat(soul_vessel_room)
-        _trim_process_memory_after_chat(soul_vessel_room)
+        completion_probe.run("rag_release", _release_rag_cache_after_chat, soul_vessel_room)
+        completion_probe.run("memory_trim", _trim_process_memory_after_chat, soul_vessel_room)
         log_memory_diagnostics(
             "chat_stream:end",
             soul_vessel_room,
@@ -5707,6 +5794,26 @@ def _stream_and_handle_response(
             }
         )
 
+        # 情景画像の送信済み記録など、プロバイダ応答の成功が確定してから
+        # 行う副作用をここで実行する。GeneratorExit・エラー応答・空応答では
+        # callbackを呼ばず、次回の再送判定を保持する。
+        response_text = utils.get_content_as_string(last_ai_message) if last_ai_message else ""
+        response_is_successful = bool(
+            not generator_exited
+            and not _stop_generation_event.is_set()
+            and final_error_message is None
+            and response_text
+            and "[エラー]" not in response_text
+            and "[ERROR]" not in response_text.upper()
+            and "⛔ システムエラー" not in response_text
+        )
+        if response_is_successful and on_success is not None:
+            try:
+                completion_probe.run("success_callback", on_success)
+            except Exception:
+                logger.warning("ストリーム成功後の後処理に失敗しました", exc_info=True)
+
+        completion_probe.before_yield(final_chatbot_history, final_profile_update, style_css_update)
         yield (final_chatbot_history, final_mapping_list, gr.update(), token_count_text,
                location_dropdown_update, new_scenery_text,
                final_df_with_ids, final_df, scenery_image,
@@ -5717,6 +5824,17 @@ def _stream_and_handle_response(
                style_css_update, # [v21] Sync Background
                translation_cache # [v22] 17番目
         )
+        # Gradioがgeneratorを再開した時点。ブラウザの描画完了を意味しない。
+        completion_probe.mark("generator_resumed")
+        if response_is_successful and scenery_token is not None:
+            try:
+                schedule_deferred_scenery(
+                    deferred_scenery_state, scenery_token, soul_vessel_room,
+                    config_manager.GEMINI_API_KEYS.get(api_key_name), completion_probe,
+                )
+            except Exception:
+                # 情景の登録失敗でも、保存済み会話と操作復帰は確定している。
+                logger.warning("会話後の情景更新を開始できませんでした")
 
 def _create_api_parts_from_files(file_paths: List[str]) -> List[Dict]:
     """
@@ -5784,7 +5902,8 @@ def handle_message_submission(
     enable_supervisor: bool = False, # [v18] Supervisor機能の有効/無効
     group_supervisor_rounds: int = 1,
     # [v22] 翻訳不整合対策
-    translation_cache: dict = None
+    translation_cache: dict = None,
+    deferred_scenery_state=None,
 ):
     import time
     perf_start = time.time()
@@ -5798,6 +5917,14 @@ def handle_message_submission(
         textbox_content = textbox_content.replace("\r\n", "\n").replace("\r", "\n")
     file_input_list = multimodal_input.get("files", []) if multimodal_input else []
     user_prompt_from_textbox = textbox_content if isinstance(textbox_content, str) and textbox_content.strip() else ""
+
+    if (user_prompt_from_textbox or file_input_list) and lite_travel.is_presence_locked(soul_vessel_room):
+        gr.Warning("このペルソナはLite独立お出かけ中です。帰宅統合または緊急帰還後に本体チャットを再開できます。")
+        yield (gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+               gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+               gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+               translation_cache)
+        return
 
     # --- [v9: 空送信ガード] ---
     # テキスト入力がなく、かつファイルも添付されていない場合は、何もせずに終了する
@@ -5916,83 +6043,40 @@ def handle_message_submission(
         user_prompt_parts_for_api.extend(_create_api_parts_from_files(files_to_send_api))
 
     # --- [情景画像のAI共有] ---
-    # 場所移動、画像更新、起動後初回の場合のみ画像を添付（コスト効率化）
+    # 仮想情景と一時的現在地の解決・重複判定・送信済み記録は共通helperへ集約する。
+    scenery_context = None
     try:
         effective_settings = config_manager.get_effective_settings(soul_vessel_room)
-        send_scenery_image_enabled = effective_settings.get("send_scenery", False)
-        scenery_send_mode = effective_settings.get("scenery_send_mode", "変更時のみ")
+        from agent.scenery_image_context import get_scenery_image_context
 
-        # print(f"--- [情景画像AI共有] 設定チェック: send_scenery = {send_scenery_image_enabled}, mode = {scenery_send_mode} ---")
-
-        if send_scenery_image_enabled:
-            season_en, time_of_day_en = utils._get_current_time_context(soul_vessel_room)
-            current_location = utils.get_current_location(soul_vessel_room)
-
-            # --- [一時的現在地対応] ---
-            from agent.temporary_location_manager import TemporaryLocationManager
-            tlm = TemporaryLocationManager()
-            if tlm.is_active(soul_vessel_room):
-                temp_data = tlm.get_current_data(soul_vessel_room)
-                current_scenery_image = temp_data.get("image_path")
-                # print(f"  - [TempLocation Active] 画像パスを使用: {current_scenery_image}")
-            else:
-                current_scenery_image = utils.find_scenery_image(
-                    soul_vessel_room, current_location, season_en, time_of_day_en
-                )
-
-            # print(f"  - 現在地: {current_location}, 季節: {season_en}, 時間帯: {time_of_day_en}")
-            # print(f"  - 画像パス: {current_scenery_image}")
-
-            if current_scenery_image and os.path.exists(current_scenery_image):
-                # room_config から「最後に送信した画像パス」を取得
-                room_config = room_manager.get_room_config(soul_vessel_room) or {}
-                last_sent_image = room_config.get("last_sent_scenery_image")
-
-                # print(f"  - 最後に送信した画像: {last_sent_image}")
-
-                # 送信判定: 「毎ターン」モードなら常に送信、「変更時のみ」なら画像が異なる場合のみ
-                should_send = (scenery_send_mode == "毎ターン") or (current_scenery_image != last_sent_image)
-
-                if should_send:
-                    reason = "毎ターン送信" if scenery_send_mode == "毎ターン" else "新しい景色を検出"
-                    # print(f"  - ✅ {reason}！画像をAIに送信します")
-
-                    # 画像をリサイズしてBase64エンコード（コスト削減）
-                    resize_result = utils.resize_image_for_api(current_scenery_image, max_size=512)
-
-                    if resize_result:
-                        # ★修正: resize_image_for_apiはタプル(base64_string, format)を返す
-                        encoded_image, output_format = resize_result
-                        mime_type = f"image/{output_format}"
-                        # print(f"  - ✅ 画像リサイズ成功 (Base64: {len(encoded_image)} chars, format: {output_format})")
-                        # ユーザーの発言の前に情景画像を挿入
-                        scenery_parts = [
-                            {"type": "text", "text": "（システム：現在の光景）"},
-                            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{encoded_image}"}}
-                        ]
-                        user_prompt_parts_for_api = scenery_parts + user_prompt_parts_for_api
-
-                        # 送信済みとして記録（変更時のみモードでの重複送信防止用）
-                        room_manager.update_room_config(
-                            soul_vessel_room,
-                            {"last_sent_scenery_image": current_scenery_image}
-                        )
-                        # print(f"  - ✅ 画像送信完了＆記録更新")
-
-                    else:
-                        print(f"  - ❌ 画像リサイズ失敗")
-                else:
-                    print(f"  - ⏭️ 前回と同じ景色のためスキップ")
-            else:
-                print(f"  - ⚠️ 情景画像が見つかりません")
-        else:
-            print(f"  - ⏭️ 情景画像共有は無効")
+        season_en, time_of_day_en = utils._get_current_time_context(soul_vessel_room)
+        scenery_context = get_scenery_image_context(
+            soul_vessel_room,
+            settings=effective_settings,
+            season_en=season_en,
+            time_of_day_en=time_of_day_en,
+        )
+        if scenery_context.sent:
+            user_prompt_parts_for_api = list(scenery_context.parts) + user_prompt_parts_for_api
+        elif scenery_context.reason == "unchanged":
+            print("  - ⏭️ 前回と同じ景色のためスキップ")
+        elif scenery_context.reason == "disabled":
+            print("  - ⏭️ 情景画像共有は無効")
+        elif scenery_context.reason == "no_image":
+            print("  - ⚠️ 情景画像が見つかりません")
     except Exception as e:
         print(f"--- [情景画像AI共有 警告] 処理中にエラーが発生しました: {e} ---")
         traceback.print_exc()
     # --- [情景画像のAI共有 ここまで] ---
 
     print(f"--- [PERF] handle_message_submission pre-processing done: {time.time() - perf_start:.4f}s ---")
+
+    def _commit_scenery_context_after_success():
+        if scenery_context is None or not scenery_context.sent:
+            return
+        from agent.scenery_image_context import commit_scenery_image_context
+
+        commit_scenery_image_context(soul_vessel_room, scenery_context)
 
     # 4. 中核となるストリーミング関数を呼び出す (変更なし)
     yield from _stream_and_handle_response(
@@ -6016,7 +6100,9 @@ def handle_message_submission(
         enable_supervisor=enable_supervisor,
         group_supervisor_rounds=group_supervisor_rounds,
         # [v22] 翻訳不整合対策
-        translation_cache=translation_cache
+        translation_cache=translation_cache,
+        on_success=_commit_scenery_context_after_success,
+        deferred_scenery_state=deferred_scenery_state,
     )
 
 def handle_gradio_voice_transcription(audio_path, stt_provider: str, action_mode: str, multimodal_input: dict, room_name: str, api_key_name: str):
@@ -6138,7 +6224,8 @@ def handle_gradio_voice_auto_submission(
     redaction_rules: list,
     enable_supervisor: bool = False,
     group_supervisor_rounds: int = 1,
-    translation_cache: dict = None
+    translation_cache: dict = None,
+    deferred_scenery_state=None,
 ):
     """Gradio音声入力の自動送信モード用に、既存の送信ハンドラへ橋渡しする。"""
     if not auto_submit_ready:
@@ -6161,6 +6248,7 @@ def handle_gradio_voice_auto_submission(
         enable_supervisor,
         group_supervisor_rounds,
         translation_cache,
+        deferred_scenery_state,
     )
 
 def handle_rerun_button_click(
@@ -6177,7 +6265,8 @@ def handle_rerun_button_click(
     group_supervisor_rounds: int = 1,
     # [v22] 翻訳不整合対策
     translation_cache: dict = None,
-    abs_index: Optional[int] = None
+    abs_index: Optional[int] = None,
+    deferred_scenery_state=None,
 ):
     """
     【v3: 遅延解消版】発言の再生成を処理する司令塔。
@@ -6188,6 +6277,14 @@ def handle_rerun_button_click(
                gr.update(), gr.update(), gr.update(), console_content, console_content,
                gr.update(visible=True, interactive=True), gr.update(interactive=True), gr.update(), gr.update(), gr.update(),
                translation_cache) # [v22] 17要素
+        return
+
+    if lite_travel.is_presence_locked(room_name):
+        gr.Warning("このペルソナはLite独立お出かけ中のため、本体で再生成できません。")
+        yield (gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+               gr.update(), gr.update(), gr.update(), console_content, console_content,
+               gr.update(visible=True, interactive=True), gr.update(interactive=True), gr.update(), gr.update(), gr.update(),
+               translation_cache)
         return
 
     # 1. ログを巻き戻し、再送信するユーザー発言を取得
@@ -6278,7 +6375,8 @@ def handle_rerun_button_click(
         enable_supervisor=enable_supervisor,  # [v18] Supervisor機能の有効/無効
         group_supervisor_rounds=group_supervisor_rounds,
         # [v22] 翻訳キャッシュを最後の戻り値に追加するためにラップ
-        translation_cache=translation_cache
+        translation_cache=translation_cache,
+        deferred_scenery_state=deferred_scenery_state,
     )
 
 def _get_updated_scenery_and_image(room_name: str, api_key_name: str, force_text_regenerate: bool = False) -> Tuple[str, Optional[str]]:
@@ -6538,7 +6636,7 @@ def handle_save_room_config(folder_name: str, room_name: str, user_display_name:
         traceback.print_exc()
         return gr.update(), gr.update()
 
-def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name: str, current_room_name: str = None, expected_count: int = 197):
+def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name: str, current_room_name: str = None, expected_count: int = 217):
     """
     【v7: 引数順序修正版】
     ルームを削除し、統一契約に従って常に正しい数の戻り値を返す。
@@ -6585,7 +6683,7 @@ def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name:
                 gr.update(choices=config_manager.get_tts_model_choices("gemini"), value="gemini-3.1-flash-tts-preview"),
                 gr.update(choices=config_manager.get_tts_voice_choices("gemini"), value=list(config_manager.SUPPORTED_VOICES.values())[0]), "", # voice, style
                 1.0, 0.0, 1.0, 1.0, # speed, pitch, intonation, volume
-                True, 0.01, # typewriter, speed
+                True, constants.DEFAULT_STREAMING_SPEED, # 既存ルーム向けfallbackと一致
                 0.8, 0.95, *[gr.update()]*4, # temperature, top_p, safety
                 False, # display_thoughts
                 False, # send_thoughts
@@ -6676,7 +6774,7 @@ def handle_delete_room(confirmed: str, folder_name_to_delete: str, api_key_name:
             )
 
             final_reset_outputs = empty_chat_updates + world_outputs + session_outputs + tail_outputs
-            return _ensure_output_count(final_reset_outputs, expected_count)
+            return _ensure_output_count(final_reset_outputs, expected_count - 2) + (None, None)
 
     except Exception as e:
         gr.Error(f"ルームの削除中にエラーが発生しました: {e}")
@@ -7518,6 +7616,26 @@ def handle_delete_button_click(
     )
     return history, mapping_list, None, gr.update(visible=False), "", None, translation_cache
 
+def _format_inline_chat_text(part: str, preserve_spans: Optional[bool] = None) -> str:
+    """マスクのspanだけを保持し、既存のHTMLエスケープと改行を再現する。"""
+    if preserve_spans is None:
+        preserve_spans = '<span style' in part
+    if not preserve_spans:
+        return part
+    span_pattern = re.compile(r'(<span style="[^"]*">[^<]*</span>)')
+    spans = span_pattern.findall(part)
+    temp_part = part
+    placeholder_map = {}
+    for i, span in enumerate(spans):
+        placeholder = f"__SPAN_PLACEHOLDER_{i}__"
+        placeholder_map[placeholder] = span
+        temp_part = temp_part.replace(span, placeholder, 1)
+    escaped_part = html.escape(temp_part)
+    for placeholder, span in placeholder_map.items():
+        escaped_part = escaped_part.replace(placeholder, span)
+    return escaped_part.replace('\n', '  \n')
+
+
 def format_history_for_gradio(
     messages: List[Dict[str, str]],
     current_room_folder: str,
@@ -7528,7 +7646,8 @@ def format_history_for_gradio(
     absolute_start_index: int = 0,
     translation_cache: dict = None,
     show_translation: bool = False,
-    force_open_index: Optional[int] = None
+    force_open_index: Optional[int] = None,
+    typewriter_targets: Optional[List[TypewriterTarget]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[int]]:
 
     """
@@ -7547,10 +7666,15 @@ def format_history_for_gradio(
     agent_name_cache = {}
 
     proto_history = []
+    target_by_log_index = {}
     for i, msg in enumerate(messages, start=absolute_start_index):
         role, content = msg.get("role"), msg.get("content", "").strip()
         responder_id = msg.get("responder")
         if not responder_id: continue
+        if typewriter_targets is not None and role == "AGENT":
+            target = TypewriterTarget(log_index=i, responder=responder_id)
+            typewriter_targets.append(target)
+            target_by_log_index[i] = target
 
         if not add_timestamp:
             content = utils.remove_ai_timestamp(content)
@@ -7629,7 +7753,12 @@ def format_history_for_gradio(
             else: # 将来的な拡張のためのフォールバック
                 speaker_name = responder_id
 
+            timestamp_suffix = ""
+            if role == "AGENT":
+                _, timestamp_suffix = split_timestamp(content_to_parse)
+
             if screenshot_mode and redaction_rules:
+                timestamp_suffix = _apply_redaction_rules_to_display_content(timestamp_suffix, redaction_rules)
                 if speaker_name:
                     speaker_name = config_manager.apply_redaction_rules_to_text(speaker_name, redaction_rules)
                 content_to_parse = _apply_redaction_rules_to_display_content(content_to_parse, redaction_rules)
@@ -7685,6 +7814,7 @@ def format_history_for_gradio(
             parts = code_block_pattern.split(content_for_parsing)
 
             final_html_parts = [speaker_prefix]
+            rendered_footer = ""
 
             for part in parts:
                 if not part or not part.strip(): continue
@@ -7716,29 +7846,12 @@ def format_history_for_gradio(
                         formatted_block = f"```\n{html.escape(inner_content)}\n```"
                     final_html_parts.append(formatted_block)
                 else:
-                    # ★レッスン24の適用★：通常テキストにHTMLが含まれる場合も同様の対処
-                    if '<span style' in part:
-                        # <span>タグを保持しつつ、他のテキストはHTMLエスケープ
-                        span_pattern = re.compile(r'(<span style="[^"]*">[^<]*</span>)')
-                        spans = span_pattern.findall(part)
-                        temp_part = part
-                        placeholder_map = {}
-                        for i, span in enumerate(spans):
-                            placeholder = f"__SPAN_PLACEHOLDER_{i}__"
-                            placeholder_map[placeholder] = span
-                            temp_part = temp_part.replace(span, placeholder, 1)
-                        # プレースホルダー以外をHTMLエスケープ
-                        escaped_part = html.escape(temp_part)
-                        # プレースホルダーを元のspanタグに戻す
-                        for placeholder, span in placeholder_map.items():
-                            escaped_part = escaped_part.replace(placeholder, span)
-
-                        # Markdownでの改行を維持するため、\n を "  \n" (2スペース+改行) に変換
-                        # <div>で囲むとMarkdownが効かなくなるため、直接追加する
-                        escaped_part = escaped_part.replace('\n', '  \n')
-                        final_html_parts.append(escaped_part)
-                    else:
-                        final_html_parts.append(part)
+                    # 完成形の整形は従来通り全文へ適用する。
+                    final_html_parts.append(_format_inline_chat_text(part))
+                    if timestamp_suffix and part.rstrip().endswith(timestamp_suffix):
+                        rendered_footer = _format_inline_chat_text(
+                            timestamp_suffix, preserve_spans='<span style' in part,
+                        )
 
             final_markdown = "\n\n".join(final_html_parts).strip()
             
@@ -7746,6 +7859,19 @@ def format_history_for_gradio(
             if speaker_prefix and final_markdown == speaker_prefix.strip():
                 final_markdown = ""
                 
+            rendered_content = "\n\n".join(final_html_parts[1:]).strip()
+            rendered_body = rendered_content
+            if timestamp_suffix:
+                # マスクで日時が置換されても、元ログから得た境界を使用する。
+                # 境界を確定できない場合は全文一括にして付与情報を逐次化しない。
+                rendered_body = (rendered_content[:-len(rendered_footer)].rstrip()
+                                 if rendered_footer and rendered_content.endswith(rendered_footer) else "")
+            target = target_by_log_index.get(item["log_index"])
+            if target is not None and rendered_body:
+                target.message_index = len(gradio_history)
+                target.prefix = final_markdown[:-len(rendered_content)]
+                target.body = rendered_body
+
             if final_markdown:
                 gradio_history.append({
                     "role": "user" if is_user else "assistant",
@@ -7890,7 +8016,8 @@ def reload_chat_log(
         absolute_start_index=absolute_start_index,
         translation_cache=translation_cache,
         show_translation=show_translation,
-        force_open_index=force_open_index
+        force_open_index=force_open_index,
+        typewriter_targets=kwargs.get("typewriter_targets"),
     )
 
     return history, mapping_list
@@ -7964,7 +8091,7 @@ def handle_refresh_goals(room_name: str):
         # 短期目標のフォーマット
         short_term_text = ""
         for g in goals.get("short_term", []):
-            status_emoji = "🔥" if g.get("status") == "active" else "✅"
+            status_emoji = {"active": "🔥", "paused": "⏸️ 保留", "completed": "✅", "abandoned": "終了"}.get(g.get("status", "active"), "状態不明")
             short_term_text += f"{status_emoji} {g.get('goal', '(不明)')}\n"
             short_term_text += f"   作成: {g.get('created_at', '-')}\n"
             if g.get("progress_notes"):
@@ -7978,7 +8105,7 @@ def handle_refresh_goals(room_name: str):
         # 長期目標のフォーマット
         long_term_text = ""
         for g in goals.get("long_term", []):
-            status_emoji = "🌟" if g.get("status") == "active" else "✅"
+            status_emoji = {"active": "🌟", "paused": "⏸️ 保留", "completed": "✅", "abandoned": "終了"}.get(g.get("status", "active"), "状態不明")
             long_term_text += f"{status_emoji} {g.get('goal', '(不明)')}\n"
             long_term_text += f"   作成: {g.get('created_at', '-')}\n"
             if g.get("related_values"):
@@ -9452,6 +9579,10 @@ def handle_generate_or_regenerate_scenery_image(room_name: str, api_key_name: st
     return None
 
 def handle_api_connection_test(api_key_name: str):
+    from gemini_connection import is_vertex
+    if is_vertex():
+        gr.Info("Vertex AIは、設定したモデルへの会話送信で接続を確認できます。")
+        return
     if not api_key_name:
         gr.Warning("テストするAPIキーが選択されていません。")
         return
@@ -9585,6 +9716,7 @@ def handle_room_change_for_all_tabs(room_name: str, api_key_val: str, expected_c
         )
     else:
         chat_tab_updates = _update_chat_tab_for_room_change(room_name, api_key_val)
+    editor_room_name = chat_tab_updates[0]
     if preserve_chat_area:
         chat_tab_updates = (gr.update(), gr.update(), gr.update(), gr.update(), *chat_tab_updates[4:])
     world_builder_updates = handle_world_builder_load(room_name)
@@ -9637,7 +9769,9 @@ def handle_room_change_for_all_tabs(room_name: str, api_key_val: str, expected_c
         f"最終更新: {current_log_index_last_updated}",  # current_log_reindex_status
         active_wm_label, # active_working_memory_status
         wm_slots_update, # working_memory_slot_dropdown
-        wm_content_update # working_memory_editor
+        wm_content_update, # working_memory_editor
+        editor_room_name, # system_prompt_editor_room
+        editor_room_name, # core_memory_editor_room
     )
 
     result = _ensure_output_count(final_outputs, expected_count)
@@ -10549,7 +10683,12 @@ def load_system_prompt_content(room_name: str) -> str:
             return f.read()
     return ""
 
-def handle_save_system_prompt(room_name: str, content: str) -> None:
+def handle_save_system_prompt(
+    room_name: str, content: str, selected_room: str, editor_room: str, is_switching: bool,
+) -> None:
+    from ._common import require_persona_editor_target
+
+    require_persona_editor_target(room_name, selected_room, editor_room, is_switching)
     if not room_name:
         gr.Warning("ルームが選択されていません。")
         return
@@ -10567,6 +10706,10 @@ def handle_save_system_prompt(room_name: str, content: str) -> None:
         gr.Info(f"「{room_name}」の人格プロンプトを保存しました。")
     except Exception as e:
         gr.Error(f"人格プロンプトの保存エラー: {e}")
+
+def handle_reload_system_prompt_for_editor(room_name: str):
+    return handle_reload_system_prompt(room_name), room_name
+
 
 def handle_reload_system_prompt(room_name: str) -> str:
     if not room_name:
@@ -12106,11 +12249,11 @@ def handle_internal_embedding_provider_change(provider: str):
 
     if provider == "google":
         choices = [
-            ("gemini-embedding-2-preview (最新・推奨)", "gemini-embedding-2-preview"),
+            ("gemini-embedding-2 (最新・推奨)", "gemini-embedding-2"),
             ("gemini-embedding-001 (旧推奨・8月廃止予定)", "gemini-embedding-001")
         ]
         current = config_manager.get_internal_model_settings().get("embedding_model", "")
-        default_val = current if current in ["gemini-embedding-2-preview", "gemini-embedding-001"] else "gemini-embedding-2-preview"
+        default_val = current if current in ["gemini-embedding-2", "gemini-embedding-001"] else "gemini-embedding-2"
     elif provider == "openai":
         choices = [
             ("text-embedding-3-small (安価・高速)", "text-embedding-3-small"),
@@ -12795,8 +12938,8 @@ def load_user_memo(room_name: str) -> str:
         return ""
     memo_path = _get_user_memo_path(room_name)
     if os.path.exists(memo_path):
-        with open(memo_path, "r", encoding="utf-8") as f:
-            return f.read().strip()
+        from file_lock_utils import safe_text_read
+        return safe_text_read(memo_path).strip()
     return ""
 
 
@@ -12812,8 +12955,8 @@ def handle_save_user_memo(room_name: str, memo_content: str) -> None:
 
     memo_path = _get_user_memo_path(room_name)
     try:
-        with open(memo_path, "w", encoding="utf-8") as f:
-            f.write(memo_content.strip())
+        from file_lock_utils import safe_text_write
+        safe_text_write(memo_path, memo_content.strip())
         gr.Info("📝 書き置きを保存しました。次回の自律行動時にAIに渡されます。")
     except Exception as e:
         gr.Error(f"書き置きの保存に失敗しました: {e}")
@@ -12827,8 +12970,8 @@ def handle_clear_user_memo(room_name: str) -> str:
 
     memo_path = _get_user_memo_path(room_name)
     try:
-        with open(memo_path, "w", encoding="utf-8") as f:
-            f.write("")
+        from file_lock_utils import safe_text_write
+        safe_text_write(memo_path, "")
         gr.Info("書き置きをクリアしました。")
         return ""
     except Exception as e:
@@ -13332,48 +13475,7 @@ def _get_episodic_memory_entries(room_name: str, days: int) -> str:
         from episodic_memory_manager import EpisodicMemoryManager
         manager = EpisodicMemoryManager(room_name)
 
-        # 全期のエピソード記憶を読み込む (レガシー + 月次)
-        # _load_memory はプライベートメソッドだが、全件取得のために使用する
-        all_episodes = manager._load_memory()
-        if not all_episodes:
-            return ""
-
-        from datetime import datetime, timedelta
-        cutoff_date = datetime.now() - timedelta(days=days)
-        cutoff_str = cutoff_date.strftime("%Y-%m-%d")
-
-        filtered_entries = []
-        for entry in all_episodes:
-            if isinstance(entry, dict):
-                date_key = entry.get("date", "")
-                summary = entry.get("summary", "")
-
-                # 日付範囲でフィルタリング
-                date_start = date_key.strip()
-                if '~' in date_start:
-                    date_start = date_start.split("~")[0].strip()
-                elif '～' in date_start:
-                    date_start = date_start.split("～")[0].strip()
-
-                if date_start >= cutoff_str:
-                    filtered_entries.append((date_start, date_key, summary))
-
-        # 日付順（昇順）にソート
-        filtered_entries.sort(key=lambda x: x[0])
-
-        if not filtered_entries:
-            return ""
-
-        # 整形: 既存のフォーマットに合わせる
-        result_lines = []
-        for _, date_key, summary in filtered_entries:
-            result_lines.append(f"### {date_key}")
-            # エクスポート用にメタタグを除去
-            cleaned_summary = utils.clean_persona_text(summary if isinstance(summary, str) else str(summary))
-            result_lines.append(cleaned_summary)
-            result_lines.append("")
-
-        return "\n".join(result_lines)
+        return manager.export_recent_memories(days)
 
     except Exception as e:
         print(f"Error in _get_episodic_memory_entries: {e}")
@@ -13667,7 +13769,7 @@ def handle_summarize_outing_text(preview_text: str, room_name: str, target_secti
         gr.Warning("ルームが選択されていません。")
         return preview_text, "📝 推定文字数: ---"
 
-    if not config_manager.GEMINI_API_KEYS:
+    if not config_manager.GEMINI_API_KEYS and not __import__("gemini_connection").is_vertex():
         gr.Error("APIキーが設定されていません。")
         return preview_text, f"📝 推定文字数: **{len(preview_text):,}** 文字"
 
@@ -13749,6 +13851,138 @@ def handle_export_outing_from_preview(preview_text: str, room_name: str):
 
 # ===== 専用タブ用ハンドラ =====
 
+def _build_outing_mode_updates(mode: str):
+    """お出かけ画面内の各モードを、タブを増やさず切り替える。"""
+    selected = mode if mode in {"lite_setup", "lite_independent", "export", "import"} else "lite_setup"
+    lite_selected = selected in {"lite_setup", "lite_independent"}
+    setup_visible = selected == "lite_setup"
+    daily_visible = selected == "lite_independent"
+    export_visible = selected == "export"
+    import_visible = selected == "import"
+    return (
+        gr.update(visible=setup_visible),
+        gr.update(visible=daily_visible),
+        gr.update(visible=export_visible),
+        gr.update(visible=import_visible),
+        gr.update(variant="primary" if lite_selected else "secondary"),
+        gr.update(variant="primary" if export_visible else "secondary"),
+        gr.update(variant="primary" if import_visible else "secondary"),
+    )
+
+
+def handle_outing_show_lite():
+    """Nexus Ark Liteのモード選択・接続設定を表示する。"""
+    return _build_outing_mode_updates("lite_setup")
+
+
+def handle_outing_show_lite_independent():
+    """Lite独立モードの準備・日常操作を表示する。"""
+    return _build_outing_mode_updates("lite_independent")
+
+
+def _lite_has_daily_setup(room_name=""):
+    settings = lite_travel.get_settings()
+    presence = lite_travel.presence_status(room_name) if room_name else None
+    return bool(
+        (presence or {}).get("status") in {"armed", "active", "returning"}
+        or all(settings.get(key) for key in ("worker_url", "owner_token", "bundle_signing_key"))
+    )
+
+
+def handle_outing_open_lite(room_name=""):
+    """設定済みなら日常画面へ直接入る。設定や外部操作は開始しない。"""
+    return _build_outing_mode_updates(
+        "lite_independent" if _lite_has_daily_setup(room_name) else "lite_setup"
+    )
+
+
+def handle_lite_entry_refresh(room_name):
+    if _lite_has_daily_setup(room_name):
+        yield from handle_lite_travel_overview_refresh(room_name)
+    else:
+        yield (
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(),
+        )
+
+
+def handle_lite_open_connection_management():
+    """日常画面から接続診断・更新・スマホ登録を直接開く。"""
+    return gr.update(open=False), gr.update(open=False), gr.update(open=True, visible=True)
+
+
+def build_lite_outing_preferences(room_name, room_choices):
+    """最後に確認して準備した選択を復元。削除済みルームは候補に戻さない。"""
+    raw = config_manager.CONFIG_GLOBAL.get("lite_outing_preferences", {}) or {}
+    raw = raw if isinstance(raw, dict) else {}
+    def bounded_integer(key, default, maximum):
+        try:
+            return max(0, min(maximum, int(raw.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+    valid = {item[1] if isinstance(item, (tuple, list)) else item for item in room_choices}
+    saved_rooms = raw.get("selected_rooms", [])
+    saved_parallel = raw.get("parallel_rooms", [])
+    rooms = list(dict.fromkeys(item for item in saved_rooms if isinstance(item, str) and item in valid))[:3] if isinstance(saved_rooms, list) else []
+    if not rooms and room_name in valid:
+        rooms = [room_name]
+    return {
+        "selected_rooms": rooms,
+        "parallel_rooms": [item for item in saved_parallel if item in rooms] if isinstance(saved_parallel, list) else [],
+        "include_core_memory": bool(raw.get("include_core_memory", True)),
+        "include_episodic_memory": bool(raw.get("include_episodic_memory", True)),
+        "episodic_memory_days": bounded_integer("episodic_memory_days", 2, 30),
+        "recent_message_limit": bounded_integer("recent_message_limit", 40, 40),
+        "restored": bool(raw),
+    }
+
+
+def build_lite_outing_focus(room_name, room_choices):
+    """本体のチャット選択と独立に、帰宅対象を明示して選べるようにする。"""
+    choices, active = [], []
+    for item in room_choices:
+        label, key = item if isinstance(item, (tuple, list)) else (item, item)
+        status = str((lite_travel.presence_status(key) or {}).get("status") or "")
+        if status in {"armed", "active", "returning"}:
+            active.append(key)
+        choices.append((label, key))
+    valid = [key for _, key in choices]
+    selected = room_name if room_name in active else (
+        active[0] if active else room_name if room_name in valid else valid[0] if valid else None
+    )
+    return choices, selected
+
+
+def handle_lite_start_choice(mode: str):
+    """Liteの入口で選んだ使い方だけを開き、もう一方を閉じる。"""
+    independent = str(mode or "") == "independent"
+    return (
+        gr.update(open=not independent),
+        gr.update(open=independent),
+        gr.update(open=independent, visible=independent),
+    )
+
+
+def handle_lite_start_connected():
+    return handle_lite_start_choice("connected")
+
+
+def handle_lite_start_independent():
+    return handle_lite_start_choice("independent")
+
+
+def handle_outing_show_export():
+    """外部AIへの持ち出し画面を表示する。"""
+    return _build_outing_mode_updates("export")
+
+
+def handle_outing_show_import():
+    """外部AIからの帰宅画面を表示する。"""
+    return _build_outing_mode_updates("import")
+
+
 def handle_outing_load_all_sections(
     room_name: str,
     episode_days: int,
@@ -13772,7 +14006,9 @@ def handle_outing_load_all_sections(
 
     try:
         # タプルで返される: (log_file, system_prompt_file, profile_image_path, memory_main_path, notepad_path)
-        log_path, system_prompt_path, _, _, _, _, _ = room_manager.get_room_files_paths(room_name)
+        log_path, system_prompt_path, _, memory_identity_path, memory_diary_path, _, _ = (
+            room_manager.get_room_files_paths(room_name)
+        )
 
         # システムプロンプト
         system_prompt = ""
@@ -13780,13 +14016,15 @@ def handle_outing_load_all_sections(
             with open(system_prompt_path, "r", encoding="utf-8") as f:
                 system_prompt = f.read().strip()
 
-        # コアメモリを読み込んで分割
-        core_memory_path = os.path.join(constants.ROOMS_DIR, room_name, "core_memory.txt")
-        core_memory_text = ""
-        if os.path.exists(core_memory_path):
-            with open(core_memory_path, "r", encoding="utf-8") as f:
-                core_memory_text = f.read()
-        permanent, diary = _split_core_memory(core_memory_text)
+        # 現行の分割済み記憶ファイルをそれぞれ読み込む。
+        permanent = ""
+        diary = ""
+        if memory_identity_path and os.path.exists(memory_identity_path):
+            with open(memory_identity_path, "r", encoding="utf-8") as f:
+                permanent = f.read()
+        if memory_diary_path and os.path.exists(memory_diary_path):
+            with open(memory_diary_path, "r", encoding="utf-8") as f:
+                diary = f.read()
 
         # エピソード記憶（この関数は直接文字列を返す）
         episodic = ""
@@ -13924,7 +14162,7 @@ def handle_outing_compress_section(text: str, section_name: str, room_name: str)
         gr.Warning("ルームが選択されていません。")
         return text, f"文字数: {len(text):,}"
 
-    if not config_manager.GEMINI_API_KEYS:
+    if not config_manager.GEMINI_API_KEYS and not __import__("gemini_connection").is_vertex():
         gr.Error("APIキーが設定されていません。")
         return text, f"文字数: {len(text):,}"
 
@@ -14145,13 +14383,15 @@ def handle_outing_reload_core_memory(room_name: str):
     if not room_name:
         return "", "文字数: 0", "", "文字数: 0"
 
-    core_memory_path = os.path.join(constants.ROOMS_DIR, room_name, "core_memory.txt")
-    core_memory_text = ""
-    if os.path.exists(core_memory_path):
-        with open(core_memory_path, "r", encoding="utf-8") as f:
-            core_memory_text = f.read()
-
-    permanent, diary = _split_core_memory(core_memory_text)
+    _, _, _, memory_identity_path, memory_diary_path, _, _ = room_manager.get_room_files_paths(room_name)
+    permanent = ""
+    diary = ""
+    if memory_identity_path and os.path.exists(memory_identity_path):
+        with open(memory_identity_path, "r", encoding="utf-8") as f:
+            permanent = f.read()
+    if memory_diary_path and os.path.exists(memory_diary_path):
+        with open(memory_diary_path, "r", encoding="utf-8") as f:
+            diary = f.read()
     perm_chars = len(permanent)
     diary_chars = len(diary)
 
@@ -14237,28 +14477,55 @@ def handle_outing_import_finalize(
 
     try:
         import re
-        final_text = preview_text.strip()
+        final_text = preview_text.replace("\r\n", "\n").replace("\r", "\n")
 
         # 正規表現で「## AGENT:外出先(...)」形式を現在のルーム名に一括置換
         # これにより、ユーザーがプレビュー上で編集した内容を尊重しつつ、
         # エージェント名だけを正しくマッピングする。
         final_text = re.sub(r'## AGENT:外出先\([^)]*\)', f"## AGENT:{room_name}", final_text)
+        final_text = "\n".join(line.rstrip() for line in final_text.split("\n")).strip()
 
         # ※ include_marker はプレビュー生成時に処理済みという方針のため、ここでは処理しない
         # (もしプレビュー時に追加していない場合は、ここで行う)
 
         log_path, _, _, _, _, _, _ = room_manager.get_room_files_paths(room_name)
-        room_manager.create_backup(room_name, 'log')
+        if not log_path:
+            raise RuntimeError("対象ルームの会話ログを取得できません。")
+        digest_source = json.dumps(
+            {
+                "room_name": room_name.strip(),
+                "source_name": str(source_name or "外出先").strip(),
+                "content": final_text,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        import_digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+        digest_marker = f"<!-- Return Home Import Digest: {import_digest} -->"
+        duplicate = False
+        with file_lock_utils.locked_file(log_path):
+            target = Path(log_path)
+            existing = target.read_text(encoding="utf-8") if target.exists() else ""
+            duplicate = digest_marker in existing
+            if not duplicate:
+                room_manager.create_backup(room_name, 'log')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                import_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                safe_source_name = html.escape(str(source_name or "外出先"), quote=True)
+                with target.open("a", encoding="utf-8") as f:
+                    if existing and not existing.endswith("\n\n"):
+                        f.write("\n\n")
+                    f.write(digest_marker + "\n")
+                    f.write(f"<!-- Return Home Import: {import_timestamp} from {safe_source_name} -->\n\n")
+                    f.write(final_text)
+                    f.write("\n\n")
 
-        with open(log_path, "a", encoding="utf-8") as f:
-            if os.path.exists(log_path) and os.path.getsize(log_path) > 0:
-                f.write("\n\n")
-            import_timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"<!-- Return Home Import: {import_timestamp} from {source_name} -->\n\n")
-            f.write(final_text)
-            f.write("\n\n")
-
-        gr.Info(f"ログをインポートしました。おかえりなさい！")
+        utils.invalidate_chat_log_cache(log_path)
+        if duplicate:
+            gr.Info("この会話ログは既に取り込み済みです。重複追加は行いませんでした。")
+        else:
+            gr.Info("ログをインポートしました。おかえりなさい！")
 
         chatbot_display, current_log_map_state = reload_chat_log(
             room_name, api_history_limit_state, add_timestamp,
@@ -14267,7 +14534,10 @@ def handle_outing_import_finalize(
 
         return (
             chatbot_display, current_log_map_state,
-            "ステータス: ✅ インポート完了", None,
+            (
+                "ステータス: ℹ️ 既に取り込み済み（重複追加なし）"
+                if duplicate else "ステータス: ✅ インポート完了"
+            ), None,
             gr.update(visible=False), gr.update(visible=False)
         )
 
@@ -14329,6 +14599,3755 @@ def handle_gemini_import_preview(url: str, room_name: str, include_marker: bool)
         print(f"Gemini Preview Error: {e}")
         traceback.print_exc()
         return gr.update(), gr.update(visible=False), f"ステータス: ❌ エラー: {e}"
+
+
+_LITE_CLOUD_SETUP_OUTPUT_COUNT = 21
+_LITE_CLOUD_STAGE2_CANARY_VERSION = version_manager.LITE_CLOUD_STAGE2_CANARY_VERSION
+
+
+def _load_lite_cloud_new_setup_release_channel(
+    version_path: Optional[Path] = None,
+) -> str:
+    """署名対象metadataの配布区分を読み、不正・欠落時は無効化する。"""
+
+    path = version_path or Path(_UI_HANDLERS_PROJECT_ROOT) / "version.json"
+    try:
+        version_data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError):
+        return version_manager.LITE_CLOUD_RELEASE_CHANNEL_DISABLED
+    return version_manager.resolve_lite_cloud_new_setup_release_channel(version_data)
+
+
+def _load_lite_cloud_new_setup_release_gate(version_path: Optional[Path] = None) -> bool:
+    """Stage 2 canaryまたは限定ベータの明示markerだけgateを開く。"""
+
+    return _load_lite_cloud_new_setup_release_channel(version_path) in (
+        version_manager.LITE_CLOUD_RELEASE_CHANNEL_STAGE2_CANARY,
+        version_manager.LITE_CLOUD_RELEASE_CHANNEL_LIMITED_BETA,
+    )
+
+
+# 署名対象metadataの明示区分だけを開き、欠落・競合・不正JSONはfail-closedにする。
+LITE_CLOUD_NEW_SETUP_RELEASE_CHANNEL = _load_lite_cloud_new_setup_release_channel()
+LITE_CLOUD_NEW_SETUP_RELEASE_ENABLED = LITE_CLOUD_NEW_SETUP_RELEASE_CHANNEL in (
+    version_manager.LITE_CLOUD_RELEASE_CHANNEL_STAGE2_CANARY,
+    version_manager.LITE_CLOUD_RELEASE_CHANNEL_LIMITED_BETA,
+)
+
+
+def build_lite_cloud_setup_release_gate_notice() -> str:
+    """新規作成gateの状態と外部変更境界を一般向けに表示する。"""
+
+    if not LITE_CLOUD_NEW_SETUP_RELEASE_ENABLED:
+        return (
+            "⚠️ **最終安全確認前**：作成計画と公開URLは確認できますが、"
+            "実CloudflareでのE2E確認と開放承認が完了するまで実行ボタンは無効です。"
+        )
+    if (
+        LITE_CLOUD_NEW_SETUP_RELEASE_CHANNEL
+        == version_manager.LITE_CLOUD_RELEASE_CHANNEL_LIMITED_BETA
+    ):
+        return (
+            "🧪 **Lite用クラウド限定ベータ**  \n"
+            "Windows版で先行提供中です。CloudflareとAIサービスはご自身のアカウントを使います。"
+            "契約や利用量によって料金が発生する場合があります。"
+            "作成したLite用クラウドと保存データは、ほかの利用者とは共有されません。"
+        )
+    return (
+        "⚠️ **Stage 2外部変更検証版です**：表示された資源・料金・保持を確認した後だけ非公開の準備を行い、"
+        "公開は別の最終確認後に実行します。チェック前はCloudflareを変更しません。"
+    )
+
+
+def build_lite_cloud_setup_prepare_consent_label() -> str:
+    """配布区分に対応する第1確認の同意文を返す。"""
+
+    if (
+        LITE_CLOUD_NEW_SETUP_RELEASE_CHANNEL
+        == version_manager.LITE_CLOUD_RELEASE_CHANNEL_LIMITED_BETA
+    ):
+        return (
+            "限定ベータの利用条件と、表示された資源・料金の可能性・中断時の保持を確認し、"
+            "自分のCloudflareアカウントで非公開の準備を行うことに同意します"
+        )
+    return (
+        "表示された資源・料金の可能性・中断時の保持を確認し、"
+        "非公開の準備を行うことに同意します"
+    )
+
+
+def _lite_cloud_setup_updates(
+    state,
+    summary,
+    details,
+    *,
+    check=False,
+    check_label="Cloudflareの接続・アカウントを確認",
+    accounts=None,
+    confirm=False,
+    new=False,
+    import_existing=False,
+    plan=False,
+    plan_summary="",
+    worker_url="",
+    prepare_confirm=False,
+    prepare=False,
+    prepare_label="確認した計画で準備を開始",
+    publish=False,
+    publish_summary="",
+    publish_confirm=False,
+    publish_action=False,
+    publish_label="Lite用クラウドを公開して接続を確認",
+    manual_account=False,
+):
+    choices = []
+    for item in accounts or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        account_id = str(item.get("id") or "")
+        choices.append(
+            (
+                f"{item.get('name') or '名称なし'}（…{account_id[-4:]}）",
+                account_id,
+            )
+        )
+    value = choices[0][1] if len(choices) == 1 else None
+    result = (
+        state,
+        summary,
+        details,
+        gr.update(
+            value=check_label,
+            visible=True,
+            interactive=check,
+            variant="primary" if check else "secondary",
+        ),
+        # DropdownとButton自体は親Group内で常に描画可能にする。Gradio 6実機で
+        # hidden子部品のvisible更新だけが反映されない場合があるため、表示境界は
+        # 末尾のaccount Group一つへ集約する。
+        gr.update(choices=choices, value=value, visible=True, interactive=bool(choices)),
+        gr.update(visible=True, interactive=confirm, variant="primary" if confirm else "secondary"),
+        gr.update(visible=True, interactive=new, variant="primary" if new else "secondary"),
+        gr.update(
+            visible=True,
+            interactive=import_existing,
+            variant="primary" if import_existing else "secondary",
+        ),
+        gr.update(visible=plan),
+        gr.update(value=plan_summary),
+        gr.update(value=worker_url, visible=True, interactive=plan),
+        gr.update(value=False, visible=True, interactive=prepare_confirm),
+        gr.update(
+            value=prepare_label,
+            visible=True,
+            interactive=False,
+            variant="secondary",
+        ),
+        gr.update(visible=publish),
+        gr.update(value=publish_summary),
+        gr.update(value=False, visible=True, interactive=publish_confirm),
+        gr.update(
+            value=publish_label,
+            visible=True,
+            interactive=False,
+            variant="secondary",
+        ),
+        gr.update(visible=manual_account),
+        gr.update(visible=bool(choices) and confirm),
+        gr.update(visible=new or import_existing),
+        gr.update(visible=check),
+    )
+    assert len(result) == _LITE_CLOUD_SETUP_OUTPUT_COUNT
+    return result
+
+
+def _lite_cloud_setup_worker_url_recovery_state(state):
+    return str((state or {}).get("state") or "") == "worker_url_recovery_required"
+
+
+def _lite_cloud_setup_worker_url_recovery_updates(state):
+    """公開済みURLの不一致を保持し、自動の再準備・再公開を止める。"""
+    preserved = dict(state or {})
+    return _lite_cloud_setup_updates(
+        preserved,
+        "公開されたWorker URLを確認できない操作があります。",
+        "Cloudflare Dashboardで公開先を確認してください。確認が終わるまで、同じ操作IDで準備や再公開を自動で繰り返しません。",
+        check=False,
+        plan=False,
+        worker_url=str(preserved.get("worker_url") or ""),
+        publish=False,
+    )
+
+
+def build_lite_cloud_setup_initial_view(settings=None):
+    """外部照会なしで初回セットアップの初期表示を作る。"""
+
+    local = settings if isinstance(settings, dict) else lite_travel.get_settings()
+    resumed_raw = lite_cloud_setup.resume_latest_setup_operation()
+    resumed = (
+        lite_cloud_setup.sanitize_setup_operation(resumed_raw)
+        if isinstance(resumed_raw, dict) and resumed_raw.get("operation_id")
+        else resumed_raw
+    )
+    incomplete_operation = resumed and resumed.get("state") not in {
+        "verified",
+        "connected",
+        "provider_ready",
+        "paired",
+        "standby_ready",
+    }
+    connected = all(
+        str(local.get(key) or "").strip()
+        for key in ("worker_url", "owner_token", "bundle_signing_key")
+    )
+    if connected and not incomplete_operation:
+        return _lite_cloud_setup_updates(
+            {"state": "connected", "external_changes_enabled": False},
+            "✅ Lite用クラウドは本体へ接続済みです。初回準備をやり直す必要はありません。",
+            "接続情報の変更や4状態の診断は、この下の既存メニューを使ってください。",
+        )
+    state = resumed or {"state": "not_started", "external_changes_enabled": False}
+    if resumed:
+        resumed_state = str(resumed.get("state") or "")
+        if resumed_state == "mode_selected":
+            account = resumed.get("account") or {}
+            account_id = str(account.get("id") or "")
+            account_name = html.escape(str(account.get("name") or "名称なし"))
+            diagnostic = {
+                "state": "mode_selected",
+                "classification": "unset",
+                "failure_code": None,
+                "account": account,
+                "resource_name": lite_cloud_setup.DEFAULT_RESOURCE_NAME,
+                "resources": {"d1": None, "kv": None, "worker": None},
+                "external_changes_enabled": False,
+            }
+            state = {
+                **resumed,
+                "diagnostic": diagnostic,
+                "external_changes_enabled": False,
+            }
+            return _lite_cloud_setup_updates(
+                state,
+                f"アカウント {account_name}（`…{html.escape(account_id[-4:])}`）には、"
+                "まだLite用クラウドがありません。",
+                "前回確認した空の資源状態から、作成計画の確認を再開できます。"
+                "確認するだけではCloudflareを変更しません。",
+                new=True,
+            )
+        if resumed_state == "worker_url_recovery_required":
+            return _lite_cloud_setup_worker_url_recovery_updates(resumed)
+        prepare_states = {
+            "resource_plan_ready",
+            "resources_creating",
+            "partial_resources",
+            "resources_ready",
+            "local_config_ready",
+            "bootstrap_secrets_ready",
+            "migrated",
+            "version_ready",
+        }
+        if resumed_state in prepare_states:
+            try:
+                resumed = lite_cloud_setup.restore_uncreated_worker_plan_name(resumed)
+                state = resumed
+            except lite_cloud_setup.LiteCloudSetupError as exc:
+                return _lite_cloud_setup_updates(
+                    resumed,
+                    "保存済みのWorker計画名を確認できないため、安全のため停止しました。",
+                    f"failure code: `{html.escape(exc.failure_code)}`。Cloudflareは変更しません。",
+                    plan=True,
+                    plan_summary="前回の計画と現在の操作記録が一致するか確認してください。",
+                    worker_url=str(resumed.get("worker_url") or ""),
+                    prepare_confirm=True,
+                    prepare=True,
+                )
+            worker = resumed.get("worker") or {}
+            plan_summary = (
+                "**前回の準備を再開します**  \n"
+                f"- Lite用クラウド: `{html.escape(str(worker.get('name') or ''))}`  \n"
+                f"- 公開URL: `{html.escape(str(resumed.get('worker_url') or ''))}`  \n"
+                "同じ操作IDと確認済み計画を使い、完了済みの工程を照合して続けます。"
+            )
+            return _lite_cloud_setup_updates(
+                state,
+                "前回の初回セットアップ記録があります。準備の続きから再開できます。",
+                "内容を確認し、準備の確認欄へチェックしてください。外部操作は自動で始まりません。",
+                plan=True,
+                plan_summary=plan_summary,
+                worker_url=str(resumed.get("worker_url") or ""),
+                prepare_confirm=True,
+                prepare=True,
+            )
+        if resumed_state == "version_reconciliation_required":
+            return _lite_cloud_setup_updates(
+                state,
+                "未公開versionの作成結果を確認できない操作があります。",
+                "同じversionを再送せず、Cloudflare上の結果だけを照合します。明示確認後に進んでください。",
+                plan=True,
+                plan_summary="**version照合待ち**：再uploadやキー再生成は行いません。",
+                worker_url=str(resumed.get("worker_url") or ""),
+                prepare_confirm=True,
+                prepare=True,
+                prepare_label="未公開versionの結果だけを照合",
+            )
+        if resumed_state == "publish_confirmation_required":
+            try:
+                confirmation = lite_cloud_setup.build_initial_publish_confirmation(resumed)
+                version_id = str(confirmation.get("version_id") or resumed.get("version_id") or "")
+            except lite_cloud_setup.LiteCloudSetupError:
+                version_id = str(resumed.get("version_id") or "")
+            publish_summary = (
+                "**公開前の最終確認を再開します**  \n"
+                f"- 公開URL: `{html.escape(str(resumed.get('worker_url') or ''))}`  \n"
+                f"- 公開する版: `{html.escape(version_id)}`  \n"
+                "まだ公開操作は始まりません。"
+            )
+            return _lite_cloud_setup_updates(
+                state,
+                "未公開の準備済みversionがあります。公開前の最終確認から再開できます。",
+                "公開URLと版を確認し、公開してよい場合だけ最終確認へチェックしてください。",
+                publish=True,
+                publish_summary=publish_summary,
+                publish_confirm=True,
+                publish_action=True,
+            )
+        if resumed_state in {"deployed", "publish_reconciliation_required", "postflight_failed"}:
+            return _lite_cloud_setup_updates(
+                state,
+                "公開後の完了状態を照合し、続きから再開できます。",
+                "deploymentを再送せず、公開状態と接続状態だけを照合します。明示確認後に進んでください。",
+                publish=True,
+                publish_summary="**公開結果の照合待ち**：再公開や自動rollbackは行いません。",
+                publish_confirm=True,
+                publish_action=True,
+                publish_label="公開済みの結果だけを照合",
+            )
+        summary = "前回の操作は追加確認が必要な状態です。自動で再実行せず、確認して続きから再開します。"
+        return _lite_cloud_setup_updates(
+            state,
+            summary,
+            "「前回の続きから確認」を押してください。残った資源を自動削除したり、公開を繰り返したりしません。",
+            check=True,
+            check_label="前回の続きから確認",
+        )
+    else:
+        summary = (
+            "ここからLite用クラウドを新しく準備するか、すでにあるものをこのPCへ接続できます。"
+            "画面の案内に沿って、一つずつ確認してください。"
+        )
+    return _lite_cloud_setup_updates(
+        state,
+        summary,
+        "初期表示ではCloudflareへ接続しません。ログイン後、または「Cloudflareの接続・アカウントを確認」を押した時に状態を読み取ります。",
+        check=True,
+    )
+
+
+def _lite_cloud_setup_diagnostic_failure_state(previous_state, exc):
+    state = dict(previous_state or {})
+    if not state.get("state"):
+        state["state"] = "cancelled"
+    state["failure_code"] = str(getattr(exc, "failure_code", "setup_failed") or "setup_failed")
+    state["external_changes_enabled"] = False
+    return state
+
+
+def _persist_lite_cloud_setup_diagnostic(diagnostic, previous_state=None):
+    """診断のallowlist項目だけを保存し、保存失敗でも操作IDを保持する。"""
+
+    previous = dict(previous_state or {})
+    operation_id = str(previous.get("operation_id") or "")
+    operation = {}
+    try:
+        operation = (
+            lite_cloud_setup.load_setup_operation(operation_id)
+            if operation_id
+            else lite_cloud_setup.create_setup_operation()
+        )
+        if not _lite_cloud_setup_worker_url_recovery_state(operation):
+            operation["state"] = str(diagnostic.get("state") or "not_started")
+            operation["failure_code"] = diagnostic.get("failure_code")
+            operation["account"] = diagnostic.get("account") or {}
+            resources = diagnostic.get("resources") or {}
+            operation["d1"] = resources.get("d1")
+            operation["kv"] = resources.get("kv")
+            operation["worker"] = resources.get("worker")
+        operation["last_remote_check_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        saved = lite_cloud_setup.save_setup_operation(operation)
+        return {**diagnostic, **saved, "diagnostic": diagnostic, "external_changes_enabled": False}
+    except Exception:
+        fallback = dict(previous)
+        operation_id = operation_id or str(operation.get("operation_id") or "")
+        if operation_id:
+            fallback["operation_id"] = operation_id
+        if not fallback.get("state"):
+            fallback["state"] = str(diagnostic.get("state") or "cancelled")
+        fallback["diagnostic"] = diagnostic
+        fallback["diagnostic_save_failed"] = True
+        fallback["external_changes_enabled"] = False
+        return fallback
+
+
+def handle_lite_cloud_setup_check(previous_state):
+    """ローカル前提とwhoamiだけを確認し、account確定前に資源を読まない。"""
+
+    previous = dict(previous_state or {})
+    resume_state = str(previous.get("state") or "")
+    operation_id = str(previous.get("operation_id") or "")
+    if operation_id and resume_state == "worker_url_recovery_required":
+        try:
+            operation = lite_cloud_setup.load_setup_operation(operation_id)
+        except Exception:
+            operation = previous
+        if not _lite_cloud_setup_worker_url_recovery_state(operation):
+            operation = previous
+        return _lite_cloud_setup_worker_url_recovery_updates(operation)
+
+    if operation_id and resume_state in {
+        "resources_creating",
+        "partial_resources",
+        "version_reconciliation_required",
+        "deployed",
+        "publish_reconciliation_required",
+        "postflight_failed",
+    }:
+        operation = lite_cloud_setup.load_setup_operation(operation_id)
+        if resume_state in {"resources_creating", "partial_resources"}:
+            return _lite_cloud_setup_updates(
+                operation,
+                "前回と同じ操作の資源状態を確認して続けます。",
+                "新しい操作を作らず、同じaccount・資源IDを照合します。完了不明の作成を無条件で再送しません。",
+                plan=True,
+                plan_summary="**資源準備の続き**：前回のoperationを保持しています。",
+                worker_url=str(operation.get("worker_url") or ""),
+                prepare_confirm=True,
+                prepare=True,
+            )
+        if resume_state == "version_reconciliation_required":
+            return _lite_cloud_setup_updates(
+                operation,
+                "未公開versionの結果照合を再開できます。",
+                "再uploadせず、Cloudflare上のversionだけを確認します。",
+                plan=True,
+                plan_summary="**version照合待ち**：再送は行いません。",
+                worker_url=str(operation.get("worker_url") or ""),
+                prepare_confirm=True,
+                prepare=True,
+                prepare_label="未公開versionの結果だけを照合",
+            )
+        return _lite_cloud_setup_updates(
+            operation,
+            "公開済みの結果照合を再開できます。",
+            "deploymentを再送せず、公開状態と接続状態だけを確認します。",
+            publish=True,
+            publish_summary="**公開結果の照合待ち**：再公開は行いません。",
+            publish_confirm=True,
+            publish_action=True,
+            publish_label="公開済みの結果だけを照合",
+        )
+
+    try:
+        preflight = lite_cloud_setup.bundled_runtime_status()
+    except Exception as exc:
+        logger.error("Lite bundled runtime preflight failed: %s", type(exc).__name__)
+        return _lite_cloud_setup_updates(
+            {"state": "runtime_unknown", "external_changes_enabled": False},
+            "Lite独立モードの準備状態を確認できません。",
+            "Nexus Arkを再起動してから、上の「Liteの準備ツール」で状態を確認してください。"
+            "確認が完了するまでCloudflareは変更しません。",
+            check=True,
+        )
+    if preflight.get("state") != "ready":
+        preflight_state = str(preflight.get("state") or "prerequisite_missing")
+        state = {
+            "state": preflight_state,
+            "failure_codes": preflight.get("failure_codes", []),
+            "external_changes_enabled": False,
+        }
+        if preflight.get("runtime_source") == "development":
+            summary = "Lite独立モードの開発用実行環境を確認できません。"
+            details = (
+                "開発用Nodeの指定、Nodeの版、Lite用Wranglerとlockの一致を確認してください。"
+                "開発環境の準備手順はユーザーガイドの「WSL・ソース版の開発用実行環境」にあります。"
+                "確認が完了するまでCloudflareは変更しません。"
+            )
+        elif preflight_state == "unsupported_platform":
+            summary = "この環境はLite同梱準備ツールの対象外です。"
+            details = (
+                "Windows x64配布版は同梱準備ツールを使います。WSL・ソース版は、"
+                "ユーザーガイドの「WSL・ソース版の開発用実行環境」に従って開発用Nodeを明示してください。"
+                "Cloudflareは変更しません。"
+            )
+        elif preflight_state == "legacy_update_host_migration_required":
+            summary = "このNexus Arkは、先に新しい更新方式への移行が必要です。"
+            details = (
+                "「Liteの準備ツール」の「状態を確認」を押してください。"
+                "結果が表示されたら「次の手順を確認」を押し、"
+                "その下に表示されるボタンから移行できます。"
+            )
+        elif preflight_state == "runtime_bootstrap_required":
+            summary = "Liteの準備ツールを初回導入してください。"
+            details = (
+                "「Liteの準備ツール」で状態を確認し、署名済み準備ツールの導入へ進んでください。"
+                "CloudflareやAIへの接続はまだ開始しません。"
+            )
+        else:
+            summary = "Lite独立モードの準備ツールを確認できません。"
+            details = (
+                "上の「Liteの準備ツール」で状態を確認し、修復が必要と表示された場合は、"
+                "署名済みのNexus Ark更新を確認してください。個別のツールを導入する必要はありません。"
+            )
+        return _lite_cloud_setup_updates(
+            state,
+            summary,
+            details,
+            check=True,
+        )
+    try:
+        diagnostic = lite_cloud_setup.read_only_cloudflare_diagnostics()
+    except lite_cloud_setup.LiteCloudSetupError as exc:
+        state = _lite_cloud_setup_diagnostic_failure_state(previous, exc)
+        return _lite_cloud_setup_updates(
+            state, str(exc), f"failure code: `{html.escape(exc.failure_code)}`", check=True
+        )
+    state = _persist_lite_cloud_setup_diagnostic(diagnostic, previous_state)
+    if _lite_cloud_setup_worker_url_recovery_state(state):
+        return _lite_cloud_setup_worker_url_recovery_updates(state)
+    if diagnostic.get("state") == "authentication_required":
+        return _lite_cloud_setup_updates(
+            state,
+            "Cloudflareへの接続が必要です。この欄の直前にある確認欄にチェックし、「別の／新しいアカウントで接続」を押してください。",
+            "公式のブラウザ認証を使います。CloudflareのパスワードやTokenをNexus Arkへ保存しません。",
+            check=True,
+        )
+    accounts = diagnostic.get("accounts") or []
+    if not accounts:
+        return _lite_cloud_setup_updates(
+            state,
+            "Cloudflareへ接続済みですが、利用可能なアカウント候補を取得できませんでした。",
+            "再確認や再認証を繰り返しません。公式Dashboardで対象を照合した場合だけ、下の復旧欄を使えます。",
+            manual_account=True,
+        )
+    return _lite_cloud_setup_updates(
+        state,
+        "Cloudflareの接続先を確認しました。利用するアカウントを選んで確定してください。",
+        "account IDは同名資源の誤採用を防ぐために照合します。",
+        accounts=accounts,
+        confirm=True,
+    )
+
+
+def _render_lite_cloud_account_diagnostic(state, diagnostic, *, mask_account_id=False):
+    if _lite_cloud_setup_worker_url_recovery_state(state):
+        return _lite_cloud_setup_worker_url_recovery_updates(state)
+    account = diagnostic.get("account") or {}
+    account_id = str(account.get("id") or "")
+    shown_id = f"…{account_id[-4:]}" if mask_account_id and account_id else account_id
+    account_text = (
+        f"{html.escape(str(account.get('name') or '名称なし'))}"
+        f"（`{html.escape(shown_id)}`）"
+    )
+    classification = diagnostic.get("classification")
+    if classification == "unset":
+        return _lite_cloud_setup_updates(
+            state,
+            f"選んだアカウント {account_text} には、まだLite用クラウドがありません。"
+            "下の「新しいLite用クラウドの作成内容を確認」を押してください。",
+            "次の画面で作成する名前と内容を確認できます。"
+            "このボタンだけではCloudflareを変更しません。",
+            new=True,
+        )
+    if classification == "existing":
+        return _lite_cloud_setup_updates(
+            state,
+            f"アカウント {account_text} に既存のLite用クラウド候補が揃っています。",
+            "準備済みの内容がこのPC用として一致するか、安全に照合してから接続します。",
+            import_existing=True,
+        )
+    if classification == "partial_resources":
+        return _lite_cloud_setup_updates(
+            state,
+            "Lite用クラウドの資源が一部だけ見つかりました。新しく重複作成せず、復旧計画が必要です。",
+            "failure code: `partial_resources_detected`",
+            check=True,
+        )
+    return _lite_cloud_setup_updates(
+        state,
+        "同名、ID不一致、または空アカウント条件に反する資源を検出しました。自動採用も新規作成も行いません。",
+        "failure code: `resource_collision_detected`",
+        check=True,
+    )
+
+
+def handle_lite_cloud_setup_confirm_account(previous_state, account_id):
+    """明示されたaccount IDだけを対象に、D1／KV／Worker候補を読み取る。"""
+
+    try:
+        diagnostic = lite_cloud_setup.read_only_cloudflare_diagnostics(
+            selected_account_id=str(account_id or "")
+        )
+    except lite_cloud_setup.LiteCloudSetupError as exc:
+        state = _lite_cloud_setup_diagnostic_failure_state(previous_state, exc)
+        return _lite_cloud_setup_updates(
+            state, str(exc), f"failure code: `{html.escape(exc.failure_code)}`", check=True
+        )
+    state = _persist_lite_cloud_setup_diagnostic(diagnostic, previous_state)
+    return _render_lite_cloud_account_diagnostic(state, diagnostic, mask_account_id=True)
+
+
+def handle_lite_cloud_setup_confirm_manual_account(
+    previous_state,
+    account_name,
+    account_id,
+    dashboard_confirmed,
+):
+    """候補0件時だけ、公式Dashboardで照合済みのaccountを読み取り診断する。"""
+
+    if not dashboard_confirmed:
+        return _lite_cloud_setup_updates(
+            previous_state or {"state": "account_confirmation_required", "external_changes_enabled": False},
+            "公式Dashboardでの照合確認が必要です。Cloudflareの読み取りは開始していません。",
+            "表示名・account ID、D1／KV／Worker全0件、workers.dev未登録を確認してください。",
+            manual_account=True,
+        )
+    manual_account = {
+        "id": str(account_id or "").strip(),
+        "name": str(account_name or "").strip(),
+    }
+    try:
+        diagnostic = lite_cloud_setup.read_only_cloudflare_diagnostics(
+            selected_account_id=manual_account["id"],
+            manually_confirmed_account=manual_account,
+            require_empty_storage=True,
+        )
+    except lite_cloud_setup.LiteCloudSetupError as exc:
+        state = _lite_cloud_setup_diagnostic_failure_state(previous_state, exc)
+        return _lite_cloud_setup_updates(
+            state,
+            str(exc),
+            f"failure code: `{html.escape(exc.failure_code)}`",
+            manual_account=True,
+        )
+    if not diagnostic.get("manual_account_confirmation_used"):
+        state = {**(previous_state or {}), "state": "cancelled", "failure_code": "account_changed"}
+        return _lite_cloud_setup_updates(
+            state,
+            "公式Dashboardで照合したアカウントを安全に採用できませんでした。",
+            "候補一覧が変化したか、表示名またはaccount IDが不正です。再送せず停止します。",
+            manual_account=True,
+        )
+    diagnostic["dashboard_empty_account_confirmed"] = True
+    diagnostic["workers_dev_unregistered_confirmed"] = True
+    state = _persist_lite_cloud_setup_diagnostic(diagnostic, previous_state)
+    return _render_lite_cloud_account_diagnostic(state, diagnostic, mask_account_id=True)
+
+
+def handle_lite_cloud_setup_select_mode(previous_state, mode):
+    diagnostic = (previous_state or {}).get("diagnostic") or previous_state or {}
+    try:
+        plan = lite_cloud_setup.build_resource_plan(mode=str(mode or ""), diagnostic=diagnostic)
+    except lite_cloud_setup.LiteCloudSetupError as exc:
+        state = {**(previous_state or {}), "state": "cancelled", "failure_code": exc.failure_code}
+        return _lite_cloud_setup_updates(
+            state, str(exc), f"failure code: `{html.escape(exc.failure_code)}`", check=True
+        )
+    mode_label = "新しく用意する場合" if mode == "new" else "準備済みのLite用クラウドを接続する"
+    state = {
+        "state": "resource_plan_review",
+        "mode": mode,
+        "plan": plan,
+        "external_changes_enabled": False,
+    }
+    if mode == "import":
+        return _lite_cloud_setup_updates(
+            state,
+            "準備済みのLite用クラウド候補を確認しました。",
+            "既存環境は新規作成処理へ流しません。この欄より下の「詳しい設定」で、準備済みのURLと本体確認キー、帰宅データ確認キーを入力してください。",
+        )
+    worker = plan.get("worker") or {}
+    d1 = plan.get("d1") or {}
+    kv = plan.get("kv") or {}
+    resource_names = {
+        "worker": str(worker.get("name") or "").strip(),
+        "d1": str(d1.get("name") or "").strip(),
+        "kv": str(kv.get("name") or "").strip(),
+    }
+    if not all(resource_names.values()):
+        state = {
+            **state,
+            "state": "cancelled",
+            "failure_code": "resource_plan_confirmation_mismatch",
+            "external_changes_enabled": False,
+        }
+        return _lite_cloud_setup_updates(
+            state,
+            "作成する資源名をすべて確認できないため、準備計画を開きません。",
+            "Lite用クラウド、会話の保存領域、一時データの保存領域の3名称を再確認してください。"
+            "Cloudflareは変更していません。failure code: `resource_plan_confirmation_mismatch`",
+            check=True,
+            check_label="接続準備を読み取り直す",
+        )
+    plan_summary = (
+        f"**これから準備するもの**  \n"
+        f"- Lite用クラウド: `{html.escape(resource_names['worker'])}`  \n"
+        f"- 会話の保存領域: `{html.escape(resource_names['d1'])}`  \n"
+        f"- 一時データの保存領域: `{html.escape(resource_names['kv'])}`  \n"
+        "次のボタンを押すと、選んだCloudflareアカウントにこの3つを作成します。  \n"
+        "Cloudflareの契約や利用量によって料金が発生する場合があります。  \n"
+        "**この画面を確認しただけでは、まだ何も作成されません。**"
+    )
+    summary = f"「{mode_label}」の作成内容を確認してください。"
+    details = (
+        "Cloudflare Dashboardの左側メニューから Build → Compute → Workers & Pagesを開き、"
+        "画面右側のSubdomainを確認してください。"
+    )
+    return _lite_cloud_setup_updates(
+        state,
+        summary,
+        details,
+        plan=True,
+        plan_summary=plan_summary,
+        worker_url=str(plan.get("worker_url") or ""),
+        prepare_confirm=True,
+        prepare=True,
+    )
+
+
+def handle_lite_cloud_setup_select_new(previous_state):
+    return handle_lite_cloud_setup_select_mode(previous_state, "new")
+
+
+def handle_lite_cloud_setup_select_import(previous_state):
+    return handle_lite_cloud_setup_select_mode(previous_state, "import")
+
+
+def handle_lite_cloud_setup_confirmation_toggle(confirmed):
+    """確認チェックに応じて、破壊的な次ボタンだけを有効化する。"""
+
+    enabled = bool(confirmed) and LITE_CLOUD_NEW_SETUP_RELEASE_ENABLED
+    return gr.update(interactive=enabled, variant="primary" if enabled else "secondary")
+
+
+def _lite_cloud_setup_confirmation_fields(operation):
+    return {
+        "confirmed_operation_id": str(operation.get("operation_id") or ""),
+        "confirmed_resource_plan_digest": str(operation.get("resource_plan_digest") or ""),
+        "confirmed_account_id": str((operation.get("account") or {}).get("id") or ""),
+    }
+
+
+def _lite_cloud_setup_normalize_public_url(value, worker_name):
+    """Cloudflareの公開名、または完全URLを確認済みWorker URLへ正規化する。"""
+
+    entered = str(value or "").strip()
+    if not entered:
+        raise lite_cloud_setup.LiteCloudSetupError(
+            "Cloudflareで登録した公開名を入力してください。",
+            failure_code="workers_dev_subdomain_required",
+        )
+    if "://" in entered:
+        return entered.rstrip("/")
+    public_name = entered.lower()
+    if public_name.endswith(".workers.dev"):
+        public_name = public_name.removesuffix(".workers.dev")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", public_name):
+        raise lite_cloud_setup.LiteCloudSetupError(
+            "CloudflareのSubdomain（例: my-subdomain.workers.dev）を入力してください。",
+            failure_code="workers_dev_subdomain_invalid",
+        )
+    worker = str(worker_name or "").strip()
+    if not worker:
+        raise lite_cloud_setup.LiteCloudSetupError(
+            "Lite用クラウドの名前を確認できません。計画を作り直してください。",
+            failure_code="worker_url_confirmation_mismatch",
+        )
+    return f"https://{worker}.{public_name}.workers.dev"
+
+
+def _lite_cloud_setup_persist_connection(wrangler_config_path=""):
+    """未公開中はURLを有効化せず、接続キーと生成済み設定パスだけを差分保存する。"""
+
+    def persist(values):
+        updates = {
+            "owner_token": str(values.get("OWNER_AUTH_TOKEN") or ""),
+            "bundle_signing_key": str(values.get("BUNDLE_SIGNING_KEY") or ""),
+            "wrangler_config_path": str(wrangler_config_path or "").strip(),
+        }
+        return bool(
+            config_manager.update_nested_config_keys(
+                "lite_travel_settings",
+                updates,
+            )
+        )
+
+    return persist
+
+
+_LITE_CLOUD_SETUP_DEFAULT_WRANGLER_CONFIG_PATH = "cloud/lite-relay/wrangler.phase2.jsonc"
+
+
+def _lite_cloud_setup_normalize_connection_url(value):
+    """接続先比較用に、秘密値を含まないWorker URLだけを正規化する。"""
+
+    candidate = str(value or "").strip()
+    parsed = urlsplit(candidate)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return ""
+    return candidate.rstrip("/")
+
+
+def _lite_cloud_setup_normalize_config_path(value):
+    """初回準備の実運用設定パスを比較用に正規化する。"""
+
+    candidate = str(value or "").strip().replace("\\", "/")
+    relative = Path(candidate)
+    if (
+        not candidate.startswith("cloud/lite-relay/")
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or relative.suffix not in {".json", ".jsonc"}
+        or ".example." in relative.name
+    ):
+        return ""
+    return candidate
+
+
+def _lite_cloud_setup_connection_conflicts_with_operation(settings, operation):
+    """既存の別接続や手動設定を、古いoperationで上書きしないためのguard。"""
+
+    current = settings if isinstance(settings, dict) else {}
+    current_url_raw = str(current.get("worker_url") or "").strip()
+    current_path_raw = str(current.get("wrangler_config_path") or "").strip()
+    operation_url = _lite_cloud_setup_normalize_connection_url(operation.get("worker_url"))
+    operation_path = _lite_cloud_setup_normalize_config_path(operation.get("config_path"))
+    current_url = _lite_cloud_setup_normalize_connection_url(current_url_raw)
+    current_path = _lite_cloud_setup_normalize_config_path(current_path_raw)
+
+    if current_url_raw and current_url != operation_url:
+        return True
+    if current_path_raw and current_path != _LITE_CLOUD_SETUP_DEFAULT_WRANGLER_CONFIG_PATH:
+        if current_path != operation_path:
+            return True
+    return False
+
+
+def _lite_cloud_setup_ui_connection_conflicts(current_values, saved_values):
+    """未保存の手動入力を、成功した初回準備のUI同期で巻き戻さない。"""
+
+    current_url, current_owner, current_signing, current_path = current_values
+    saved_url, saved_owner, saved_signing, saved_path = saved_values
+    current_url_raw = str(current_url or "").strip()
+    current_path_raw = str(current_path or "").strip().replace("\\", "/")
+    normalized_current_url = _lite_cloud_setup_normalize_connection_url(current_url_raw)
+    normalized_current_path = _lite_cloud_setup_normalize_config_path(current_path_raw)
+    if current_url_raw and normalized_current_url != saved_url:
+        return True
+    if str(current_owner or "").strip() and str(current_owner).strip() != saved_owner:
+        return True
+    if str(current_signing or "").strip() and str(current_signing).strip() != saved_signing:
+        return True
+    if current_path_raw and normalized_current_path != _LITE_CLOUD_SETUP_DEFAULT_WRANGLER_CONFIG_PATH:
+        if normalized_current_path != saved_path:
+            return True
+    return False
+
+
+def _lite_cloud_setup_preserve_connection_fields():
+    return (gr.update(), gr.update(), gr.update(), gr.update())
+
+
+def _lite_cloud_setup_bootstrap_secrets(operation):
+    """再開時は保存済み接続キーを再利用し、公開照合不能な再生成を防ぐ。"""
+
+    current = lite_travel.get_settings() or {}
+    owner = str(current.get("owner_token") or "").strip()
+    signing = str(current.get("bundle_signing_key") or "").strip()
+    if operation.get("state") == "version_reconciliation_required":
+        raise lite_cloud_setup.LiteCloudSetupError(
+            "未公開versionの完了状態を確認する必要があります。自動で再送やキー再生成は行いません。",
+            failure_code="version_reconciliation_required",
+        )
+    keys_were_saved = (
+        "local_connection_keys_saved" in (operation.get("completed_steps") or [])
+        or bool(operation.get("local_connection_secrets_saved"))
+    )
+    if keys_were_saved and (not owner or not signing):
+        raise lite_cloud_setup.LiteCloudSetupError(
+            "このPCへ保存した接続キーを確認できません。自動で別のキーへ置き換えません。",
+            failure_code="local_secret_recovery_required",
+        )
+    generated = lite_cloud_setup.generate_bootstrap_secrets()
+    if owner and signing:
+        generated["OWNER_AUTH_TOKEN"] = owner
+        generated["BUNDLE_SIGNING_KEY"] = signing
+    return generated
+
+
+def _lite_cloud_setup_failure_updates(exc, previous_state):
+    resumed = {}
+    operation_id = str((previous_state or {}).get("operation_id") or "").strip()
+    if operation_id:
+        try:
+            resumed = lite_cloud_setup.load_setup_operation(operation_id)
+        except lite_cloud_setup.LiteCloudSetupError:
+            resumed = {}
+    if not resumed:
+        resumed = lite_cloud_setup.resume_latest_setup_operation() or dict(previous_state or {})
+    failure_code = str(getattr(exc, "failure_code", "setup_failed") or "setup_failed")
+    resumed["failure_code"] = failure_code
+    worker_url = str(resumed.get("worker_url") or "")
+    if _lite_cloud_setup_worker_url_recovery_state(resumed):
+        return _lite_cloud_setup_worker_url_recovery_updates(resumed)
+    if resumed.get("state") in {"deployed", "publish_reconciliation_required", "postflight_failed"}:
+        return _lite_cloud_setup_updates(
+            resumed,
+            f"公開結果を確認できませんでした。記録を保持し、再公開せずに照合を再開できます。 {html.escape(str(exc))}",
+            f"failure code: `{html.escape(failure_code)}`。deploymentは自動で繰り返しません。",
+            check=True,
+            check_label="前回の続きから確認",
+            publish=True,
+            publish_summary="公開済みの結果だけを再照合してください。",
+            publish_confirm=True,
+            publish_action=True,
+            publish_label="公開済みの結果だけを照合",
+        )
+    return _lite_cloud_setup_updates(
+        resumed,
+        f"準備を完了できませんでした。記録は残っているため、同じ操作から再開できます。 {html.escape(str(exc))}",
+        f"failure code: `{html.escape(failure_code)}`。外部操作は自動で繰り返しません。",
+        check=True,
+        check_label="前回の続きから確認",
+        plan=True,
+        plan_summary="前回の操作記録を確認し、原因を解消してから続けてください。",
+        worker_url=worker_url,
+        prepare_confirm=True,
+        prepare=True,
+    )
+
+
+def handle_lite_cloud_setup_prepare(
+    previous_state,
+    worker_url,
+    confirmed,
+    progress=None,
+):
+    """資源準備と未公開version作成までを実行し、公開前で必ず停止する。"""
+    progress = progress or (lambda *_args, **_kwargs: None)
+
+    if _lite_cloud_setup_worker_url_recovery_state(previous_state):
+        return _lite_cloud_setup_worker_url_recovery_updates(previous_state)
+
+    if not LITE_CLOUD_NEW_SETUP_RELEASE_ENABLED:
+        return _lite_cloud_setup_updates(
+            previous_state or {},
+            "最終安全確認前のため、作成計画の実行はまだ開放していません。",
+            "計画と公開URLは確認できます。実CloudflareでのE2E確認と開放承認が完了するまで外部変更は行いません。",
+            plan=True,
+            plan_summary="作成予定の内容です。現在は確認のみで、Cloudflareを変更しません。",
+            worker_url=str(worker_url or ""),
+            prepare_confirm=True,
+            prepare=True,
+        )
+    if not confirmed:
+        return _lite_cloud_setup_updates(
+            previous_state or {},
+            "確認欄にチェックしてから準備を始めてください。",
+            "確認だけではCloudflareを変更しません。",
+            plan=True,
+            plan_summary="作成する名前と公開URLを確認してください。",
+            worker_url=str(worker_url or ""),
+            prepare_confirm=True,
+            prepare=True,
+        )
+    try:
+        progress(0, desc="作成計画を確認しています")
+        state = dict(previous_state or {})
+        plan = state.get("plan")
+        if isinstance(plan, dict):
+            normalized_worker_url = _lite_cloud_setup_normalize_public_url(
+                worker_url,
+                (plan.get("worker") or {}).get("name"),
+            )
+            operation = lite_cloud_setup.confirm_resource_plan_for_execution(
+                plan,
+                worker_url=normalized_worker_url,
+            )
+        else:
+            operation_id = str(state.get("operation_id") or "")
+            operation = lite_cloud_setup.load_setup_operation(operation_id)
+            if _lite_cloud_setup_worker_url_recovery_state(operation):
+                return _lite_cloud_setup_worker_url_recovery_updates(operation)
+            operation = lite_cloud_setup.restore_uncreated_worker_plan_name(operation)
+            entered_url = _lite_cloud_setup_normalize_public_url(
+                worker_url,
+                (operation.get("worker") or {}).get("name"),
+            )
+            if entered_url and entered_url != str(operation.get("worker_url") or "").rstrip("/"):
+                raise lite_cloud_setup.LiteCloudSetupError(
+                    "再開中の公開URLと入力内容が異なります。前回のURLを確認してください。",
+                    failure_code="worker_url_confirmation_mismatch",
+                )
+        fields = _lite_cloud_setup_confirmation_fields(operation)
+        if operation.get("state") == "version_reconciliation_required":
+            progress(0.2, desc="未公開版の状態を照合しています")
+            operation = lite_cloud_setup.reconcile_initial_version(
+                operation,
+                **fields,
+                allow_external_changes=True,
+            )
+            fields = _lite_cloud_setup_confirmation_fields(operation)
+        if operation.get("state") not in {
+            "resources_ready",
+            "local_config_ready",
+            "bootstrap_secrets_ready",
+            "migrated",
+            "version_ready",
+            "publish_confirmation_required",
+        }:
+            progress(0.2, desc="Cloudflareの保存先を準備しています")
+            operation = lite_cloud_setup.provision_resources(
+                operation,
+                **fields,
+                allow_external_changes=True,
+            )
+            fields = _lite_cloud_setup_confirmation_fields(operation)
+        if operation.get("state") == "resources_ready":
+            progress(0.5, desc="安全な実行設定を準備しています")
+            operation_id = str(operation.get("operation_id") or "")
+            destination = f"wrangler.setup.{operation_id}.jsonc"
+            lite_cloud_setup.ensure_operation_assets_directory(operation_id)
+            generation = lite_cloud_setup.generate_runtime_wrangler_config(
+                operation,
+                allowed_origin=str(operation.get("worker_url") or ""),
+                build_id=f"lite-setup-{operation_id[:12]}",
+                assets_directory=lite_cloud_setup._operation_assets_directory(operation_id),
+                destination=destination,
+                dry_run=False,
+                overwrite=False,
+                reuse_if_identical=True,
+                migrate_legacy_assets_directory=True,
+            )
+            relative_config_path = str(generation.get("config_path") or "")
+            relay_prefix = "cloud/lite-relay/"
+            if not relative_config_path.startswith(relay_prefix):
+                raise lite_cloud_setup.LiteCloudSetupError(
+                    "実運用設定の場所を確認できません。",
+                    failure_code="runtime_config_outside_relay",
+                )
+            dry_run = lite_cloud_setup.validate_runtime_config_dry_run(
+                relative_config_path[len(relay_prefix) :],
+                runner=subprocess.run,
+            )
+            operation = lite_cloud_setup.record_runtime_config_ready(
+                operation,
+                generation,
+                dry_run,
+            )
+            fields = _lite_cloud_setup_confirmation_fields(operation)
+        if operation.get("state") != "publish_confirmation_required":
+            progress(0.7, desc="接続キーと未公開版を準備しています")
+            bootstrap_secrets = _lite_cloud_setup_bootstrap_secrets(operation)
+            operation = lite_cloud_setup.prepare_initial_version(
+                operation,
+                **fields,
+                allow_external_changes=True,
+                bootstrap_secrets=bootstrap_secrets,
+                persist_connection_secrets=_lite_cloud_setup_persist_connection(
+                    operation.get("config_path")
+                ),
+            )
+        confirmation = lite_cloud_setup.build_initial_publish_confirmation(operation)
+        progress(1, desc="公開前の準備が完了しました")
+    except lite_cloud_setup.LiteCloudSetupError as exc:
+        return _lite_cloud_setup_failure_updates(exc, previous_state)
+    publish_summary = (
+        f"**公開前の最終確認**  \n"
+        f"- Lite用クラウド: `{html.escape(str((operation.get('worker') or {}).get('name') or ''))}`  \n"
+        f"- 公開URL: `{html.escape(str(operation.get('worker_url') or ''))}`  \n"
+        f"- 公開する版: `{html.escape(str(confirmation.get('version_id') or operation.get('version_id') or ''))}`  \n"
+        "公開すると、このURLでLite用クラウドが外部から利用できるようになります。  \n"
+        "期限切れ送信の回収（5分ごと）とデータの保持期限確認（毎日）の定期処理も登録します。  \n"
+        "AI接続、スマホの登録、お出かけ前データの送信、会話は自動で始まりません。"
+        "Cloudflare資源は公開後も残り、契約・使用量により料金が発生する場合があります。"
+    )
+    gr.Info("Lite用クラウドの準備が完了しました。公開前の確認へ進めます。")
+    return _lite_cloud_setup_updates(
+        operation,
+        "Cloudflare内の準備と、このPCへの接続キー保存が完了しました。まだ公開はしていません。",
+        "内容をもう一度確認し、公開してよい場合だけ最終確認にチェックしてください。",
+        publish=True,
+        publish_summary=publish_summary,
+        publish_confirm=True,
+        publish_action=True,
+    )
+
+
+def _lite_cloud_setup_needs_initial_schedule_resume(operation) -> bool:
+    """公開済みversionに初回Cron登録の完了記録がないか判定する。
+
+    ``completed_steps`` がない旧記録は従来の照合経路へ渡し、記録を推測して
+    Cron登録を始めない。初回versionの公開完了まで確認できる記録だけを対象に、
+    UIで明示的な登録再開確認を要求する。
+    """
+    if not isinstance(operation, dict):
+        return False
+    steps = operation.get("completed_steps")
+    if not isinstance(steps, list):
+        return False
+    return (
+        "initial_version_deployed" in steps
+        and "initial_schedules_deployed" not in steps
+    )
+
+
+def _lite_cloud_setup_initial_schedule_resume_updates(operation):
+    """定期処理の登録再開前に、読み取り照合と外部変更の境界を表示する。"""
+    prompted = dict(operation or {})
+    prompted["initial_schedules_resume_confirmation_required"] = True
+    prompted["external_changes_enabled"] = False
+    worker_name = str((prompted.get("worker") or {}).get("name") or "")
+    version_id = str(prompted.get("version_id") or "")
+    return _lite_cloud_setup_updates(
+        prompted,
+        "Lite用クラウドは公開済みです。送信の期限切れ回収などに必要な定期処理の登録が未確認です。",
+        "読み取り確認だけでは定期処理を登録しません。登録を再開すると、公開済みのLite用クラウドへ"
+        "不足している定期処理だけを追加する可能性があります。内容を確認し、"
+        "登録を再開してよい場合だけ、確認欄にもう一度チェックを入れて同じボタンを押してください。",
+        publish=True,
+        publish_summary=(
+            "**定期処理の登録再開待ち**  \n"
+            f"- 確認対象Worker: `{html.escape(worker_name)}`  \n"
+            f"- 公開済みの版: `{html.escape(version_id)}`  \n"
+            "- 登録する定期処理: 期限切れ送信の回収（5分ごと）・保持期限の確認（毎日）  \n"
+            "新しい版の公開は行いません。読み取り確認で定期処理を勝手に登録しません。"
+        ),
+        publish_confirm=True,
+        publish_action=True,
+        publish_label="定期処理の登録を再開",
+    )
+
+
+def handle_lite_cloud_setup_publish(previous_state, confirmed, progress=None):
+    """専用確認後だけ未公開versionを公開し、このPCから疎通確認する。"""
+    progress = progress or (lambda *_args, **_kwargs: None)
+
+    if _lite_cloud_setup_worker_url_recovery_state(previous_state):
+        return _lite_cloud_setup_worker_url_recovery_updates(previous_state)
+
+    if not LITE_CLOUD_NEW_SETUP_RELEASE_ENABLED:
+        return _lite_cloud_setup_updates(
+            previous_state or {},
+            "最終安全確認前のため、公開操作はまだ開放していません。",
+            "実CloudflareでのE2E確認と開放承認が完了するまで公開しません。",
+            publish=True,
+            publish_summary="公開予定の内容です。現在は確認のみです。",
+            publish_confirm=True,
+            publish_action=True,
+        )
+    if not confirmed:
+        return _lite_cloud_setup_updates(
+            previous_state or {},
+            "最終確認にチェックしてから公開してください。",
+            "チェックを入れるまでは公開しません。",
+            publish=True,
+            publish_summary="公開URLと公開する版を確認してください。",
+            publish_confirm=True,
+            publish_action=True,
+        )
+    try:
+        progress(0, desc="公開対象を確認しています")
+        operation = lite_cloud_setup.load_setup_operation(
+            str((previous_state or {}).get("operation_id") or "")
+        )
+        if _lite_cloud_setup_worker_url_recovery_state(operation):
+            return _lite_cloud_setup_worker_url_recovery_updates(operation)
+
+        def postflight():
+            operation_url_raw = str(operation.get("worker_url") or "").strip()
+            operation_url = _lite_cloud_setup_normalize_connection_url(operation_url_raw)
+            operation_path_raw = str(operation.get("config_path") or "").strip()
+            if operation_url_raw and not operation_url:
+                return {"state": "connection_save_failed", "public_ready": False, "owner_ready": False}
+            operation_for_guard = {
+                "worker_url": operation_url,
+                "config_path": operation_path_raw,
+            }
+            current_settings = lite_travel.get_settings() or {}
+            if _lite_cloud_setup_connection_conflicts_with_operation(
+                current_settings,
+                operation_for_guard,
+            ):
+                return {"state": "connection_mismatch", "public_ready": False, "owner_ready": False}
+            updates = {
+                "worker_url": operation_url,
+                "wrangler_config_path": operation_path_raw,
+            }
+            if not config_manager.update_nested_config_keys(
+                "lite_travel_settings",
+                updates,
+            ):
+                return {"state": "connection_save_failed", "public_ready": False, "owner_ready": False}
+            diagnostic = lite_travel.diagnose_worker()
+            ready = diagnostic.get("state") in {"ready", "maintenance_overdue"}
+            return {
+                "state": "ready" if ready else diagnostic.get("state"),
+                "observed_state": diagnostic.get("state"),
+                "public_ready": ready,
+                "owner_ready": ready,
+            }
+
+        fields = _lite_cloud_setup_confirmation_fields(operation)
+        resume_requested = bool(
+            (previous_state or {}).get("initial_schedules_resume_confirmation_required")
+        )
+        if (
+            operation.get("state") in {"deployed", "publish_reconciliation_required", "postflight_failed"}
+            and _lite_cloud_setup_needs_initial_schedule_resume(operation)
+            and not resume_requested
+        ):
+            # 公開結果の読み取り照合でCronのPUTを暗黙実行しない。利用者が
+            # 確認文を読んで同じ操作を明示再開した時だけ下のresume経路へ進む。
+            return _lite_cloud_setup_initial_schedule_resume_updates(operation)
+        if operation.get("state") in {"deployed", "publish_reconciliation_required", "postflight_failed"}:
+            progress(0.4, desc="公開済みの結果を照合しています")
+            if _lite_cloud_setup_needs_initial_schedule_resume(operation) and resume_requested:
+                progress(0.4, desc="定期処理の登録を明示的に再開しています")
+                operation = lite_cloud_setup.resume_initial_schedules(
+                    operation,
+                    **fields,
+                    allow_external_changes=True,
+                )
+            operation = lite_cloud_setup.reconcile_initial_publish_or_postflight(
+                operation,
+                **fields,
+                allow_external_changes=True,
+                postflight=postflight,
+            )
+        else:
+            progress(0.4, desc="Lite用クラウドを公開しています")
+            operation = lite_cloud_setup.publish_initial_version(
+                operation,
+                **fields,
+                allow_external_changes=True,
+                allow_publish=True,
+                postflight=postflight,
+            )
+        progress(1, desc="接続確認が完了しました")
+    except lite_cloud_setup.LiteCloudSetupError as exc:
+        return _lite_cloud_setup_failure_updates(exc, previous_state)
+    gr.Info("Lite用クラウドの公開と接続確認が完了しました。")
+    return _lite_cloud_setup_updates(
+        operation,
+        "✅ Lite用クラウドを公開し、このPCとの接続を確認しました。  \n"
+        "次は下の「2. AIサービスとモデルを選ぶ」へ進み、保存後に「接続確認とスマホ登録」を開いてください。",
+        "公開とこのPCとの接続確認が完了しました。",
+    )
+
+
+def handle_lite_cloud_setup_sync_saved_connection_fields(
+    previous_state,
+    current_worker_url,
+    current_owner_token,
+    current_signing_key,
+    current_wrangler_config_path,
+):
+    """公開成功後だけ、保存済みの接続4項目を同じUIセッションへ反映する。"""
+
+    state = previous_state if isinstance(previous_state, dict) else {}
+    if str(state.get("state") or "") != "verified":
+        return _lite_cloud_setup_preserve_connection_fields()
+
+    operation_url = _lite_cloud_setup_normalize_connection_url(state.get("worker_url"))
+    operation_path = _lite_cloud_setup_normalize_config_path(state.get("config_path"))
+    if not operation_url or not operation_path:
+        return _lite_cloud_setup_preserve_connection_fields()
+
+    try:
+        saved = lite_travel.get_settings() or {}
+    except Exception:
+        return _lite_cloud_setup_preserve_connection_fields()
+    if not isinstance(saved, dict):
+        return _lite_cloud_setup_preserve_connection_fields()
+
+    saved_url = _lite_cloud_setup_normalize_connection_url(saved.get("worker_url"))
+    saved_owner = str(saved.get("owner_token") or "").strip()
+    saved_signing = str(saved.get("bundle_signing_key") or "").strip()
+    saved_path = _lite_cloud_setup_normalize_config_path(saved.get("wrangler_config_path"))
+    if (
+        not saved_url
+        or not saved_owner
+        or not saved_signing
+        or len(saved_owner) < 16
+        or len(saved_signing) < 16
+        or saved_owner == saved_signing
+        or not saved_path
+        or saved_url != operation_url
+        or saved_path != operation_path
+    ):
+        return _lite_cloud_setup_preserve_connection_fields()
+
+    saved_values = (saved_url, saved_owner, saved_signing, saved_path)
+    current_values = (
+        current_worker_url,
+        current_owner_token,
+        current_signing_key,
+        current_wrangler_config_path,
+    )
+    if _lite_cloud_setup_ui_connection_conflicts(current_values, saved_values):
+        return _lite_cloud_setup_preserve_connection_fields()
+
+    return (
+        gr.update(value=saved_url),
+        gr.update(value=saved_owner),
+        gr.update(value=saved_signing),
+        gr.update(value=saved_path),
+    )
+
+
+def handle_lite_runtime_status_check():
+    """同梱runtimeを変更せず、非秘密の状態表示だけを返す。"""
+
+    try:
+        result = lite_cloud_setup.bundled_runtime_status()
+    except Exception as exc:
+        logger.error("Lite runtime status check failed: %s", type(exc).__name__)
+        return (
+            "### ⚠️ Liteの準備ツール: 確認できません\n\n"
+            "Nexus Arkを再起動して、もう一度お試しください。",
+            "診断処理を完了できませんでした。秘密値やファイル内容は表示していません。",
+            gr.update(visible=False),
+        )
+    if result.get("runtime_source") == "development":
+        ready = (
+            result.get("state") == "ready"
+            and result.get("development_runtime_ready") is True
+        )
+        return (
+            (
+                "### ✅ Liteの準備ツール: 開発用環境は準備済み\n\n"
+                "明示した開発用NodeとLite用Wranglerを確認しました。"
+                if ready
+                else "### ⚠️ Liteの準備ツール: 開発用環境の確認が必要\n\n"
+                "この状態ではLite独立モードの外部操作を開始しません。"
+            ),
+            (
+                "ソースcheckout、Nodeの版、Lite用Wranglerとlockの一致をローカルで確認しました。"
+                "状態確認だけではCloudflareや設定、記憶を変更しません。"
+                if ready
+                else "開発用Nodeの指定、Nodeの版、Lite用Wranglerとlockの一致を確認してください。"
+                "ユーザーガイドの「WSL・ソース版の開発用実行環境」に準備手順があります。"
+            ),
+            gr.update(visible=False),
+        )
+    if result.get("state") == "ready" and result.get("bundled_runtime_ready") is True:
+        return (
+            "### ✅ Liteの準備ツール: 準備済み\n\n"
+            "Lite独立モードを始めるための実行環境を安全に確認しました。",
+            "署名済みの同梱runtimeについて、全ファイル、互換性、Node／Wranglerの実versionを確認しました。"
+            "Node.jsやnpmを別途導入する必要はありません。状態確認だけではCloudflareや設定、記憶を変更しません。",
+            gr.update(visible=False),
+        )
+    if result.get("state") == "unsupported_platform":
+        return (
+            "### ℹ️ Liteの準備ツール: この環境は対象外です\n\n"
+            "同梱runtimeの自動診断・修復はWindows x64版で利用できます。",
+            "WSL・ソース版では、ユーザーガイドの「WSL・ソース版の開発用実行環境」に従って"
+            "開発用Nodeを明示してください。この環境では修復用更新を開始しません。",
+            gr.update(visible=False),
+        )
+    failure_codes = set(result.get("failure_codes") or [])
+    if "legacy_update_host_migration_required" in failure_codes:
+        return (
+            "### ⚠️ Liteの準備ツール: 新しい更新方式への移行が必要\n\n"
+            "古い版から本体だけが更新されています。自動更新を繰り返しても準備は完了しません。",
+            "次に、下の「次の手順を確認」を押してください。"
+            "続けて押す「新しい更新方式へ移行」ボタンが、そのすぐ下に表示されます。"
+            "完全パッケージのダウンロードやruntimeの手動コピーは不要です。",
+            gr.update(visible=True),
+        )
+    if "bundled_runtime_missing" in failure_codes:
+        return (
+            "### ℹ️ Liteの準備ツール: 初回導入が必要\n\n"
+            "Nexus Ark本体は正常です。Lite用の署名済み準備ツールだけを、次の操作で安全に追加できます。",
+            "「次の手順を確認」を押してください。現在版と組み合わせが確認された準備ツールだけを取得します。"
+            "Cloudflare、AI、設定、記憶は変更しません。",
+            gr.update(visible=True),
+        )
+    if "relay_resources_missing" in failure_codes:
+        detail = "Lite用クラウドの配布ファイルが不足しています。署名済みのNexus Ark更新で一括修復します。"
+    else:
+        detail = "同梱runtimeの署名済み内容、互換性、または実versionを確認できませんでした。runtimeだけを直接置き換えず、Nexus Ark更新で一括修復します。"
+    return (
+        "### ⚠️ Liteの準備ツール: 修復が必要\n\n"
+        "この状態ではLite独立モードの外部操作を開始しません。",
+        detail,
+        gr.update(visible=True),
+    )
+
+
+def handle_lite_runtime_repair_check(*, manager_factory=None):
+    """runtimeを直接置換せず、署名済みapp更新の有無だけを確認する。"""
+
+    try:
+        if lite_cloud_setup.bundled_runtime_status().get("runtime_source") == "development":
+            return (
+                "### ℹ️ 開発用環境はソース版の手順で確認してください\n\n"
+                "署名済み配布版の修復は開始しません。開発用Nodeの指定とLite用Wranglerを確認してください。",
+                gr.update(visible=False, interactive=False),
+            )
+        manager = (
+            manager_factory()
+            if manager_factory is not None
+            else UpdateManager(cleanup_old_archives=False)
+        )
+        repair_mode = (
+            manager.runtime_repair_mode()
+            if hasattr(manager, "runtime_repair_mode")
+            else "signed_update_required"
+        )
+        if repair_mode == "legacy_update_host_migration_required":
+            return (
+                "### 画面から新しい更新方式へ移行できます\n\n"
+                "「新しい更新方式へ移行」を押したあと、Nexus Arkを通常どおり終了してください。"
+                "終了後にランチャーが切り替わります。別の移行状況ウィンドウで完了を確認してから、同じStart.batで起動し、"
+                "もう一度「状態を確認」を押します。完全パッケージのダウンロードは不要です。",
+                gr.update(
+                    value="新しい更新方式へ移行",
+                    visible=True,
+                    interactive=True,
+                ),
+            )
+        if repair_mode == "runtime_bootstrap_required":
+            return (
+                "### 署名済みのLite準備ツールを導入できます\n\n"
+                "現在のNexus Arkと組み合わせが確認されたNode／Wranglerだけを取得します。"
+                "Cloudflare、AI、設定、記憶は変更しません。",
+                gr.update(
+                    value="署名済み準備ツールを導入",
+                    visible=True,
+                    interactive=True,
+                ),
+            )
+        if repair_mode == "ready":
+            return (
+                "### ✅ Liteの準備ツールは導入済みです\n\n"
+                "「状態を確認」を押して表示を更新してください。",
+                gr.update(visible=False, interactive=False),
+            )
+        if not manager.is_configured():
+            return (
+                "### ⚠️ 修復用の更新情報を確認できません\n\n"
+                "最新版の完全パッケージを別フォルダへ展開し、画面の移行案内を確認してください。",
+                gr.update(visible=False, interactive=False),
+            )
+        if hasattr(manager, "check_for_updates_result"):
+            result = manager.check_for_updates_result()
+            state = str(result.get("state") or "check_failed")
+            new_version = result.get("version")
+            message = "最新バージョンを使用中です。"
+        else:
+            new_version, message = manager.check_for_updates()
+            state = "available" if new_version else "no_update"
+        if state in {"check_failed", "not_configured"}:
+            return (
+                "### ❌ 修復用の更新確認を完了できませんでした\n\n"
+                "通信状態を確認して再試行してください。runtimeや設定は変更していません。",
+                gr.update(visible=False, interactive=False),
+            )
+        if state == "no_update" or not new_version:
+            return (
+                "### ℹ️ 適用できる新しい署名済み更新はありません\n\n"
+                f"{html.escape(str(message))}\n\n"
+                "修復が必要なままの場合は、公式配布パッケージを同じ場所へ入れ直してください。"
+                "同一versionの配布物は差し替えません。",
+                gr.update(visible=False, interactive=False),
+            )
+        return (
+            f"### ✨ 署名済み更新候補 v{html.escape(str(new_version))} があります\n\n"
+            "適用時にruntime付き更新であることを再検証します。合格した場合だけ、"
+            "app・Python環境・Liteの準備ツールを一括更新し、失敗時は旧世代へ戻ります。"
+            "更新データの通信以外にCloudflare資源や会話APIを使わず、設定と記憶を引き継ぎます。",
+            gr.update(visible=True, interactive=True),
+        )
+    except Exception as exc:
+        logger.error("Lite runtime repair check failed: %s", type(exc).__name__)
+        return (
+            "### ❌ 修復用の更新確認に失敗しました\n\n"
+            "通信状態を確認して、もう一度お試しください。runtimeや設定は変更していません。",
+            gr.update(visible=False, interactive=False),
+        )
+
+
+def handle_lite_runtime_repair_apply(*, manager_factory=None):
+    """runtime付き署名bundleだけを通常の原子更新hostへ渡す。"""
+
+    try:
+        if lite_cloud_setup.bundled_runtime_status().get("runtime_source") == "development":
+            return (
+                "### ℹ️ 開発用環境はソース版の手順で確認してください\n\n"
+                "署名済み配布版の修復は開始しません。開発用Nodeの指定とLite用Wranglerを確認してください。"
+            )
+        manager = (
+            manager_factory()
+            if manager_factory is not None
+            else UpdateManager(cleanup_old_archives=False)
+        )
+        repair_mode = (
+            manager.runtime_repair_mode()
+            if hasattr(manager, "runtime_repair_mode")
+            else "signed_update_required"
+        )
+        if repair_mode == "legacy_update_host_migration_required":
+            success, _message = manager.prepare_legacy_update_host_migration()
+            if success:
+                return (
+                    "### ✅ 新しい更新方式への移行を準備しました\n\n"
+                    "Nexus Arkを通常どおり終了してください。終了後に自動で切り替わります。"
+                    "別の移行状況ウィンドウで完了を確認してから、同じStart.batで起動し、もう一度「状態を確認」を押してください。"
+                )
+            return (
+                "### ❌ 移行の準備中にエラーが発生しました\n\n"
+                "移行はまだ始まっていないため、Nexus Arkを終了する必要はありません。"
+                "「状態を確認」からもう一度進めても同じ表示になる場合は、"
+                "次のNexus Ark更新を確認してください。"
+            )
+        if repair_mode == "runtime_bootstrap_required":
+            success, _message = manager.bootstrap_bound_runtime()
+            if success:
+                return (
+                    "### ✅ 署名済みのLite準備ツールを導入しました\n\n"
+                    "続けて「状態を確認」を押し、「準備済み」になったことを確認してください。"
+                    "Cloudflare、AI、設定、記憶は変更していません。"
+                )
+            return (
+                "### ❌ Lite準備ツールを安全に導入できませんでした\n\n"
+                "現在の環境は変更していません。Nexus Arkを再起動してから、"
+                "もう一度状態を確認してください。"
+            )
+        success, _message = manager.download_and_apply(require_runtime=True)
+        if success:
+            import platform as _platform
+
+            if _platform.system() != "Windows":
+                manager.trigger_restart()
+            return (
+                "### 🔁 署名済み修復データを準備しました\n\n"
+                "app・Python環境・Liteの準備ツールを一括確認して再起動します。"
+                "このタブは復帰後に自動で再読み込みされます。"
+            )
+        return (
+            "### ❌ 修復を開始できませんでした\n\n"
+            "runtime付きの署名済み更新を完全に準備できなかったため、現在の環境は変更していません。"
+        )
+    except Exception as exc:
+        logger.error("Lite runtime repair apply failed: %s", type(exc).__name__)
+        return (
+            "### ❌ 修復を安全に完了できませんでした\n\n"
+            "現在の環境を使い続け、Nexus Arkを再起動してから状態を確認してください。"
+        )
+
+
+def handle_lite_cloud_setup_login_consent_change(confirmed):
+    """接続許可の選択を、別／新規アカウント接続ボタンへ即時反映する。"""
+    allowed = bool(confirmed)
+    return (
+        gr.update(interactive=allowed, variant="primary" if allowed else "secondary"),
+        gr.update(
+            value=(
+                'ボタンを押すとCloudflare公式画面が別タブで開きます。\n\n- 初めて作る場合: **Sign up（新規登録）** を選び'
+                '、登録とメール確認を済ませます。\n- すでに持っている場合: **Sign in（ログイン）** を選びます。\n\n登録・ログイン後'
+                '、接続許可画面が表示されたら、内容を確認して **Authorize（接続を許可）** を押してください。登録画面にはまだ表示され'
+                'ません。認証完了画面へ移ったら、その画面を閉じてNexus Arkへ戻れます。\n\n登録後にダッシュボードへ移って接続許可画面が出な'
+                'い場合や、Nexus Arkで接続待ちが終了した場合は、登録・ログインを済ませた状態で、Nexus Arkの接続処理が終わってから'
+                '「別の／新しいアカウントで接続」をもう一度押してください。'
+                if allowed
+                else "先に上の接続許可をチェックしてください。"
+            )
+        ),
+    )
+
+
+def handle_lite_cloud_setup_login(confirmed, previous_state):
+    """公式OAuth後に読み取り確認を続け、同じ場所で次の操作へ案内する。"""
+
+    previous = dict(previous_state or {})
+    diagnostic = previous.get("diagnostic") or {}
+    replace_existing = bool(previous.get("accounts") or diagnostic.get("accounts"))
+    try:
+        lite_cloud_setup.start_cloudflare_login(
+            confirmed=bool(confirmed),
+            replace_existing_connection=replace_existing,
+        )
+        state = {**previous, "external_changes_enabled": False}
+        try:
+            # OAuth成功後は従来の読み取り確認を同じ操作内で行う。
+            # 再開中のoperationに対する保護と、作成・公開の明示確認は維持する。
+            setup_updates = handle_lite_cloud_setup_check(state)
+        except Exception as exc:
+            logger.error("Lite account check after login failed: %s", type(exc).__name__)
+            setup_updates = _lite_cloud_setup_updates(
+                state,
+                "接続後のアカウント確認を完了できませんでした。"
+                "すぐ下の「Cloudflareの接続・アカウントを確認」から再確認できます。",
+                "クラウドの作成・公開は開始していません。",
+                check=True,
+            )
+        return (
+            "✅ Cloudflareへ接続しました。確認結果と次の操作をすぐ下に表示します。",
+            *setup_updates,
+        )
+    except lite_cloud_setup.LiteCloudSetupError as exc:
+        return (
+            f"❌ {html.escape(str(exc))}",
+            *(gr.update() for _ in range(_LITE_CLOUD_SETUP_OUTPUT_COUNT)),
+        )
+
+
+def build_lite_travel_status(room_name: str) -> str:
+    """独立お出かけモードのローカル存在状態を秘密値なしで表示する。"""
+    if not room_name:
+        return "状態: ルーム未選択"
+    state = lite_travel.presence_status(room_name)
+    if not state:
+        return "状態: 本体にいます（独立お出かけなし）"
+    labels = {
+        "armed": "出発結果の確認待ち（本体停止）",
+        "active": "独立お出かけ中（本体停止）",
+        "returning": "帰宅統合中（本体停止）",
+        "closed": "帰宅済み",
+        "emergency_reclaimed": "緊急帰還済み（分岐可能性あり）",
+    }
+    session_id = str(state.get("travel_session_id") or "")
+    return f"状態: **{labels.get(state.get('status'), state.get('status'))}**  \nセッション: `{html.escape(session_id)}`"
+
+
+_LITE_PROVIDER_LABELS = {
+    "gemini": "Gemini",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "xai": "xAI",
+    "openrouter": "OpenRouter",
+}
+
+_LITE_SNAPSHOT_PRESETS = {
+    "recommended": {
+        "include_core_memory": True,
+        "include_episodic_memory": True,
+        "episodic_memory_days": 2,
+        "recent_message_limit": 40,
+        "summary": "おすすめ: コアメモリ、エピソード記憶、直近の会話をバランスよく持ち出します。",
+    },
+    "minimal": {
+        "include_core_memory": False,
+        "include_episodic_memory": False,
+        "episodic_memory_days": 0,
+        "recent_message_limit": 0,
+        "summary": "最小限: 会話に必須のシステムプロンプトだけを持ち出します。",
+    },
+}
+
+
+def handle_lite_snapshot_preset_change(
+    preset, include_core_memory, include_episodic_memory, episodic_memory_days, recent_message_limit,
+):
+    """持ち出しデータの選び方を、簡単なプリセットと詳細調整へ分ける。"""
+    selected = str(preset or "recommended")
+    if selected == "custom":
+        episodic_enabled = bool(include_episodic_memory)
+        return (
+            gr.update(value=bool(include_core_memory), interactive=True),
+            gr.update(value=episodic_enabled, interactive=True),
+            gr.update(value=int(episodic_memory_days or 0), interactive=episodic_enabled),
+            gr.update(value=int(recent_message_limit or 0), interactive=True),
+            "自分で選ぶ: コアメモリ、エピソード記憶、直近の会話を個別に調整できます。",
+        )
+    values = _LITE_SNAPSHOT_PRESETS.get(selected, _LITE_SNAPSHOT_PRESETS["recommended"])
+    return (
+        gr.update(value=values["include_core_memory"], interactive=False),
+        gr.update(value=values["include_episodic_memory"], interactive=False),
+        gr.update(value=values["episodic_memory_days"], interactive=False),
+        gr.update(value=values["recent_message_limit"], interactive=False),
+        values["summary"],
+    )
+
+
+def handle_lite_snapshot_episodic_toggle(enabled, preset):
+    """自分で選ぶ場合だけ、エピソード日数を記憶の有無と連動させる。"""
+    return gr.update(interactive=str(preset or "") == "custom" and bool(enabled))
+
+
+def build_lite_ai_connection_choices(current_profile_id: str = "") -> list[tuple[str, str]]:
+    """Secret値や外部照会なしで、Liteへ登録済みのAI接続候補を返す。"""
+    settings = lite_travel.get_settings()
+    current = str(current_profile_id or settings.get("credential_profile_id") or "").strip()
+    choices: list[tuple[str, str]] = []
+    for item in settings.get("registered_provider_profiles") or []:
+        if not isinstance(item, dict):
+            continue
+        profile_id = str(item.get("credential_profile_id") or "").strip()
+        provider = str(item.get("provider") or "").strip().lower()
+        if not profile_id or provider not in _LITE_PROVIDER_LABELS:
+            continue
+        display = str(item.get("display_name") or profile_id).strip()
+        choices.append((f"{display}（{_LITE_PROVIDER_LABELS[provider]}）", profile_id))
+    if current and all(value != current for _label, value in choices):
+        provider = lite_travel.infer_provider_from_profile_id(current)
+        provider_label = _LITE_PROVIDER_LABELS.get(provider, "接続先不明")
+        choices.insert(0, (f"現在の設定（要確認）: {provider_label} / {current}", current))
+    return choices
+
+
+def build_lite_provider_registration_choices(provider: str) -> list[tuple[str, str]]:
+    """旅行用Secretの登録先を、表示名と安全なbinding IDの組で返す。
+
+    登録枠の正本は ``lite_travel`` に置き、古い作業ツリーでも既存の
+    ``get_secret_binding_choices`` だけで画面を構築できるよう互換フォールバックを残す。
+    Secret値やCloudflareへの照会結果はここへ渡さない。
+    """
+    normalized_provider = str(provider or "").strip().lower()
+    getter = getattr(lite_travel, "get_provider_registration_choices", None)
+    raw_choices = getter(normalized_provider) if callable(getter) else []
+    if not raw_choices:
+        raw_choices = [
+            (binding, binding)
+            for binding in lite_travel.get_secret_binding_choices(normalized_provider)
+        ]
+    choices: list[tuple[str, str]] = []
+    for item in raw_choices:
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            continue
+        label = str(item[0] or "").strip()
+        binding = str(item[1] or "").strip()
+        if label and binding and (label, binding) not in choices:
+            choices.append((label, binding))
+    return choices
+
+
+def _lite_provider_registration_defaults(provider: str, binding_id: str) -> dict[str, str]:
+    """選択した登録先の表示用profile既定値を安全に正規化する。"""
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_binding = str(binding_id or "").strip()
+    getter = getattr(lite_travel, "get_provider_registration_defaults", None)
+    raw_defaults = getter(normalized_provider, normalized_binding) if callable(getter) else {}
+    metadata = lite_travel.PROVIDER_SECRET_METADATA.get(normalized_provider, {})
+    defaults = raw_defaults if isinstance(raw_defaults, dict) else {}
+    return {
+        "credential_profile_id": str(
+            defaults.get("credential_profile_id") or metadata.get("default_profile_id") or ""
+        ).strip(),
+        "display_name": str(
+            defaults.get("display_name") or metadata.get("display_name") or normalized_binding
+        ).strip(),
+    }
+
+
+def _lite_models_for_provider(provider: str) -> list[str]:
+    """本体の保存済み一覧だけから、provider別モデル候補を返す。"""
+    models: list[str] = []
+
+    def append_model(value) -> None:
+        model = str(value or "").strip().removeprefix("⭐ ").strip()
+        if model and model not in models:
+            models.append(model)
+
+    if provider == "gemini":
+        for model in config_manager.AVAILABLE_MODELS_GLOBAL or []:
+            append_model(model)
+    elif provider in {"openai", "openrouter"}:
+        expected_host = "api.openai.com" if provider == "openai" else "openrouter.ai"
+        for profile in config_manager.get_openai_settings_list():
+            if not isinstance(profile, dict):
+                continue
+            try:
+                host = urlsplit(str(profile.get("base_url") or "")).hostname
+            except ValueError:
+                host = None
+            if host != expected_host:
+                continue
+            append_model(profile.get("default_model"))
+            for model in profile.get("available_models") or []:
+                append_model(model)
+    elif provider == "anthropic":
+        append_model(config_manager.CONFIG_GLOBAL.get("anthropic_default_model"))
+    elif provider == "xai":
+        append_model(config_manager.CONFIG_GLOBAL.get("xai_default_model"))
+    return models
+
+
+def _lite_registered_source_key(credential_profile_id: str, provider: str) -> tuple[str, str]:
+    """登録済みLite接続に対応するローカルキー参照を返す。
+
+    Secret値そのものは返さず、モデル一覧取得時に本体設定から解決するための
+    providerと参照名だけを返す。古い登録履歴に参照名がない場合は空値にして、
+    既存のprovider単位のフォールバックへ任せる。
+    """
+    profile_id = str(credential_profile_id or "").strip()
+    normalized_provider = str(provider or "").strip().lower()
+    try:
+        settings = lite_travel.get_settings() or {}
+    except Exception:
+        settings = {}
+    for item in settings.get("registered_provider_profiles") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("credential_profile_id") or "").strip() != profile_id:
+            continue
+        item_provider = str(item.get("provider") or normalized_provider).strip().lower()
+        reference = str(item.get("source_key_reference") or "").strip()
+        if item_provider == normalized_provider and reference:
+            return item_provider, reference
+        break
+    return "", ""
+
+
+def build_lite_travel_model_choices(
+    credential_profile_id: str,
+    current_model: str = "",
+) -> list[tuple[str, str]]:
+    """選択中のAI接続に対応するモデルだけを、現在値を失わず返す。"""
+    provider = lite_travel.infer_provider_from_profile_id(credential_profile_id)
+    models = _lite_models_for_provider(provider)
+    choices = [(model, model) for model in models]
+    current = str(current_model or "").strip().removeprefix("⭐ ").strip()
+    is_initial_candidate = not current
+    # Liteの初回利用時だけは本体全体の既定モデルを流用せず、Lite専用の
+    # 候補を表示する。保存済みの明示値は上書きしない。
+    if not current:
+        current = lite_travel.get_lite_initial_model_candidate(provider)
+    if current and current not in models:
+        choices.insert(0, (f"現在の設定（要確認）: {current}", current))
+    elif is_initial_candidate and current:
+        # 接続先を変えた時の初期選択はchoices[0]を使う。取得済み一覧に
+        # 候補が含まれる場合も、古いモデルの並び順へ引き戻されないようにする。
+        choices = [(current, current), *[item for item in choices if item[1] != current]]
+    return choices
+
+
+def handle_fetch_lite_travel_models(
+    credential_profile_id,
+    current_model,
+    expected_profile_id: str = "",
+    registration_status: str = "",
+):
+    """明示操作時だけ、選択したLite接続の最新モデル候補を取得する。"""
+    if expected_profile_id and str(expected_profile_id).strip() != str(credential_profile_id or "").strip():
+        return (
+            gr.update(),
+            "接続先が変更されたため、古い接続のモデル一覧は適用しません。"
+            "現在の接続を選んでから確認してください。",
+        )
+    # 初回登録イベントからの後続処理では、登録成功後だけ通信する。
+    # ボタン押下からの既存呼び出しは第三引数が空のまま従来どおり動く。
+    if registration_status and not str(registration_status).startswith("AIサービス設定: ✅"):
+        return (
+            gr.update(),
+            "AI接続の登録が完了していないため、モデル一覧の確認を保留しました。"
+            "登録結果を確認してから再試行してください。",
+        )
+    provider = lite_travel.infer_provider_from_profile_id(credential_profile_id)
+    current = str(current_model or "").strip().removeprefix("⭐ ").strip()
+    if not current:
+        # 取得失敗時も、初回に利用者が選べる候補を消さない。
+        current = lite_travel.get_lite_initial_model_candidate(provider)
+    fetched: list[str] = []
+
+    try:
+        if provider == "gemini":
+            _source_provider, source_reference = _lite_registered_source_key(
+                credential_profile_id, provider
+            )
+            if source_reference:
+                api_key = lite_travel._resolve_local_key(provider, source_reference)
+                fetched = config_manager.fetch_gemini_models(
+                    api_key, exclude_special=True
+                )
+            else:
+                for api_key in config_manager.GEMINI_API_KEYS.values():
+                    if str(api_key or "").strip():
+                        fetched = config_manager.fetch_gemini_models(
+                            str(api_key).strip(), exclude_special=True
+                        )
+                        if fetched:
+                            break
+        elif provider in {"openai", "openrouter"}:
+            expected_host = "api.openai.com" if provider == "openai" else "openrouter.ai"
+            _source_provider, source_reference = _lite_registered_source_key(
+                credential_profile_id, provider
+            )
+            profiles = config_manager.get_openai_settings_list()
+            if source_reference:
+                source_name = source_reference.partition(":")[2]
+                selected = config_manager.get_openai_setting_by_name(source_name)
+                profiles = [selected] if isinstance(selected, dict) else []
+            for profile in profiles:
+                if not isinstance(profile, dict):
+                    continue
+                base_url = str(profile.get("base_url") or "").strip()
+                api_key = str(profile.get("api_key") or "").strip()
+                try:
+                    host = urlsplit(base_url).hostname
+                except ValueError:
+                    host = None
+                if host == expected_host and api_key:
+                    fetched = config_manager.fetch_models_from_api(base_url, api_key)
+                    if fetched:
+                        break
+        elif provider == "anthropic":
+            api_key = str(config_manager.ANTHROPIC_API_KEY or "").strip()
+            if api_key:
+                fetched = config_manager.fetch_anthropic_models(api_key)
+        elif provider == "xai":
+            api_key = str(config_manager.XAI_API_KEY or "").strip()
+            if api_key:
+                fetched = config_manager.fetch_models_from_api(
+                    "https://api.x.ai/v1", api_key
+                )
+    except Exception as exc:
+        logger.warning("Lite model list fetch failed for %s: %s", provider, exc)
+        fetched = []
+
+    models: list[str] = []
+    for value in [current, *fetched]:
+        model = str(value or "").strip().removeprefix("⭐ ").strip()
+        if model and model not in models:
+            models.append(model)
+    if not fetched:
+        label = _LITE_PROVIDER_LABELS.get(provider, "選択したAIサービス")
+        return (
+            gr.update(choices=[(model, model) for model in models], value=current or None),
+            f"{label}の最新モデルを取得できませんでした。初回候補と現在の選択は保持しています。"
+            "APIキーとインターネット接続を確認するか、モデル名を直接入力してください。",
+        )
+    label = _LITE_PROVIDER_LABELS.get(provider, "AIサービス")
+    return (
+        gr.update(choices=[(model, model) for model in models], value=current or fetched[0]),
+        f"{label}の最新モデルを{len(fetched)}件取得しました。使うモデルを選んでください。",
+    )
+
+
+def _lite_model_fetch_normalize(value: Any) -> str:
+    """モデル／接続IDの比較用に表示用の接頭辞を除去する。"""
+    return str(value or "").strip().removeprefix("⭐ ").strip()
+
+
+def handle_fetch_lite_travel_models_staged(
+    credential_profile_id,
+    current_model,
+    expected_profile_id: str = "",
+    registration_status: str = "",
+):
+    """モデル取得結果を一旦Stateへ保持し、後続イベントで現在値と照合する。
+
+    モデル一覧の取得は通信を含むため、取得中に利用者が接続先を変更する
+    可能性がある。ここではDropdownを直接更新せず、取得開始時点の接続と
+    モデルを記録した辞書だけを返し、後段の ``handle_apply_*`` が最新のUI値
+    と比較して適用可否を決める。辞書には秘密値を含めない。
+    """
+    profile_id = _lite_model_fetch_normalize(credential_profile_id)
+    initial_model = _lite_model_fetch_normalize(current_model)
+    if not initial_model:
+        provider = lite_travel.infer_provider_from_profile_id(profile_id)
+        initial_model = _lite_model_fetch_normalize(
+            lite_travel.get_lite_initial_model_candidate(provider)
+        )
+    model_update, status = handle_fetch_lite_travel_models(
+        credential_profile_id,
+        current_model,
+        expected_profile_id,
+        registration_status,
+    )
+    return {
+        "profile_id": profile_id,
+        "initial_model": initial_model,
+        "expected_profile_id": _lite_model_fetch_normalize(expected_profile_id),
+        "model_update": dict(model_update) if isinstance(model_update, dict) else {},
+        "status": str(status or ""),
+    }
+
+
+def handle_apply_lite_travel_model_fetch(
+    staged_result,
+    current_profile_id,
+    current_model_id,
+):
+    """完了したモデル取得結果を、最新の接続／モデル選択へ安全に適用する。"""
+    if not isinstance(staged_result, dict):
+        return gr.update(), gr.update()
+
+    staged_profile = _lite_model_fetch_normalize(staged_result.get("profile_id"))
+    expected_profile = _lite_model_fetch_normalize(
+        staged_result.get("expected_profile_id")
+    )
+    current_profile = _lite_model_fetch_normalize(current_profile_id)
+    if not staged_profile or staged_profile != current_profile:
+        return (
+            gr.update(),
+            gr.update(
+                value=(
+                    "接続先が変更されたため、古い接続のモデル一覧は適用しません。"
+                    "現在の接続を確認してください。"
+                )
+            ),
+        )
+    if expected_profile and expected_profile != staged_profile:
+        return (
+            gr.update(),
+            gr.update(
+                value=(
+                    "接続先が変更されたため、古い接続のモデル一覧は適用しません。"
+                    "現在の接続を確認してください。"
+                )
+            ),
+        )
+
+    model_update = staged_result.get("model_update")
+    model_update = dict(model_update) if isinstance(model_update, dict) else {}
+    status = str(staged_result.get("status") or "")
+    initial_model = _lite_model_fetch_normalize(staged_result.get("initial_model"))
+    current_model = _lite_model_fetch_normalize(current_model_id)
+
+    # 同じ接続でも取得中に手動でモデルを変えた場合は、取得結果のvalueで
+    # 上書きせず、利用者の選択をchoicesへ残して保持する。
+    if current_model != initial_model:
+        raw_choices = model_update.get("choices")
+        choices = list(raw_choices) if isinstance(raw_choices, (list, tuple)) else []
+        choice_values = {
+            _lite_model_fetch_normalize(item[1])
+            for item in choices
+            if isinstance(item, (list, tuple)) and len(item) >= 2
+        }
+        if current_model and current_model not in choice_values:
+            choices.insert(
+                0,
+                (
+                    f"現在の選択（取得中に変更）: {current_model}",
+                    current_model,
+                ),
+            )
+        selected_label = html.escape(current_model) if current_model else "未選択"
+        status = f"{status}  \n取得中のモデル選択（{selected_label}）を保持しました。".strip()
+        return gr.update(choices=choices, value=current_model or None), gr.update(value=status)
+
+    return model_update or gr.update(), gr.update(value=status)
+
+
+def handle_lite_ai_connection_change(credential_profile_id, current_model):
+    settings = lite_travel.get_settings()
+    saved_profile = str(settings.get("credential_profile_id") or "")
+    preserved_model = str(current_model or "") if credential_profile_id == saved_profile else ""
+    choices = build_lite_travel_model_choices(credential_profile_id, preserved_model)
+    value = preserved_model or (choices[0][1] if choices else None)
+    provider = lite_travel.infer_provider_from_profile_id(credential_profile_id)
+    status = (
+        f"{_LITE_PROVIDER_LABELS.get(provider, 'AIサービス')}の候補から選ぶか、モデル名を直接入力できます。"
+        "初回や接続先を選び直した直後は、下の「最新のモデル一覧を取得」を押すと"
+        "このキーで利用できる最新候補を確認できます。"
+        if provider
+        else "この接続の種類を確認できません。AIサービス／接続を選び直してください。"
+    )
+    return gr.update(choices=choices, value=value), status
+
+
+def handle_lite_ai_connection_change_with_fetch_state(credential_profile_id, current_model):
+    """接続先変更時の候補更新に、古いモデル取得を捨てるための状態を添える。"""
+    model_update, status = handle_lite_ai_connection_change(credential_profile_id, current_model)
+    return (
+        model_update,
+        f"⏳ このキーのモデル一覧を取得中…  \n{status}",
+        gr.update(value=str(credential_profile_id or "").strip()),
+    )
+
+
+def handle_lite_model_fetch_profile_state(credential_profile_id):
+    """登録完了後のモデル取得対象を、登録された接続先へ同期する。"""
+    return gr.update(value=str(credential_profile_id or "").strip())
+
+
+def handle_save_lite_daily_ai_route(credential_profile_id, model_id):
+    """秘密値をUIへ戻さず、日常のお出かけ画面から初期AI経路だけを保存する。"""
+    try:
+        profile_id = str(credential_profile_id or "").strip()
+        selected_model = str(model_id or "").strip().removeprefix("⭐ ").strip()
+        provider = lite_travel.infer_provider_from_profile_id(profile_id)
+        if not profile_id or not selected_model:
+            raise lite_travel.LiteTravelError("使用するAIサービスとモデルを選んでください。")
+        if not provider:
+            raise lite_travel.LiteTravelError("AIサービス／接続を選び直してください。")
+        if not lite_travel.save_initial_route_settings(profile_id, selected_model):
+            raise lite_travel.LiteTravelError("設定をファイルへ保存できませんでした。保存先を確認してください。")
+        message = (
+            f"今回使うAI: ✅ {_LITE_PROVIDER_LABELS.get(provider, 'AIサービス')} / "
+            f"{html.escape(selected_model)} を保存しました。"
+        )
+        # ボタン押下後に画面が変わらず不安にならないよう、完了時だけ通知する。
+        # 接続先の秘密値は通知へ含めない。
+        gr.Info("Liteで今回使うAIを保存しました。")
+        return (
+            message,
+            gr.update(value=profile_id),
+            gr.update(value=selected_model),
+            message,
+        )
+    except Exception as exc:
+        gr.Warning("Liteで今回使うAIを保存できませんでした。画面の結果欄を確認してください。")
+        return (
+            f"今回使うAI: ❌ {html.escape(str(exc))}",
+            gr.update(),
+            gr.update(),
+            gr.update(),
+        )
+
+
+def handle_refresh_lite_daily_ai_route(credential_profile_id=None, model_id=None):
+    """接続設定側で保存した初期AI経路を、日常のお出かけ画面へ反映する。
+
+    登録成功直後は、まだ「AIと独立お出かけ設定を保存」を押していない
+    セッション上の選択を受け取れるようにする。引数が無い既存の更新経路は
+    保存済み設定をそのまま使う。
+    """
+    settings = lite_travel.get_settings()
+    profile_id = str(
+        credential_profile_id
+        if credential_profile_id not in (None, "")
+        else settings.get("credential_profile_id") or ""
+    )
+    model_id = str(
+        model_id if model_id not in (None, "") else settings.get("model_id") or ""
+    )
+    provider = lite_travel.infer_provider_from_profile_id(profile_id)
+    status = (
+        f"現在の設定: {_LITE_PROVIDER_LABELS.get(provider, 'AIサービス')} / {html.escape(model_id)}"
+        if model_id
+        else "現在の設定: AIモデルを選んでください。"
+    )
+    return (
+        gr.update(choices=build_lite_ai_connection_choices(profile_id), value=profile_id or None),
+        gr.update(
+            choices=(
+                build_lite_travel_model_choices(profile_id, model_id)
+                if model_id
+                else build_lite_travel_model_choices(profile_id)
+            ),
+            value=model_id or None,
+        ),
+        status,
+    )
+
+
+def handle_lite_custom_model_toggle(enabled, current_model):
+    return gr.update(visible=bool(enabled), value=str(current_model or "") if enabled else "")
+
+
+def handle_save_lite_travel_settings(
+    worker_url, owner_token, signing_key, credential_profile_id, model_id, retention_days, wrangler_config_path,
+    daily_budget, session_budget, warning_ratio, allow_unknown_price, max_output_tokens,
+    budget_timezone, cache_policy, use_custom_model=False, custom_model_id="",
+):
+    try:
+        selected_model = str(custom_model_id if use_custom_model else model_id or "").strip()
+        provider = lite_travel.infer_provider_from_profile_id(credential_profile_id)
+        if not selected_model:
+            raise lite_travel.LiteTravelError("使用するAIモデルを選んでください。")
+        if not provider:
+            raise lite_travel.LiteTravelError("AIサービス／接続を選び直してください。")
+        resolved_wrangler_config_path = str(wrangler_config_path or "").strip()
+        try:
+            lite_travel._resolve_wrangler_config(resolved_wrangler_config_path)
+        except lite_travel.LiteTravelError:
+            recovered = lite_travel_operations.configured_wrangler_config_path()
+            if recovered:
+                resolved_wrangler_config_path = recovered
+        saved = lite_travel.save_settings(
+            worker_url,
+            owner_token,
+            signing_key,
+            selected_model,
+            int(retention_days),
+            credential_profile_id=credential_profile_id,
+            wrangler_config_path=resolved_wrangler_config_path,
+            budget_daily_limit_usd=daily_budget,
+            budget_session_limit_usd=session_budget,
+            budget_warning_ratio=warning_ratio,
+            budget_allow_unknown_price=allow_unknown_price,
+            budget_max_output_tokens=max_output_tokens,
+            budget_timezone=budget_timezone,
+            cache_policy=cache_policy,
+        )
+        if not saved:
+            raise lite_travel.LiteTravelError("設定をファイルへ保存できませんでした。保存先を確認してください。")
+        gr.Info("LiteのAI・独立お出かけ設定を保存しました。")
+        return (
+            "設定: ✅ 保存しました。Tokenと署名鍵は本体ローカルにのみ保存されます。  \n"
+            "下にある「接続確認とスマホ登録」を開き、「3. 接続確認とスマホ登録」へ進んでください。"
+        )
+    except Exception as exc:
+        gr.Warning("LiteのAI・独立お出かけ設定を保存できませんでした。画面の結果欄を確認してください。")
+        return f"設定: ❌ {html.escape(str(exc))}"
+
+
+def build_lite_provider_key_setup_state(provider, keys=None):
+    """保存済みキー件数とLite登録履歴から、再入力不要の案内を組み立てる。"""
+    selected = str(provider or "").strip().lower()
+    label = _LITE_PROVIDER_LABELS.get(selected, "選んだAIサービス")
+    choices = list(keys if keys is not None else lite_travel.get_local_key_choices(selected))
+    registered = any(
+        isinstance(item, dict) and str(item.get("provider") or "").strip().lower() == selected
+        for item in (lite_travel.get_settings().get("registered_provider_profiles") or [])
+    )
+    if registered:
+        status = "✅ {}はすでにLiteで利用できます。予備接続の追加やキーの変更は、「登録する接続」を選んで下の確認を行ってください。".format(label)
+        button_label = "選んだ接続にAPIキーを登録"
+    elif len(choices) == 1:
+        status = "{}の保存済みAPIキー1件を自動選択しました。キーを入力し直す必要はありません。".format(label)
+        button_label = "このAIサービスをLiteでも使えるようにする"
+    elif len(choices) > 1:
+        status = "{}の保存済みAPIキーが{}件あります。Liteで使う1件を選んでください。".format(label, len(choices))
+        button_label = "選んだAPIキーをLiteでも使えるようにする"
+    else:
+        status = "{}の保存済みAPIキーがありません。先に通常の「APIキー / Webhook管理」で追加してください。".format(label)
+        button_label = "このAIサービスをLiteでも使えるようにする"
+    return {"status": status, "button_label": button_label, "interactive": bool(choices)}
+
+
+def handle_lite_travel_secret_provider_change(provider):
+    normalized_provider = str(provider or "").strip().lower()
+    keys = lite_travel.get_local_key_choices(normalized_provider)
+    registration_choices = build_lite_provider_registration_choices(normalized_provider)
+    bindings = [binding for _label, binding in registration_choices]
+    if not bindings:
+        bindings = lite_travel.get_secret_binding_choices(normalized_provider)
+    defaults = _lite_provider_registration_defaults(
+        normalized_provider,
+        bindings[0] if bindings else "",
+    )
+    state = build_lite_provider_key_setup_state(provider, keys)
+    return (
+        gr.update(choices=keys, value=keys[0][1] if keys else None),
+        gr.update(choices=bindings, value=bindings[0] if bindings else None),
+        gr.update(value=defaults["credential_profile_id"]),
+        gr.update(value=defaults["display_name"]),
+        state["status"],
+        gr.update(value=state["button_label"], interactive=state["interactive"]),
+    )
+
+
+def handle_lite_travel_secret_registration_provider_change(provider):
+    """provider変更時に登録先候補と詳細値を同一セッション内で初期化する。
+
+    既存のprovider変更handlerは6出力のまま維持し、登録先だけを追加の
+    ``then`` 配線で更新する。これにより古い画面の戻り値契約を壊さない。
+    """
+    choices = build_lite_provider_registration_choices(provider)
+    binding_id = choices[0][1] if choices else ""
+    defaults = _lite_provider_registration_defaults(provider, binding_id)
+    return (
+        gr.update(choices=choices, value=binding_id or None),
+        gr.update(value=binding_id or None),
+        gr.update(value=defaults["credential_profile_id"]),
+        gr.update(value=defaults["display_name"]),
+        gr.update(value=False),
+    )
+
+
+def handle_lite_travel_secret_registration_target_change(provider, binding_id):
+    """通常欄の登録先変更を詳細欄へ反映し、確認を取り直す。"""
+    selected_binding = str(binding_id or "").strip()
+    valid_bindings = {
+        value for _label, value in build_lite_provider_registration_choices(provider)
+    }
+    if selected_binding not in valid_bindings:
+        # 古いブラウザ値や保存済みcustom profileを、無効な選択のために
+        # 新しい既定値へ自動上書きしない。確認だけは取り直す。
+        return gr.update(), gr.update(), gr.update(), gr.update(value=False)
+    defaults = _lite_provider_registration_defaults(provider, selected_binding)
+    return (
+        gr.update(value=selected_binding or None),
+        gr.update(value=defaults["credential_profile_id"]),
+        gr.update(value=defaults["display_name"]),
+        gr.update(value=False),
+    )
+
+
+def handle_lite_travel_secret_key_change(_local_key_reference):
+    """キーや詳細登録情報を選び直した時は、登録対象の明示確認を取り直す。"""
+    return gr.update(value=False)
+
+
+def handle_register_lite_travel_secret(
+    provider, local_key_reference, secret_binding_id, credential_profile_id, display_name,
+    wrangler_config_path, confirmed, current_model="",
+):
+    if not confirmed:
+        return (
+            "AIサービス設定: ⚠️ 自分のLite用クラウドへ保存することを確認してください。",
+            gr.update(),
+            gr.update(),
+        )
+    resolved_wrangler_config_path = lite_travel_operations.configured_wrangler_config_path()
+    if not resolved_wrangler_config_path:
+        return (
+            "AIサービス設定: ⚠️ Lite用クラウドの接続設定を確認できません。"
+            "Cloudflareへのログインだけでは、Lite用クラウドの準備は完了しません。"
+            "まだ準備していない場合は、上の「1. Liteの準備を確認」で"
+            "「新しいLite用クラウドの作成内容を確認」から進み、"
+            "「Lite用クラウドを公開して接続を確認」まで完了してください。"
+            "すでに完了している場合はクラウドを作り直さず、上の準備確認を行ってください。"
+            "同じ表示が続く場合は操作を繰り返さず、準備確認の結果と利用中の版を添えてご相談ください。"
+            "APIキーは送信していません。",
+            gr.update(),
+            gr.update(),
+        )
+    config_manager.update_nested_config_keys(
+        "lite_travel_settings",
+        {"wrangler_config_path": resolved_wrangler_config_path},
+    )
+    try:
+        result = lite_travel.register_provider_secret(
+            provider,
+            local_key_reference,
+            secret_binding_id,
+            credential_profile_id,
+            display_name,
+            resolved_wrangler_config_path,
+        )
+        profile_id = str(result["credential_profile_id"])
+        connections = build_lite_ai_connection_choices(profile_id)
+        settings = lite_travel.get_settings()
+        previous_profile = str(settings.get("credential_profile_id") or "")
+        previous_provider = lite_travel.infer_provider_from_profile_id(previous_profile)
+        registered_provider = lite_travel.infer_provider_from_profile_id(profile_id)
+        preserved_model = str(
+            current_model or settings.get("model_id") or ""
+        ).strip().removeprefix("⭐ ").strip()
+        if previous_provider != registered_provider:
+            preserved_model = ""
+        models = (
+            build_lite_travel_model_choices(profile_id, preserved_model)
+            if preserved_model
+            else build_lite_travel_model_choices(profile_id)
+        )
+        selected_model = preserved_model if any(
+            value == preserved_model for _label, value in models
+        ) else (models[0][1] if models else None)
+        gr.Info("Lite用のAI接続を登録しました。モデル一覧を確認してから設定を保存してください。")
+        return (
+            "AIサービス設定: ✅ 本体に保存済みのAPIキーを、Liteでも利用できるようにしました。  \n"
+            "使用するAIサービスとモデルを確認し、必要なら「最新のモデル一覧を取得」を押してください。  \n"
+            "その後、「AIと独立お出かけ設定を保存」を押してください。",
+            gr.update(choices=connections, value=profile_id),
+            gr.update(choices=models, value=selected_model),
+        )
+    except Exception as exc:
+        gr.Warning("Lite用のAI接続を登録できませんでした。入力内容と準備状態を確認してください。")
+        return f"AIサービス設定: ❌ {html.escape(str(exc))}", gr.update(), gr.update()
+
+
+def handle_update_lite_travel_secret_display(
+    provider,
+    local_key_reference,
+    secret_binding_id,
+    credential_profile_id,
+    _display_name,
+    confirmed,
+    current_profile_id,
+    current_model,
+):
+    """登録済みLite接続の表示名だけを、本体キー名へ同期する。
+
+    登録処理とは別の確認欄を受け取り、Secret再送なしで表示名を更新する。
+    既存の接続／モデル選択は変更せず、成功時も現在のUI値を維持する。
+    戻り値はステータス、接続一覧、モデル一覧の3出力。
+    """
+    if not confirmed:
+        return (
+            "AIサービス設定: ⚠️ 選んだ本体キーが、この登録枠に保存済みのものだと確認してください。Secretは再送しません。",
+            gr.update(),
+            gr.update(),
+        )
+    try:
+        result = lite_travel.update_provider_profile_display_name(
+            provider,
+            local_key_reference,
+            secret_binding_id,
+            credential_profile_id,
+        )
+        settings = lite_travel.get_settings()
+        preserved_profile = str(
+            current_profile_id
+            if current_profile_id not in (None, "")
+            else settings.get("credential_profile_id") or ""
+        ).strip()
+        preserved_model = str(
+            current_model
+            if current_model not in (None, "")
+            else settings.get("model_id") or ""
+        ).strip().removeprefix("⭐ ").strip()
+        connections = build_lite_ai_connection_choices(preserved_profile)
+        models = (
+            build_lite_travel_model_choices(preserved_profile, preserved_model)
+            if preserved_profile
+            else []
+        )
+        return (
+            "AIサービス設定: ✅ 登録済み接続の表示名だけを更新しました。Secretは再送していません。",
+            gr.update(choices=connections, value=preserved_profile or None),
+            gr.update(choices=models, value=preserved_model or None),
+        )
+    except Exception as exc:
+        return (
+            f"AIサービス設定: ❌ {html.escape(str(exc))}",
+            gr.update(),
+            gr.update(),
+        )
+
+
+handle_update_lite_travel_profile_label = handle_update_lite_travel_secret_display
+
+
+_LITE_CONNECTIVITY_FLOWS = {"initial", "existing", "re_pair"}
+_LITE_CONNECTIVITY_SURFACES = {"settings", "outing"}
+
+
+def _lite_connectivity_step(title: str, label: str, detail: str, mode: str) -> str:
+    return (
+        f'<article class="lite-connectivity-step" data-mode="{html.escape(mode)}">'
+        f'<span class="lite-connectivity-step-title">{html.escape(title)}</span>'
+        f'<strong>{html.escape(label)}</strong>'
+        f'<small>{html.escape(detail)}</small>'
+        "</article>"
+    )
+
+
+def _lite_standby_state() -> tuple[str, str, str]:
+    manifest = lite_travel.latest_standby_manifest()
+    if not manifest:
+        return "missing", "未準備", "本体接続中に最初のお出かけ前データを準備してください。"
+    status = str(manifest.get("status") or "")
+    generation = int(manifest.get("generation") or 0)
+    expires_at = str(manifest.get("expires_at") or "")
+    expired = False
+    if expires_at:
+        try:
+            expiry = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=datetime.timezone.utc)
+            expired = expiry <= datetime.datetime.now(datetime.timezone.utc)
+        except ValueError:
+            expired = True
+    if status != "ready" or expired:
+        return "expired", "更新が必要", "保存済みmanifestの期限または状態を確認し、再準備してください。"
+    return "ready", f"準備済み（世代{generation}）", "端末認証が有効なら、必要時に独立モードを開始できます。"
+
+
+def _build_lite_connectivity_wizard_result(
+    flow: str = "existing",
+    *,
+    refresh_remote: bool = False,
+    refresh_action_label: str = "このPCから4状態を診断",
+    surface: str = "settings",
+    room_name: str = "",
+) -> tuple[str, dict[str, Any]]:
+    """Liteの4状態カードと、同じ診断から得た操作判断用メタデータを返す。"""
+    selected_flow = str(flow or "existing")
+    if selected_flow not in _LITE_CONNECTIVITY_FLOWS:
+        selected_flow = "existing"
+    selected_surface = str(surface or "settings")
+    if selected_surface not in _LITE_CONNECTIVITY_SURFACES:
+        selected_surface = "settings"
+    presence = lite_travel.presence_status(room_name) if room_name else {}
+    presence_status = str((presence or {}).get("status") or "")
+    presence_labels = {
+        "armed": "出発結果の確認待ち（本体停止）",
+        "active": "独立お出かけ中（本体停止）",
+        "returning": "帰宅統合中（本体停止）",
+    }
+
+
+    api_settings = config_manager.CONFIG_GLOBAL.get("api_gateway_settings", {}) or {}
+    api_enabled = bool(api_settings.get("enabled"))
+    api_auth_ready = bool(api_settings.get("require_auth", True) and str(api_settings.get("auth_token") or "").strip())
+    if api_enabled and api_auth_ready:
+        home = ("ready", "設定済み", "本体接続と接続用キーを保存済みです。")
+    elif api_enabled:
+        home = ("attention", "接続用キーが必要", "Token認証をONにし、接続用キーを生成・保存してください。")
+    else:
+        home = ("missing", "未設定", "本体接続を有効にし、Token認証と接続用キーを保存してください。")
+
+    travel_settings = lite_travel.get_settings()
+    worker_url = str(travel_settings.get("worker_url") or "").strip()
+    owner_ready = bool(str(travel_settings.get("owner_token") or "").strip())
+    signing_ready = bool(str(travel_settings.get("bundle_signing_key") or "").strip())
+    worker_state = "not_checked"
+    overdue_sessions = 0
+    overdue_standby = 0
+    remote: dict[str, Any] = {}
+    if not worker_url:
+        worker = ("missing", "未設定", "Lite用クラウドのURLと、このPCだけに保存する2つの確認キーを設定してください。")
+    elif not owner_ready or not signing_ready:
+        worker = ("attention", "確認キーが未設定", "本体確認キーと帰宅データ確認キーをこのPCへ保存してください。スマホへは渡しません。")
+    elif not refresh_remote:
+        worker = (
+            "not_checked",
+            "このPCでは未確認",
+            f"PWA側の緑表示とは別に、「{refresh_action_label}」でこのPCからLite用クラウドへの接続を確認してください。",
+        )
+    else:
+        remote = lite_travel.diagnose_worker()
+        worker_state = str(remote.get("state") or "unknown_schema")
+        resources = (
+            (remote.get("diagnostics") or {}).get("resources")
+            if isinstance(remote.get("diagnostics"), dict)
+            else {}
+        ) or {}
+        try:
+            overdue_sessions = max(0, int(resources.get("overdue_sessions") or 0))
+            overdue_standby = max(0, int(resources.get("overdue_standby") or 0))
+        except (TypeError, ValueError):
+            overdue_sessions = 0
+            overdue_standby = 0
+        worker_labels = {
+            "ready": ("ready", "接続済み", "Lite用クラウドを利用できます。詳しい構成も確認済みです。"),
+            "unreachable": ("error", "接続できません", "インターネット接続とLite用クラウドのURLを確認してください。"),
+            "unauthorized": ("attention", "本体確認キーを確認", "このPCに保存した本体確認キーを確認してください。"),
+            "worker_update_required": (
+                "attention",
+                "クラウド更新が必要",
+                "「初回設定・接続管理」で更新手順を確認してください。" if selected_surface == "outing"
+                else "このカード直下に表示された更新手順を、1から順に進めてください。",
+            ),
+            "migration_required": (
+                "attention",
+                "保存領域の更新が必要",
+                "「初回設定・接続管理」で保存領域の更新手順を確認してください。" if selected_surface == "outing"
+                else "このカード直下の更新手順で、復旧点を取得してから更新します。",
+            ),
+            "client_update_required": ("error", "本体更新が必要", "Nexus Ark本体を対応版へ更新してください。"),
+            "secret_action_required": ("attention", "AIサービス設定が必要", "使用するAIサービスのAPIキーを確認してください。"),
+            "maintenance_overdue": (
+                "attention",
+                "接続済み・削除期限の確認あり",
+                "接続は正常です。削除期限を迎えた帰宅後データ"
+                f"{overdue_sessions}件、お出かけ前データ{overdue_standby}件を確認してください。",
+            ),
+        }
+        worker = worker_labels.get(
+            worker_state,
+            ("attention", "詳しい確認が必要", "詳細・保守で共有用診断を生成してください。"),
+        )
+
+    device_state = "blocked"
+    worker_allows_device_check = worker_state in {"ready", "maintenance_overdue"}
+    if worker_allows_device_check:
+        try:
+            devices = lite_travel.list_remote_devices()
+            active_devices = [
+                item for item in devices
+                if not item.get("revoked_at") and not bool(item.get("refresh_expired"))
+            ]
+            if active_devices:
+                device_state = "ready"
+                device = ("ready", f"有効（{len(active_devices)}台）", "実際に持ち出すPWAでペアリング済みです。")
+            elif devices:
+                device_state = "re_pair"
+                device = ("error", "再ペアリングが必要", "登録済み端末はすべて失効または期限切れです。新しい短期コードを発行してください。")
+            else:
+                device_state = "missing"
+                device = ("missing", "未ペアリング", "実際に持ち出すPWAを開き、短期コードでペアリングしてください。")
+        except Exception:
+            device_state = "not_checked"
+            device = ("attention", "確認できません", "Lite用クラウドの本体確認キーを直して再診断してください。")
+    elif worker_state == "unauthorized":
+        device = ("attention", "確認キー待ち", "本体確認キーを直してからスマホの状態を確認します。")
+    else:
+        device = (
+            "not_checked",
+            "このPCでは未確認",
+            "2の診断後、このPCに保存した本体確認キーでペアリング済みスマホを確認します。",
+        )
+
+    standby_state, standby_label, standby_detail = _lite_standby_state()
+    standby_mode = "ready" if standby_state == "ready" else "attention"
+    standby = (standby_mode, standby_label, standby_detail)
+
+    if presence_status == "active":
+        next_action = ("現在、独立お出かけ中です。「4. 帰宅」の「帰宅する内容を確認」へ進んでください。"
+                       if selected_surface == "outing" else
+                       "現在、独立お出かけ中です。下の「帰宅・統合へ進む」から帰宅画面を開いてください。")
+    elif presence_status == "returning":
+        next_action = ("帰宅の途中です。「帰宅する内容を確認」から中断した帰宅を再開してください。"
+                       if selected_surface == "outing" else
+                       "帰宅データを本体へ戻している途中です。下の「帰宅・統合へ進む」から帰宅画面を開いてください。")
+    elif presence_status == "armed":
+        next_action = ("出発の完了はまだ確認できていません。通信回復後に「帰宅する内容を確認」へ進んでください。"
+                       if selected_surface == "outing" else
+                       "出発結果の確認待ちです。下の「帰宅・統合へ進む」から帰宅画面を開いてください。")
+    elif selected_flow == "re_pair" and worker_allows_device_check:
+        next_action = "次の操作: 「短期ペアリングコードを発行」を押し、実際に持ち出すPWA内で入力してください。"
+    elif home[0] != "ready":
+        next_action = ("次の操作: 「初回設定・接続管理」を開き、「PCをつけたまま使う」から本体接続を設定してください。"
+                       if selected_surface == "outing" else
+                       "次の操作: 「本体接続の設定」で接続を有効にし、接続用キーを保存してください。")
+    elif not worker_url or not owner_ready or not signing_ready:
+        next_action = (
+            "次の操作: 「初回設定・接続管理」を開き、「PCを止めても使う」から接続情報を設定してください。"
+            if selected_surface == "outing" else
+            "次の操作: 上の「PCを止めても使う」からLite用クラウドの初回設定を進めてください。"
+        )
+    elif worker_state == "maintenance_overdue":
+        if selected_surface == "outing":
+            next_action = (
+                "接続は利用できます。期限対象は「初回設定・接続管理」で確認してください。"
+            )
+        else:
+            next_action = (
+                "次の操作: カード直下で、期限を迎えたデータを今削除するか、そのまま残すか選んでください。"
+            )
+    elif worker_state in {"worker_update_required", "migration_required"}:
+        next_action = (
+            "次の操作: 「初回設定・接続管理」を押し、「4状態を確認」で表示される更新手順を進めてください。"
+            if selected_surface == "outing" else
+            "次の操作: このカード直下の「次にすること」を、1から順に進めてください。"
+        )
+    elif worker_state != "ready":
+        next_action = (
+            f"次の操作: 「{refresh_action_label}」で確認し、案内が出た時だけ詳細・保守を開いてください。"
+        )
+    elif device_state != "ready":
+        next_action = (
+            "次の操作: 「初回設定・接続管理」で「短期ペアリングコードを発行」を押し、持ち出すPWA内で入力してください。"
+            if selected_surface == "outing" else
+            "次の操作: 「短期ペアリングコードを発行」を押し、実際に持ち出すPWA内で入力してください。"
+        )
+    elif standby_state != "ready":
+        next_action = (
+            "次の操作: 「2. お出かけ前の準備」で一緒に行く人を選び、「1. Lite用クラウドへ送る内容を確認」を押してください。"
+            if selected_surface == "outing" else
+            "次の操作: 下の「4. お出かけの準備へ進む」を押し、一緒に行く人と持ち出す情報を選んでください。"
+        )
+    else:
+        next_action = "準備完了: 本体停止時も独立モードはLite側の確認操作後にだけ開始します。"
+
+    flow_labels = {"initial": "初回設定", "existing": "既存接続", "re_pair": "端末再登録"}
+    steps = "".join([
+        _lite_connectivity_step("1. 本体", home[1], home[2], home[0]),
+        _lite_connectivity_step("2. Lite用クラウド", worker[1], worker[2], worker[0]),
+        _lite_connectivity_step("3. 端末", device[1], device[2], device[0]),
+        _lite_connectivity_step("4. お出かけ前のデータ", standby[1], standby[2], standby[0]),
+    ])
+    card = (
+        '<section class="lite-connectivity-wizard">'
+        '<div class="lite-connectivity-heading">'
+        '<strong>Lite接続準備</strong>'
+        f'<span>{html.escape(flow_labels[selected_flow])}</span>'
+        "</div>"
+        + (
+            '<p class="lite-connectivity-presence"><strong>現在のお出かけ状態:</strong> '
+            f'{html.escape(presence_labels[presence_status])}</p>'
+            if presence_status in presence_labels
+            else ""
+        )
+        +
+        f'<div class="lite-connectivity-grid">{steps}</div>'
+        f'<p class="lite-connectivity-next">{html.escape(next_action)}</p>'
+        '<p class="lite-connectivity-safety">本体確認キー・帰宅データ確認キー・AIサービスのAPIキーはスマホへ渡しません。'
+        "自動activation・自動再送・自動帰宅も行いません。</p>"
+        "</section>"
+    )
+    return card, {
+        "home_state": home[0],
+        "worker_state": worker_state,
+        "device_state": device_state,
+        "standby_state": standby_state,
+        "presence_state": presence_status,
+        "overdue_sessions": overdue_sessions,
+        "overdue_standby": overdue_standby,
+    }
+
+
+def build_lite_connectivity_wizard(
+    flow: str = "existing",
+    *,
+    refresh_remote: bool = False,
+    refresh_action_label: str = "このPCから4状態を診断",
+    surface: str = "settings",
+    room_name: str = "",
+) -> str:
+    """Lite導入・既存接続・端末再登録を4状態へ正規化して表示する。"""
+    card, _metadata = _build_lite_connectivity_wizard_result(
+        flow,
+        refresh_remote=refresh_remote,
+        refresh_action_label=refresh_action_label,
+        surface=surface,
+        room_name=room_name,
+    )
+    return card
+
+
+def _lite_retention_prompt_update(metadata: dict[str, Any]):
+    """期限対象がある時だけ、接続カード直下の削除確認を表示する。"""
+    visible = str(metadata.get("worker_state") or "") == "maintenance_overdue"
+    session_count = max(0, int(metadata.get("overdue_sessions") or 0))
+    standby_count = max(0, int(metadata.get("overdue_standby") or 0))
+    prompt = (
+        "### 🧹 期限を迎えたデータがあります\n"
+        f"帰宅後の会話本文 **{session_count}件**、お出かけ前データ **{standby_count}件** が対象です。  \n"
+        "削除すると元に戻せません。今は残したまま、通常の接続確認だけを続けることもできます。"
+    )
+    return gr.update(visible=visible), gr.update(value=prompt if visible else "")
+
+
+def _lite_worker_update_guide_update(metadata: dict[str, Any]):
+    """互換版でもPWA更新を開けるようにし、版不足時だけ手順を展開する。"""
+    worker_state = str(metadata.get("worker_state") or "")
+    update_required = worker_state in {
+        "worker_update_required",
+        "migration_required",
+    }
+    outing_active = str(metadata.get("presence_state") or "") in {"armed", "active", "returning"}
+    visible = (update_required or worker_state in {"ready", "maintenance_overdue"}) and not outing_active
+    return gr.update(visible=visible, open=visible and update_required)
+
+
+def build_lite_connectivity_initial_flow() -> str:
+    """接続情報が未保存なら初回設定を、保存済みなら既存確認を初期選択にする。
+
+    初回利用者へ「既存接続の確認」を先に見せると、何を設定すべきか分からなくなる。
+    ここでは秘密値を表示せず、Worker URLまたは接続キーがローカル設定に保存されて
+    いるかだけを見て初期選択を決める。既存接続が保存済みの利用者は従来どおり
+    確認フローを維持する。
+    """
+    try:
+        settings = lite_travel.get_settings() or {}
+    except Exception:
+        settings = {}
+    has_saved_connection = any(
+        str(settings.get(key) or "").strip()
+        for key in ("worker_url", "owner_token", "bundle_signing_key")
+    )
+    return "existing" if has_saved_connection else "initial"
+
+
+def _lite_update_database_name_update() -> Any:
+    """4状態確認時に、復元を含む最新のD1名を更新欄へ反映する。"""
+    return gr.update(value=build_lite_update_database_name())
+
+
+def build_lite_update_database_name() -> str:
+    """更新手順の初期値として、設定済みD1名だけを返す。"""
+    return lite_travel_operations.configured_database_name()
+
+
+def build_lite_update_preflight_view() -> tuple[str, bool]:
+    """更新欄へ、現在のローカル前提と環境別の次手を表示する。"""
+    diagnostic = lite_travel_operations.runtime_diagnostics()
+    if diagnostic.get("state") == "ready":
+        return (
+            "✅ Liteの準備ツールは使用できます。Nexus Arkが同梱版を自動で確認しています。",
+            True,
+        )
+    reason = html.escape(lite_travel_operations.prerequisite_message(diagnostic))
+    guidance = (
+        "上の「Liteの準備ツール」で状態を確認してください。修復が必要な場合は、"
+        "署名済みのNexus Ark更新を使います。個別のツールを導入・選択する必要はありません。"
+    )
+    return f"⚠️ **更新前の準備が必要です。** {reason}。  \n{guidance}", False
+
+
+def _lite_connectivity_navigation_update(metadata: dict[str, Any]):
+    """現在の外出状態に合わせ、日常画面へ戻るボタンの目的を明示する。"""
+    presence_state = str(metadata.get("presence_state") or "")
+    if presence_state in {"armed", "active", "returning"}:
+        return gr.update(value="帰宅・統合へ進む", variant="primary")
+    return gr.update(value="4. お出かけの準備へ進む", variant="primary")
+
+
+def handle_lite_connectivity_refresh(flow, room_name=""):
+    card, metadata = _build_lite_connectivity_wizard_result(
+        flow, refresh_remote=True, room_name=str(room_name or "")
+    )
+    retention_group, retention_prompt = _lite_retention_prompt_update(metadata)
+    return (
+        card, retention_group, retention_prompt,
+        _lite_worker_update_guide_update(metadata),
+        _lite_update_database_name_update(),
+        _lite_connectivity_navigation_update(metadata),
+    )
+
+
+def handle_lite_connectivity_refresh_with_notification(flow, room_name=""):
+    """「4状態を確認」ボタン専用の完了通知付きwrapper。
+
+    ペアリングや待機snapshotの処理も内部で共有refreshを呼ぶため、共通の
+    refresh本体では通知せず、この明示ボタンからの実行時だけ通知する。
+    """
+    result = handle_lite_connectivity_refresh(flow, room_name)
+    gr.Info("4状態の確認が完了しました。表示内容を確認してください。")
+    return result
+
+
+def handle_lite_connectivity_flow_change(flow):
+    card = build_lite_connectivity_wizard(flow, refresh_remote=False)
+    return card, gr.update(visible=False), gr.update(value=""), gr.update(visible=False)
+
+
+def handle_lite_connectivity_retention_dismiss():
+    """期限対象を削除せず、今回の確認パネルだけを閉じる。"""
+    return gr.update(visible=False), "期限を迎えたデータは削除せず、そのまま残しました。"
+
+
+def handle_lite_connectivity_retention_delete(flow):
+    """明示確認後に既存retentionを実行し、同じ画面の4状態を再診断する。"""
+    result = handle_lite_phase5_retention(False)
+    try:
+        card, metadata = _build_lite_connectivity_wizard_result(flow, refresh_remote=True)
+    except Exception:
+        return (
+            result + "\n\n❌ 接続状態を再確認できませんでした。「4状態を診断」をもう一度押してください。",
+            gr.update(),
+            gr.update(visible=True),
+            gr.update(),
+            gr.update(),
+        )
+    retention_group, retention_prompt = _lite_retention_prompt_update(metadata)
+    if result.startswith("保持期限処理: ❌"):
+        result += "\n\n❌ 削除できませんでした。接続情報を確認して、もう一度実行してください。"
+    elif str(metadata.get("worker_state") or "") == "maintenance_overdue":
+        result += "\n\n⚠️ 期限対象が残っています。表示内容を確認して、必要ならもう一度実行してください。"
+    else:
+        result += "\n\n✅ 削除後の接続状態を更新しました。"
+    return result, card, retention_group, retention_prompt, _lite_worker_update_guide_update(metadata)
+
+
+_LITE_OUTING_STAGE_LABELS = {
+    "needs_connection": ("接続を確認", "現在の状態に更新"),
+    "needs_standby": ("一緒に行く人を選ぶ", "1. Lite用クラウドへ送る内容を確認"),
+    "ready_to_depart": ("出発内容を確認", "選んだペルソナの出発内容を作る"),
+    "departure_preview_ready": ("出発内容を確認済み", "表示内容を確認して出発する"),
+    "away": ("お出かけ中", "帰宅する内容を確認"),
+    "ready_to_return": ("帰宅内容を確認済み", "確認した内容を本体へ戻す"),
+    "closed": ("帰宅済み", "1. Lite用クラウドへ送る内容を確認"),
+    "error": ("状態を確認できません", "もう一度、現在の状態に更新"),
+}
+
+
+def build_lite_outing_ui_state(
+    room_name: str,
+    connectivity: dict[str, Any],
+    *,
+    return_preview_ready: bool = False,
+) -> dict[str, Any]:
+    """接続・存在状態を、通常導線で一つだけ開くLiteお出かけ段階へ変換する。"""
+    connection_ready = (
+        connectivity.get("home_state") == "ready"
+        and connectivity.get("worker_state") in {"ready", "maintenance_overdue"}
+        and connectivity.get("device_state") == "ready"
+    )
+    presence = lite_travel.presence_status(room_name) if room_name else None
+    presence_status = str((presence or {}).get("status") or "")
+    if presence_status in {"armed", "active", "returning"}:
+        # 出発済みセッションは、クラウド更新より先に必ず帰宅できる画面を出す。
+        stage = "ready_to_return" if return_preview_ready else "away"
+    elif not connection_ready:
+        stage = "needs_connection"
+    else:
+        if presence_status in {"closed", "emergency_reclaimed"}:
+            stage = "ready_to_depart" if connectivity.get("standby_state") == "ready" else "closed"
+        elif connectivity.get("standby_state") != "ready":
+            stage = "needs_standby"
+        else:
+            stage = "ready_to_depart"
+    title, action = _LITE_OUTING_STAGE_LABELS[stage]
+    return {"stage": stage, "title": title, "primary_action": action}
+
+
+def build_lite_outing_progress(stage: str) -> str:
+    """現在段階だけを強調した短い4段階表示を返す。"""
+    active_index = {
+        "needs_connection": 0,
+        "needs_standby": 1,
+        "closed": 1,
+        "ready_to_depart": 2,
+        "departure_preview_ready": 2,
+        "away": 3,
+        "ready_to_return": 3,
+        "error": 0,
+    }.get(stage, 0)
+    labels = ("接続", "準備", "出発", "帰宅")
+    items = "".join(
+        f'<span data-state="{"current" if index == active_index else "other"}">{index + 1}. {label}</span>'
+        for index, label in enumerate(labels)
+    )
+    title, action = _LITE_OUTING_STAGE_LABELS.get(stage, _LITE_OUTING_STAGE_LABELS["error"])
+    return (
+        '<section class="lite-outing-progress">'
+        f'<div>{items}</div><strong>{html.escape(title)}</strong>'
+        f'<small>次にすること: {html.escape(action)}</small>'
+        "</section>"
+    )
+
+
+def _lite_outing_stage_updates(ui_state: dict[str, Any]) -> tuple:
+    stage = str(ui_state.get("stage") or "error")
+    return (
+        build_lite_outing_progress(stage),
+        gr.update(visible=stage in {"needs_connection", "error"}),
+        gr.update(visible=stage in {"needs_standby", "closed", "ready_to_depart"}),
+        gr.update(visible=stage == "ready_to_depart"),
+        gr.update(visible=stage in {"away", "ready_to_return"}),
+        gr.update(value="選んだペルソナの出発内容を作る", variant="primary", interactive=True),
+        gr.update(value="表示内容を確認して出発する", variant="secondary", interactive=False),
+        gr.update(value="帰宅する内容を確認", variant="primary", interactive=True),
+        gr.update(value="確認した内容を本体へ戻す", variant="secondary", interactive=False),
+        gr.update(value="出発前の確認: 未作成"),
+        gr.update(value=""),
+        gr.update(value="帰宅内容: 未確認"),
+        None,
+    )
+
+
+def handle_lite_travel_overview_refresh(room_name):
+    """お出かけ画面の存在状態と4状態カードを進捗付きで同時に更新する。"""
+    yield (
+        gr.update(value="更新しています…", interactive=False),
+        "⏳ **本体・Lite用クラウド・スマホ・お出かけ前データを確認しています。**",
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+        gr.update(),
+    )
+    try:
+        travel_status = build_lite_travel_status(room_name)
+        connectivity, connectivity_metadata = _build_lite_connectivity_wizard_result(
+            "existing",
+            refresh_remote=True,
+            refresh_action_label="現在の状態に更新",
+            surface="outing",
+            room_name=str(room_name or ""),
+        )
+        ui_state = build_lite_outing_ui_state(room_name, connectivity_metadata)
+        stage_updates = _lite_outing_stage_updates(ui_state)
+        completed_at = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+        yield (
+            gr.update(value="現在の状態に更新", interactive=True),
+            f"✅ **更新しました。** 最終更新: {completed_at}",
+            travel_status,
+            connectivity,
+            stage_updates[0],
+            stage_updates[1],
+            stage_updates[2],
+            stage_updates[3],
+            stage_updates[4],
+            stage_updates[5],
+            stage_updates[6],
+            stage_updates[7],
+            stage_updates[8],
+            stage_updates[9],
+            stage_updates[10],
+            stage_updates[11],
+            stage_updates[12],
+        )
+    except Exception:
+        yield (
+            gr.update(value="もう一度、現在の状態に更新", interactive=True),
+            "❌ **更新できませんでした。** "
+            "インターネット接続を確認してもう一度更新してください。"
+            "続く場合は「初回設定・接続管理」を押してください。",
+            gr.update(),
+            gr.update(),
+            build_lite_outing_progress("error"),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(interactive=False),
+            gr.update(interactive=False),
+            gr.update(interactive=False),
+            gr.update(interactive=False),
+            gr.update(value="出発前の確認: 未作成"),
+            gr.update(value=""),
+            gr.update(value="帰宅内容: 未確認"),
+            None,
+        )
+
+
+def handle_lite_travel_after_operation(room_name, operation_result):
+    """失敗時は操作欄を維持。成功後だけ状態を診断し、結果欄は上書きしない。"""
+    if "❌" in str(operation_result) or "⚠️" in str(operation_result):
+        yield (
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(interactive=False, variant="secondary"), gr.update(),
+            gr.update(interactive=False, variant="secondary"), gr.update(),
+            gr.update(), gr.update(), None,
+        )
+        return
+    yield from handle_lite_travel_overview_refresh(room_name)
+
+
+def handle_lite_travel_selection_changed():
+    """編集後は古い内容の確認ボタンを無効化。外部への再送は行わない。"""
+    return (
+        None, None,
+        gr.update(interactive=False, variant="secondary"),
+        gr.update(interactive=False, variant="secondary"),
+        "出発前の確認: 選択が変わりました。出発内容を作り直してください。",
+        "送信前の確認: 選択が変わりました。送る内容を確認し直してください。",
+    )
+
+
+def handle_lite_travel_room_stage_change(room_name):
+    """ルーム切替だけでは通信せず、出発中の人には帰宅、他は再診断を案内する。"""
+    state = build_lite_outing_ui_state(room_name, {})
+    return _lite_outing_stage_updates(state)[:5]
+
+
+def handle_lite_travel_room_change(room_name: str):
+    """ルーム変更時に、変更前ルームの待機・出発・帰宅プレビューを必ず失効させる。"""
+    return (
+        gr.update(value="出発前の確認: 未作成"),
+        gr.update(value=""),
+        None,
+        gr.update(value="送信前の確認: 未作成"),
+        gr.update(value=""),
+        None,
+        gr.update(interactive=False, variant="secondary"),
+        gr.update(value="帰宅内容: 未確認"),
+        gr.update(value="表示内容を確認して出発する", variant="secondary", interactive=False),
+        gr.update(value="確認した内容を本体へ戻す", variant="secondary", interactive=False),
+        build_lite_travel_status(room_name),
+    )
+
+
+def build_lite_pairing_handoff_html(worker_url: str, code: str, expires_at: str) -> str:
+    """短期pairing codeだけをURL fragmentへ格納したLite引継ぎQRを返す。"""
+    try:
+        parsed = urlsplit(str(worker_url or "").strip())
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            raise ValueError("Worker URLはパスなしのHTTPS URLで指定してください。")
+        pairing_code = str(code or "").strip()
+        expiry = str(expires_at or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{8,200}", pairing_code) or not expiry:
+            raise ValueError("短期ペアリング情報が不正です。")
+        expiry_time = datetime.datetime.fromisoformat(expiry.replace("Z", "+00:00"))
+        if expiry_time.tzinfo is None:
+            raise ValueError("短期ペアリング情報の期限にtimezoneがありません。")
+        now = datetime.datetime.now(datetime.timezone.utc)
+        remaining = expiry_time.astimezone(datetime.timezone.utc) - now
+        if remaining <= datetime.timedelta(0) or remaining > datetime.timedelta(minutes=30):
+            raise ValueError("短期ペアリング情報の期限が許容範囲外です。")
+        fragment = urlencode({"nexus-lite-pairing": pairing_code, "expires": expiry})
+        deep_link = urlunsplit((parsed.scheme, parsed.netloc, "/", "", fragment))
+
+        import segno
+
+        buffer = io.BytesIO()
+        segno.make(deep_link, error="m").save(buffer, kind="png", scale=6, border=4)
+        data = base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception as exc:
+        return (
+            '<div class="lite-pairing-handoff lite-pairing-handoff-error">'
+            f"QRを生成できませんでした。下の短期コードを手入力してください。理由: {html.escape(str(exc))}"
+            "</div>"
+        )
+
+    safe_link = html.escape(deep_link, quote=True)
+    safe_expiry = html.escape(expiry)
+    safe_worker_url = html.escape(urlunsplit((parsed.scheme, parsed.netloc, "", "", "")))
+    safe_code = html.escape(pairing_code)
+    return (
+        '<section class="lite-pairing-handoff">'
+        "<strong>持ち出すスマホのNexus Ark Liteアプリ（PWA）へ短期情報を渡す</strong>"
+        "<p><strong>すでにLiteをインストール済みの方:</strong> スマホのホーム画面からいつもの"
+        "Nexus Ark Liteアプリ（PWA）を開き、下部メニューの <strong>設定</strong> → "
+        "<strong>独立モードの準備</strong> を開きます。その画面の <strong>Lite用クラウド URL</strong> "
+        "の下にある <strong>ペアリングコード</strong> 欄へ、下の短期コードを入力して"
+        "「ペアリング」を押してください。QRを読み直して別のLiteを入れ直す必要はありません。</p>"
+        "<p><strong>初めてスマホに入れる方:</strong> 下のQRでNexus Ark Liteアプリ（PWA）を開いてインストールし、"
+        "ホーム画面のアイコンから開き直してから、設定 → 独立モードの準備 → ペアリングコード欄で登録します。"
+        "期限切れならPCでコードを再発行してください。</p>"
+        "<p>本体接続のURLとTokenは、このQRでは移しません。端末登録後のお出かけ前データはPC側で準備できます。"
+        "スマホから本体へ直接接続する場合は、本体接続の設定も別途必要です。</p>"
+        '<div class="lite-pairing-handoff-grid">'
+        f'<img alt="Lite短期ペアリングQRコード" src="data:image/png;base64,{data}" />'
+        "<div>"
+        "<p>QRにはWorker URLと、有効期限まで1回だけ使える短期コードが含まれます。Liteは値を取り込んだ直後にURLから消去し、"
+        "ペアリングは自動実行しません。</p>"
+        f'<p><a href="{safe_link}" target="_blank" rel="noreferrer">この端末でLiteへ取り込む</a></p>'
+        f"<small>有効期限: {safe_expiry}</small>"
+        '<dl class="lite-pairing-manual">'
+        f"<dt>Worker URL</dt><dd><code>{safe_worker_url}</code></dd>"
+        f"<dt>短期コード</dt><dd><code>{safe_code}</code></dd>"
+        "</dl>"
+        "</div></div>"
+        "<p class=\"lite-connectivity-safety\">通常ブラウザで開いた場合は、その画面では実行せず、"
+        "実際に持ち出すNexus Ark Liteアプリ（PWA）で、設定 → 独立モードの準備へ進み、"
+        "下のWorker URLと短期コードを手入力してください。</p>"
+        "</section>"
+    )
+
+
+def handle_lite_connectivity_issue_pairing_code(flow, room_name="", ttl_minutes=15):
+    try:
+        issued = lite_travel.create_pairing_code(ttl_minutes)
+        code = str(issued.get("code") or "")
+        expires = str(issued.get("expires_at") or "")
+        worker_url = str(lite_travel.get_settings().get("worker_url") or "")
+        result = f"端末ペアリングコード: `{html.escape(code)}`  \n有効期限: `{html.escape(expires)}`（発行から{ttl_minutes}分・1回限り）"
+        handoff = build_lite_pairing_handoff_html(worker_url, code, expires)
+        gr.Info("短期ペアリングコードを発行しました。スマホのNexus Ark Liteアプリで入力してください。")
+    except Exception as exc:
+        result = f"ペアリング: ❌ {html.escape(str(exc))}"
+        handoff = ""
+        gr.Warning("短期ペアリングコードを発行できませんでした。接続設定を確認してください。")
+    return _ensure_output_count(
+        (result, handoff, *handle_lite_connectivity_refresh(flow, room_name)), 8
+    )
+
+
+def handle_lite_connectivity_prepare_standby(flow, room_name):
+    selected_room = str(room_name or "").strip()
+    if not selected_room:
+        return _ensure_output_count(
+            (
+                "待機snapshot: ❌ 現在のルームを選択してください。",
+                *handle_lite_connectivity_flow_change(flow),
+                gr.update(),
+                gr.update(),
+            ),
+            7,
+        )
+    result = handle_lite_travel_prepare_standby([selected_room], [])
+    return _ensure_output_count(
+        (result, *handle_lite_connectivity_refresh(flow, selected_room)), 7
+    )
+
+
+def handle_lite_phase5_diagnostics():
+    local = lite_travel_operations.runtime_diagnostics()
+    remote = lite_travel.diagnose_worker()
+    return (
+        "### Phase 5 診断\n"
+        f"- ローカル前提: **{html.escape(str(local.get('state')))}**\n"
+        f"- Node.js major: `{html.escape(str(local.get('node_major') or '未確認'))}`\n"
+        f"- relay資源: `{'OK' if local.get('relay_resources_present') else '不足'}`\n"
+        f"- Worker互換: **{html.escape(str(remote.get('state')))}**\n"
+        "未知schema、進行中旅行、必須Secret不足では更新を開始しません。"
+    )
+
+
+def handle_lite_phase5_diagnostic_export():
+    try:
+        value = lite_travel_operations.diagnostic_export()
+        return "```json\n" + html.escape(value["json"]) + "\n```\n\n" + value["markdown"]
+    except Exception as exc:
+        return f"診断export: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_phase5_plan_update(database_name):
+    try:
+        operation = lite_travel_operations.plan_update(database_name)
+        return (
+            json.dumps(operation, ensure_ascii=False, indent=2),
+            f"更新計画: ✅ `{html.escape(str(operation['operation_id']))}` を作成しました。"
+            "下の「作成された更新計画」を確認し、問題なければ確認欄へチェックしてください。",
+            gr.update(interactive=True, variant="primary"),
+        )
+    except Exception as exc:
+        return gr.update(), f"更新計画: ❌ {html.escape(str(exc))}", gr.update(interactive=False)
+
+
+def handle_lite_phase5_run_update(
+    operation_text,
+    confirmed,
+    flow,
+    progress=gr.Progress(track_tqdm=False),
+):
+    if not confirmed:
+        return (
+            gr.update(),
+            "更新実行: ⚠️ 更新内容と、自動では元に戻さないことを確認してチェックしてください。",
+            gr.update(),
+            gr.update(),
+        )
+    operation = None
+    try:
+        operation = json.loads(str(operation_text or ""))
+
+        def show_postflight_wait(event):
+            attempt = max(1, int(event.get("attempt") or 1))
+            total = max(attempt, int(event.get("total_attempts") or attempt))
+            delay = max(0, int(float(event.get("delay_seconds") or 0)))
+            progress(
+                (attempt, total),
+                desc=f"Cloudflareへ反映中… {delay}秒後に自動確認します",
+            )
+
+        result = lite_travel_operations.run_update(
+            operation,
+            confirmed=True,
+            on_postflight_retry=show_postflight_wait,
+        )
+        card, metadata = _build_lite_connectivity_wizard_result(flow, refresh_remote=True)
+        warning = str(result.get("postflight_warning") or "").strip()
+        status = "更新実行: ✅ 更新と事後診断が完了しました。上の4状態も更新しました。"
+        if warning:
+            status += f"\n\n⚠️ {html.escape(warning)}"
+        return (
+            json.dumps(result, ensure_ascii=False, indent=2),
+            status,
+            card,
+            _lite_worker_update_guide_update(metadata),
+        )
+    except Exception as exc:
+        operation_update = (
+            json.dumps(operation, ensure_ascii=False, indent=2)
+            if isinstance(operation, dict)
+            else gr.update()
+        )
+        return operation_update, f"更新実行: ❌ {html.escape(str(exc))}", gr.update(), gr.update()
+
+
+def handle_lite_phase5_devices():
+    try:
+        devices = lite_travel.list_remote_devices()
+        lines = ["### 登録端末", "| 端末 | 最終利用 | refresh期限 | 状態 |", "|---|---|---|---|"]
+        for device in devices:
+            status = "失効" if device.get("revoked_at") else "有効"
+            lines.append(
+                f"| {html.escape(str(device.get('display_name') or device.get('device_id')))} | "
+                f"{html.escape(str(device.get('last_used_at') or '-'))} | "
+                f"{html.escape(str(device.get('refresh_expires_at') or '-'))} | {status} |"
+            )
+        return "\n".join(lines) if devices else "登録端末はありません。"
+    except Exception as exc:
+        return f"端末一覧: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_phase5_revoke_all_devices(confirmed):
+    if not confirmed:
+        return "全端末失効: ⚠️ 確認チェックが必要です。"
+    try:
+        result = lite_travel.revoke_all_remote_devices()
+        return f"全端末失効: ✅ {int(result.get('revoked_count') or 0)}件を失効しました。"
+    except Exception as exc:
+        return f"全端末失効: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_phase5_revoke_device(device_id, confirmed):
+    if not confirmed:
+        return "端末失効: ⚠️ 対象端末の確認チェックが必要です。"
+    try:
+        result = lite_travel.revoke_remote_device(device_id)
+        return f"端末失効: ✅ `{html.escape(str(device_id))}` / revoked={bool(result.get('revoked'))}"
+    except Exception as exc:
+        return f"端末失効: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_phase5_retention(preview_only=True):
+    try:
+        result = lite_travel.preview_remote_retention() if preview_only else lite_travel.run_remote_retention()
+        session_count = max(0, int(result.get("deleted_session_count") or 0))
+        standby_count = max(0, int(result.get("deleted_standby_count") or 0))
+        if preview_only:
+            heading = (
+                "確認結果: **帰宅後の会話データ "
+                f"{session_count}件 / お出かけ前データ {standby_count}件** が削除期限を迎えています。  \n"
+                "これは確認だけです。**まだ削除されていません。**"
+            )
+        else:
+            heading = (
+                "削除結果: **帰宅後の会話データ "
+                f"{session_count}件 / お出かけ前データ {standby_count}件** の期限切れ本文を削除しました。"
+            )
+        return heading + "\n\n**技術的な処理結果**\n\n```json\n" + html.escape(
+            json.dumps(result, ensure_ascii=False, indent=2)
+        ) + "\n```"
+    except Exception as exc:
+        return f"保持期限処理: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_travel_prepare_standby(
+    selected_rooms,
+    parallel_rooms,
+    include_core_memory=True,
+    include_episodic_memory=True,
+    episodic_memory_days=2,
+    recent_message_limit=40,
+):
+    try:
+        manifest = lite_travel.prepare_standby_snapshot(
+            selected_rooms or [],
+            parallel_rooms=parallel_rooms or [],
+            include_core_memory=bool(include_core_memory),
+            include_episodic_memory=bool(include_episodic_memory),
+            episodic_memory_days=int(episodic_memory_days or 0),
+            recent_message_limit=int(recent_message_limit or 0),
+        )
+        memory_label = "含める" if include_core_memory else "含めない"
+        episodic_label = (
+            f"直近{int(episodic_memory_days or 0)}日" if include_episodic_memory else "含めない"
+        )
+        gr.Info("お出かけ前データを準備しました。内容を確認して次へ進めます。")
+        return (
+            f"待機snapshot: ✅ 世代{int(manifest.get('generation') or 0)}を準備しました。 "
+            f"作成 `{html.escape(str(manifest.get('created_at') or ''))}` / "
+            f"期限 `{html.escape(str(manifest.get('expires_at') or ''))}`  \n"
+            f"持ち出し範囲: システムプロンプト（必須） / コアメモリ: **{memory_label}** / "
+            f"エピソード記憶: **{episodic_label}** / "
+            f"直近の会話: **最大{int(recent_message_limit or 0)}件/ペルソナ**"
+        )
+    except Exception as exc:
+        gr.Warning("お出かけ前データを準備できませんでした。選択内容を確認してください。")
+        return f"待機snapshot: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_travel_preview_standby(
+    selected_rooms,
+    parallel_rooms,
+    include_core_memory=True,
+    include_episodic_memory=True,
+    episodic_memory_days=2,
+    recent_message_limit=40,
+):
+    """Workerへ送信する前に、待機snapshotの正確な内容と量をローカル表示する。"""
+    try:
+        snapshot = lite_travel.build_multi_snapshot(
+            selected_rooms or [],
+            parallel_rooms=parallel_rooms or [],
+            include_core_memory=bool(include_core_memory),
+            include_episodic_memory=bool(include_episodic_memory),
+            episodic_memory_days=int(episodic_memory_days or 0),
+            recent_message_limit=int(recent_message_limit or 0),
+        )
+        expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=30)
+        expires_at = expires.isoformat().replace("+00:00", "Z")
+        summary = build_lite_departure_summary(snapshot, expires_at).replace(
+            "### 出発前の確認", "### Lite用クラウドへ送る前の確認", 1
+        )
+        state = {
+            "snapshot": snapshot,
+            "selected_rooms": list(selected_rooms or []),
+            "preferences": {
+                "selected_rooms": list(selected_rooms or []),
+                "parallel_rooms": list(parallel_rooms or []),
+                "include_core_memory": bool(include_core_memory),
+                "include_episodic_memory": bool(include_episodic_memory),
+                "episodic_memory_days": int(episodic_memory_days or 0),
+                "recent_message_limit": int(recent_message_limit or 0),
+            },
+            "expires_at": expires_at,
+        }
+        gr.Info("送信前の内容を確認しました。『確認した内容をLite用クラウドへ準備』で登録できます。")
+        return (
+            summary,
+            json.dumps(snapshot, ensure_ascii=False, indent=2),
+            state,
+            gr.update(interactive=True, variant="primary"),
+        )
+    except Exception as exc:
+        gr.Warning("送信前の内容を作成できませんでした。選択内容を確認してください。")
+        return (
+            f"確認内容を作成できませんでした: ❌ {html.escape(str(exc))}",
+            gr.update(value=""),
+            None,
+            gr.update(interactive=False, variant="secondary"),
+        )
+
+
+def handle_lite_travel_confirm_standby(preview_state):
+    """直前に表示した同一snapshotだけをWorkerへ登録する。"""
+    try:
+        if not isinstance(preview_state, dict) or not isinstance(preview_state.get("snapshot"), dict):
+            raise lite_travel.LiteTravelError("先に持ち出す内容を確認してください。")
+        expiry = datetime.datetime.fromisoformat(
+            str(preview_state.get("expires_at") or "").replace("Z", "+00:00")
+        )
+        if expiry.tzinfo is None or expiry <= datetime.datetime.now(datetime.timezone.utc):
+            raise lite_travel.LiteTravelError("確認期限が切れました。もう一度内容を確認してください。")
+        selected_rooms = list(preview_state.get("selected_rooms") or [])
+        manifest = lite_travel.prepare_standby_snapshot(
+            selected_rooms,
+            prepared_snapshot=preview_state["snapshot"],
+        )
+        preference_note = ""
+        if isinstance(preview_state.get("preferences"), dict):
+            try:
+                config_manager.update_config_keys({"lite_outing_preferences": preview_state["preferences"]})
+            except Exception:
+                preference_note = "  \n前回の選択を保存できませんでした。次回は内容を選び直してください。"
+        gr.Info("お出かけ前データをLite用クラウドへ準備しました。次は出発内容を確認できます。")
+        return (
+            f"待機snapshot: ✅ 確認した内容を世代{int(manifest.get('generation') or 0)}として準備しました。 "
+            f"期限 `{html.escape(str(manifest.get('expires_at') or ''))}`。下の「3. 出発」へ進んでください。{preference_note}",
+            None,
+            gr.update(interactive=False, variant="secondary"),
+        )
+    except Exception as exc:
+        gr.Warning("お出かけ前データをLite用クラウドへ準備できませんでした。")
+        return (
+            f"待機snapshot: ❌ {html.escape(str(exc))}",
+            preview_state,
+            gr.update(),
+        )
+
+
+def handle_lite_travel_build_snapshot(room_name, system_prompt, permanent_memory, diary_memory, episodic_summary):
+    try:
+        core_parts = [str(permanent_memory or "").strip(), str(diary_memory or "").strip()]
+        snapshot = lite_travel.build_snapshot(
+            room_name,
+            str(system_prompt or ""),
+            "\n\n".join(part for part in core_parts if part),
+            str(episodic_summary or ""),
+        )
+        serialized = json.dumps(snapshot, ensure_ascii=False, indent=2)
+        gr.Info("出発内容を作成しました。表示内容を確認してから出発できます。")
+        return serialized, f"状態: ✅ snapshotを作成しました（{len(serialized):,}文字）。内容を確認して出発してください。"
+    except Exception as exc:
+        gr.Warning("出発内容を作成できませんでした。選んだペルソナと記憶を確認してください。")
+        return gr.update(), f"状態: ❌ {html.escape(str(exc))}"
+
+
+def _lite_snapshot_safety_check(snapshot: dict[str, Any]) -> tuple[bool, str]:
+    """生成済みsnapshotへ秘密らしい値やローカル絶対パスがないことを再検査する。"""
+    serialized = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
+    if lite_travel._SECRET_VALUE_PATTERN.search(serialized):
+        return False, "秘密情報らしい値が見つかりました。ペルソナ設定と記憶を確認してください。"
+    if lite_travel._ABSOLUTE_PATH_PATTERN.search(serialized):
+        return False, "PC内の絶対パスが見つかりました。ペルソナ設定と記憶を確認してください。"
+    return True, "秘密情報とPC内パスは検出されませんでした。"
+
+
+def build_lite_departure_summary(snapshot: dict[str, Any], preview_expires_at: str) -> str:
+    """生JSONを読まずに出発内容を判断できる一般向け要約を返す。"""
+    personas = snapshot.get("personas") if isinstance(snapshot.get("personas"), list) else []
+    names = [
+        html.escape(str(item.get("persona_display_name") or item.get("persona_id") or "名称未設定"))
+        for item in personas
+        if isinstance(item, dict)
+    ]
+    parallel_count = sum(
+        1 for item in personas
+        if isinstance(item, dict) and item.get("presence_mode") == "parallel"
+    )
+    presence = (
+        f"{parallel_count}人は本体にも残り、{len(personas) - parallel_count}人は本体で休みます。"
+        if parallel_count
+        else "全員、本体では帰宅まで休みます。"
+    )
+    safe, safety_message = _lite_snapshot_safety_check(snapshot)
+    if not safe:
+        raise lite_travel.LiteTravelError(safety_message)
+    created_at = html.escape(str(snapshot.get("created_at") or "未記録"))
+    expires_at = html.escape(preview_expires_at)
+    section_lines = []
+    for item in personas:
+        if not isinstance(item, dict):
+            continue
+        label = html.escape(str(item.get("persona_display_name") or item.get("persona_id") or "名称未設定"))
+        prompt_chars = len(str(item.get("system_prompt") or ""))
+        memory_chars = len(str(item.get("core_memory") or ""))
+        episodic_chars = len(str(item.get("episodic_summary") or ""))
+        messages = item.get("recent_messages") if isinstance(item.get("recent_messages"), list) else []
+        message_chars = sum(len(str(message.get("content") or "")) for message in messages if isinstance(message, dict))
+        section_lines.append(
+            f"  - **{label}:** システムプロンプト {prompt_chars:,}文字 / コアメモリ {memory_chars:,}文字 / "
+            f"エピソード記憶 {episodic_chars:,}文字 / 直近の会話 {len(messages)}件・{message_chars:,}文字"
+        )
+    section_summary = "\n".join(section_lines) if section_lines else "  - 内容を取得できませんでした。"
+    return (
+        "### 出発前の確認\n"
+        f"- **一緒に行く人:** {len(names)}人（{'、'.join(names)}）\n"
+        f"- **本体での過ごし方:** {presence}\n"
+        "- **持ち出す情報と量:**\n"
+        f"{section_summary}\n"
+        f"- **作成時刻:** `{created_at}`\n"
+        f"- **この確認の有効期限:** `{expires_at}`（またはルームを切り替えるまで）\n"
+        f"- **安全検査:** ✅ {html.escape(safety_message)}"
+    )
+
+
+def handle_lite_travel_build_multi_snapshot(
+    selected_rooms,
+    parallel_rooms,
+    room_name,
+    include_core_memory=True,
+    include_episodic_memory=True,
+    episodic_memory_days=2,
+    recent_message_limit=40,
+):
+    try:
+        snapshot = lite_travel.build_multi_snapshot(
+            selected_rooms or [],
+            parallel_rooms=parallel_rooms or [],
+            include_core_memory=bool(include_core_memory),
+            include_episodic_memory=bool(include_episodic_memory),
+            episodic_memory_days=int(episodic_memory_days or 0),
+            recent_message_limit=int(recent_message_limit or 0),
+        )
+        serialized = json.dumps(snapshot, ensure_ascii=False, indent=2)
+        preview_expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=30)
+        preview_expires_at = preview_expires.isoformat().replace("+00:00", "Z")
+        summary = build_lite_departure_summary(snapshot, preview_expires_at)
+        preview_state = {
+            "snapshot": snapshot,
+            "room_name": str(room_name or ""),
+            "expires_at": preview_expires_at,
+        }
+        gr.Info("出発内容を作成しました。表示内容を確認してから出発できます。")
+        return (
+            summary,
+            serialized,
+            preview_state,
+            f"状態: ✅ {len(snapshot['personas'])}ペルソナのsnapshotを作成しました（{len(serialized):,}文字）。",
+            gr.update(variant="secondary"),
+            gr.update(variant="primary", interactive=True),
+            build_lite_outing_progress("departure_preview_ready"),
+        )
+    except Exception as exc:
+        gr.Warning("出発内容を作成できませんでした。選択内容を確認してください。")
+        return (
+            f"出発前の確認: ❌ {html.escape(str(exc))}",
+            gr.update(value=""),
+            None,
+            f"状態: ❌ {html.escape(str(exc))}",
+            gr.update(variant="primary"),
+            gr.update(variant="secondary", interactive=False),
+            build_lite_outing_progress("ready_to_depart"),
+        )
+
+
+def handle_lite_travel_start(preview_state: dict[str, Any], room_name: str):
+    try:
+        if not isinstance(preview_state, dict) or not isinstance(preview_state.get("snapshot"), dict):
+            raise lite_travel.LiteTravelError("出発内容をもう一度作成してください。")
+        if str(preview_state.get("room_name") or "") != str(room_name or ""):
+            raise lite_travel.LiteTravelError("ルームが変わったため、出発内容をもう一度作成してください。")
+        expiry = datetime.datetime.fromisoformat(str(preview_state.get("expires_at") or "").replace("Z", "+00:00"))
+        if expiry.tzinfo is None or expiry <= datetime.datetime.now(datetime.timezone.utc):
+            raise lite_travel.LiteTravelError("出発前の確認期限が切れました。出発内容をもう一度作成してください。")
+        snapshot = preview_state["snapshot"]
+        safe, safety_message = _lite_snapshot_safety_check(snapshot)
+        if not safe:
+            raise lite_travel.LiteTravelError(safety_message)
+        if snapshot.get("schema_version") == 4:
+            lite_travel.start_multi_departure(snapshot)
+            names = [str(item.get("persona_display_name") or item.get("persona_id")) for item in snapshot["personas"]]
+            gr.Info("選んだペルソナが出発しました。Liteで会話を始められます。")
+            return f"状態: ✅ {len(names)}ペルソナが出発しました: {html.escape('、'.join(names))}", None
+        if snapshot.get("persona_id") != room_name:
+            raise lite_travel.LiteTravelError("表示中ルームとsnapshotのペルソナが一致しません。")
+        lite_travel.start_departure(snapshot)
+        gr.Info("ペルソナが出発しました。Liteで会話を始められます。")
+        return build_lite_travel_status(room_name), None
+    except lite_travel.LiteTravelUncertainRequestError as exc:
+        gr.Warning("出発結果を確認できませんでした。状態を確認してから次へ進んでください。")
+        return f"状態: ⚠️ {html.escape(str(exc))}", None
+    except Exception as exc:
+        gr.Warning("出発できませんでした。内容を確認してもう一度お試しください。")
+        return f"状態: ❌ 出発できませんでした。{html.escape(str(exc))}", None
+
+
+def handle_lite_travel_start_for_ui(preview_state, room_name):
+    """出発後は実際に持ち出した人へ状態表示を合わせる。本体のルームは変えない。"""
+    result, remaining = handle_lite_travel_start(preview_state, room_name)
+    focus = gr.update()
+    if "❌" not in result:
+        personas = ((preview_state or {}).get("snapshot") or {}).get("personas") or []
+        ids = [item.get("persona_id") for item in personas if item.get("persona_id")]
+        if ids and room_name not in ids:
+            focus = gr.update(value=ids[0])
+    return result, remaining, focus
+
+
+def handle_lite_travel_pairing_code(ttl_minutes=15):
+    try:
+        result = lite_travel.create_pairing_code(ttl_minutes)
+        code = html.escape(str(result.get("code") or ""))
+        expires = html.escape(str(result.get("expires_at") or ""))
+        return f"端末ペアリングコード: `{code}`  \n有効期限: `{expires}`（発行から{ttl_minutes}分・1回限り）"
+    except Exception as exc:
+        return f"ペアリング: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_travel_export_bundle(room_name: str):
+    try:
+        state = lite_travel.presence_status(room_name)
+        if not state or not state.get("travel_session_id"):
+            raise lite_travel.LiteTravelError("書き出せるお出かけセッションがありません。")
+        session_id = str(state["travel_session_id"])
+        bundle = lite_travel.export_return_bundle(session_id)
+        export_dir = Path(constants.METADATA_DIR) / "lite_travel" / "exports"
+        export_path = export_dir / f"lite_travel_return_{session_id}.json"
+        file_lock_utils.safe_json_write(export_path.as_posix(), bundle)
+        gr.Info("署名付き帰宅データを書き出しました。内容を確認して本体へ戻せます。")
+        return gr.update(value=export_path.as_posix()), "状態: ✅ 署名付き帰宅bundleを書き出し、取込対象へ選択しました。"
+    except Exception as exc:
+        gr.Warning("帰宅データを書き出せませんでした。お出かけ状態を確認してください。")
+        return gr.update(), f"状態: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_travel_online_return(room_name: str):
+    try:
+        state = lite_travel.presence_status(room_name)
+        if not state or not state.get("travel_session_id"):
+            raise lite_travel.LiteTravelError("オンライン帰宅できるセッションがありません。")
+        result = lite_travel.online_return(str(state["travel_session_id"]))
+        event_count = sum(int(item.get("imported_event_count") or 0) for item in result["personas"])
+        receipt_count = sum(int(item.get("imported_receipt_count") or 0) for item in result["personas"])
+        proposals = result.get("route_proposals") or []
+        resumed = "（中断地点から再開）" if result.get("resumed") else ""
+        gr.Info("Liteの会話を本体へ戻しました。")
+        return (
+            f"状態: ✅ {len(result['personas'])}ペルソナをオンライン帰宅しました{resumed}。"
+            f"会話{event_count}件、料金{receipt_count}件を統合しました。"
+            + _lite_return_memory_guidance(
+                [item.get("persona_id") for item in result["personas"] if item.get("persona_id")] or [room_name]
+            ),
+            gr.update(choices=proposals, value=[]),
+        )
+    except Exception as exc:
+        gr.Warning("Liteの会話を本体へ戻せませんでした。帰宅プレビューを確認してください。")
+        return f"状態: ❌ オンライン帰宅を完了できませんでした。再実行できます。{html.escape(str(exc))}", gr.update()
+
+
+def _lite_return_memory_guidance(room_names=()) -> str:
+    note = (
+        "  \n日付ごとのエピソード記憶は、通常の睡眠時整理または"
+        "「エピソード記憶を今すぐ更新」で作成・更新します。当日分は翌日以降に処理します。"
+    )
+    try:
+        import lite_return_memory
+        undated = sum(
+            descriptor.get("date") is None
+            for room_name in set(room_names)
+            for descriptor in lite_return_memory.pending_return_memory(room_name).values()
+        )
+        if undated:
+            note += f"  \n⚠️ 元の日時を確認できない会話が{undated}件あります。原文は保存済みですが、日付別の記憶整理には未反映です。"
+    except Exception:
+        note += "  \n⚠️ 記憶整理待ちの状態を確認できませんでした。会話の保存は完了しています。"
+    return note
+
+
+def handle_lite_travel_return_preview(room_name: str):
+    try:
+        state = lite_travel.presence_status(room_name)
+        if not state or not state.get("travel_session_id"):
+            raise lite_travel.LiteTravelError("確認できるお出かけセッションがありません。")
+        preview = lite_travel.preview_online_return(str(state["travel_session_id"]))
+        lines = ["### 帰宅プレビュー"]
+        for item in preview["personas"]:
+            mode = "並行存在" if item["presence_mode"] == "parallel" else "単一存在"
+            branch = "・分岐確認が必要" if (
+                item["home_anchor_changed"]
+                or item["emergency_reclaimed"]
+                or item.get("branch_divergence_possible")
+            ) else ""
+            lines.append(f"- **{html.escape(item['display_name'])}**: {mode}・event {item['high_water_sequence']}件{branch}")
+        lines.append("オンライン帰宅を開始すると新しいLite送信を停止し、署名検証後にペルソナ別ルームへ統合します。")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"帰宅プレビュー: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_travel_return_preview_ui(room_name: str):
+    """帰宅確認に成功した時だけ、確定操作をprimaryかつ有効にする。"""
+    preview = handle_lite_travel_return_preview(room_name)
+    succeeded = not preview.startswith("帰宅プレビュー: ❌")
+    if succeeded:
+        gr.Info("帰宅内容を確認しました。問題がなければ本体へ戻せます。")
+    else:
+        gr.Warning("帰宅内容を確認できませんでした。接続とお出かけ状態を確認してください。")
+    return (
+        preview,
+        gr.update(variant="secondary" if succeeded else "primary"),
+        gr.update(variant="primary" if succeeded else "secondary", interactive=succeeded),
+        build_lite_outing_progress("ready_to_return" if succeeded else "away"),
+    )
+
+
+def handle_lite_travel_apply_route_proposals(selected_rooms):
+    try:
+        count = lite_travel.apply_route_proposals(selected_rooms or [])
+        return f"最終route反映: ✅ {count}件の次回お出かけテンプレートへ反映しました。"
+    except Exception as exc:
+        return f"最終route反映: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_travel_import_bundle(file_obj, room_name: str):
+    if not file_obj:
+        return "状態: ⚠️ 帰宅bundleを選択してください。"
+    try:
+        path = file_obj if isinstance(file_obj, str) else getattr(file_obj, "name", "")
+        with open(path, "r", encoding="utf-8") as stream:
+            bundle = json.load(stream)
+        result = lite_travel.import_return_bundle(bundle, room_name)
+        remote_note = ""
+        try:
+            if isinstance(result.get("personas"), list):
+                lite_travel.acknowledge_file_return(result)
+            else:
+                lite_travel.close_remote_session(result["travel_session_id"])
+        except Exception as remote_exc:
+            remote_note = f"  \n⚠️ 本体統合は完了しましたが、Workerの帰宅済み化は再試行が必要です: {html.escape(str(remote_exc))}"
+        duplicate = "（再取込のため追加なし）" if result["duplicate"] else ""
+        return (
+            f"状態: ✅ {result['imported_event_count']}件を冪等統合しました。{duplicate}{remote_note}"
+            + _lite_return_memory_guidance(
+                [item.get("persona_id") for item in result.get("personas", []) if item.get("persona_id")] or [room_name]
+            )
+        )
+    except Exception as exc:
+        return f"状態: ❌ 帰宅bundleを統合できませんでした。{html.escape(str(exc))}"
+
+
+def handle_lite_travel_delete_remote_content(room_name: str):
+    try:
+        state = lite_travel.presence_status(room_name)
+        if not state or not state.get("travel_session_id"):
+            raise lite_travel.LiteTravelError("対象セッションがありません。")
+        lite_travel.delete_remote_content(str(state["travel_session_id"]))
+        return "状態: ✅ Worker上のsnapshotと会話本文を削除しました。receiptと監査情報は残ります。"
+    except Exception as exc:
+        return f"状態: ❌ {html.escape(str(exc))}"
+
+
+def handle_lite_travel_emergency_reclaim(room_name: str, reason: str):
+    try:
+        result = lite_travel.emergency_reclaim_remote(room_name, reason)
+        note = "  \n⚠️ Workerへ未到達です。再接続後もLite側停止を確認してください。" if result.get("remote_pending") else ""
+        return build_lite_travel_status(room_name) + note
+    except Exception as exc:
+        return f"状態: ❌ {html.escape(str(exc))}"
 
 def handle_save_twitter_settings(room_name, enabled, auth_mode, api_key, api_secret, access_token, access_token_secret, posting_summary, posting_guidelines):
     """Twitter連携設定を保存する"""
@@ -14466,8 +18485,70 @@ def handle_show_saved_api_gateway_token():
 
 
 
+def _get_lan_ipv4() -> str:
+    """同一LAN向けの代表IPv4を取得する。取得不能なら空文字を返す。"""
+    candidates = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            candidates.append(str(probe.getsockname()[0]))
+    except OSError:
+        pass
+    try:
+        candidates.extend(
+            item[4][0]
+            for item in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        )
+    except OSError:
+        pass
+    for candidate in candidates:
+        if candidate and not candidate.startswith(("127.", "169.254.")):
+            return candidate
+    return ""
+
+
+def _build_lite_connection_urls(
+    port: int,
+    lan_ip: str,
+    tailscale_ip: str,
+    dns_name: str,
+) -> Dict[str, str]:
+    """Liteの画面URLと、本体APIへ渡すbase URLを用途別に分けて作る。
+
+    `/lite` はスマホで画面を開くためのパスであり、PWAの「本体への接続」へ
+    入れるAPI baseには含めない。接続案内とテストが同じ規則を使えるよう、
+    ネットワークへアクセスせずURLだけを組み立てる。
+    """
+    local_base = f"http://127.0.0.1:{port}"
+    lan_base = f"http://{lan_ip}:{port}" if lan_ip else "自動検出できませんでした"
+    tailscale_http_base = (
+        f"http://{tailscale_ip}:{port}" if tailscale_ip else f"http://<Tailscale IP>:{port}"
+    )
+    tailscale_https_base = (
+        f"https://{dns_name}" if dns_name else "https://<PCのTailscale DNS名>.ts.net"
+    )
+    return {
+        "local_base": local_base,
+        "local_screen_url": f"{local_base}/lite",
+        "lan_base": lan_base,
+        "lan_screen_url": f"{lan_base}/lite" if lan_ip else "自動検出できませんでした",
+        "tailscale_http_base": tailscale_http_base,
+        "tailscale_http_screen_url": f"{tailscale_http_base}/lite",
+        "tailscale_https_base": tailscale_https_base,
+        "tailscale_https_screen_url": f"{tailscale_https_base}/lite",
+    }
+
+
+def _escape_lite_connection_markdown(value: Any) -> str:
+    """接続診断の動的値をMarkdown内で安全に表示する。"""
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    # URLやTailscale CLI出力をコードスパンへ入れるため、HTMLとbacktickを
+    # 文字として表示する。秘密値を取り込む関数ではなく、表示値専用の境界。
+    return html.escape(text, quote=True).replace("`", "&#96;")
+
+
 def build_api_gateway_lite_connection_help() -> str:
-    """Nexus Ark Liteの接続先とTailscale Serveコマンドを表示するMarkdownを生成する。"""
+    """Nexus Ark Liteの画面URLと本体API URLを分けて表示するMarkdownを生成する。"""
     settings = config_manager.CONFIG_GLOBAL.get("api_gateway_settings", {}) or {}
     port = int(settings.get("port", 8000) or 8000)
     api_enabled = bool(settings.get("enabled"))
@@ -14475,23 +18556,36 @@ def build_api_gateway_lite_connection_help() -> str:
     tailscale_ip = _get_tailscale_ipv4()
     serve_status = _get_tailscale_serve_status()
     serve_status_json = _get_tailscale_serve_status_json()
-    local_url = f"http://127.0.0.1:{port}/lite"
-    lan_url = f"http://<PCのIPアドレス>:{port}/lite"
-    tailnet_http_url = f"http://{tailscale_ip}:{port}/lite" if tailscale_ip else f"http://<Tailscale IP>:{port}/lite"
-    https_url = f"https://{dns_name}/lite" if dns_name else "https://<PCのTailscale DNS名>.ts.net/lite"
+    lan_ip = _get_lan_ipv4()
+    urls = _build_lite_connection_urls(port, lan_ip, tailscale_ip, dns_name)
+    local_url = urls["local_screen_url"]
+    lan_url = urls["lan_screen_url"]
+    tailnet_http_url = urls["tailscale_http_screen_url"]
+    https_url = urls["tailscale_https_screen_url"]
     serve_command = f"tailscale serve --bg --https=443 http://127.0.0.1:{port}"
     serve_configured = _tailscale_serve_points_to_port(serve_status, serve_status_json, port)
     serve_diagnostic = _summarize_tailscale_serve_json(serve_status_json, port)
 
     api_state = "有効" if api_enabled else "無効"
-    dns_line = f"- Tailscale DNS名: `{dns_name}`" if dns_name else "- Tailscale DNS名: 未検出（MagicDNS/HTTPS有効化後に再確認）"
-    ip_line = f"- Tailscale IP: `{tailscale_ip}`" if tailscale_ip else "- Tailscale IP: 未検出"
+    dns_line = (
+        f"- Tailscale DNS名: `{_escape_lite_connection_markdown(dns_name)}`"
+        if dns_name
+        else "- Tailscale DNS名: 未検出（MagicDNS/HTTPS有効化後に再確認）"
+    )
+    ip_line = (
+        f"- Tailscale IP: `{_escape_lite_connection_markdown(tailscale_ip)}`"
+        if tailscale_ip
+        else "- Tailscale IP: 未検出"
+    )
     if not shutil.which("tailscale"):
         serve_line = "- Tailscale Serve: 未確認（Tailscale CLIが見つかりません）"
         next_action = "次にやること: Tailscaleをインストールしてログイン後、接続情報を更新してください。"
     elif serve_configured:
         serve_line = f"- Tailscale Serve: **設定済み**（API Gateway port `{port}` へ転送）"
-        next_action = f"次にやること: スマホで `{https_url}` を開いてください。録音も使えます。"
+        next_action = (
+            "次にやること: スマホで "
+            f"`{_escape_lite_connection_markdown(https_url)}` を開いてください。録音も使えます。"
+        )
     elif serve_status or serve_status_json:
         serve_line = "- Tailscale Serve: 未設定または別ポート向けに設定済み"
         next_action = "次にやること: 「Tailscale HTTPS設定を実行」を押すか、下のコマンドをPC側で実行してください。"
@@ -14499,27 +18593,91 @@ def build_api_gateway_lite_connection_help() -> str:
         serve_line = "- Tailscale Serve: 未確認（Tailscale未ログイン、権限待ち、またはHTTPS/MagicDNS未設定の可能性）"
         next_action = "次にやること: Tailscaleのログイン状態とMagicDNS/HTTPS設定を確認し、必要なら「Tailscale HTTPS設定を実行」を押してください。"
 
-    serve_diagnostic_block = f"{serve_diagnostic}\n" if serve_diagnostic else ""
+    serve_diagnostic_block = (
+        f"{_escape_lite_connection_markdown(serve_diagnostic)}\n" if serve_diagnostic else ""
+    )
+
+    local_base = _escape_lite_connection_markdown(urls["local_base"])
+    local_screen_url = _escape_lite_connection_markdown(local_url)
+    lan_base = _escape_lite_connection_markdown(urls["lan_base"])
+    lan_screen_url = _escape_lite_connection_markdown(lan_url)
+    tailscale_http_base = _escape_lite_connection_markdown(urls["tailscale_http_base"])
+    tailscale_http_screen_url = _escape_lite_connection_markdown(tailnet_http_url)
+    tailscale_https_base = _escape_lite_connection_markdown(urls["tailscale_https_base"])
+    tailscale_https_screen_url = _escape_lite_connection_markdown(https_url)
 
     return (
         "#### Nexus Ark Lite 接続情報\n"
         f"- API Gateway: **{api_state}** / Port `{port}`\n"
-        f"- PC内確認: `{local_url}`\n"
-        f"- 同一Wi-Fi: `{lan_url}`\n"
-        f"- Tailscale HTTP（テキスト・画像用）: `{tailnet_http_url}`\n"
-        f"- Tailscale HTTPS（音声入力用）: `{https_url}`\n"
+        "\n"
+        "#### 1. スマホでLiteの画面を開くURL（`/lite` あり）\n"
+        "ブラウザで開く住所です。ホーム画面へ追加する時も、まずこのURLを開きます。\n"
+        f"- Tailscale HTTPS（推奨）: `{tailscale_https_screen_url}`\n"
+        f"- 同一Wi-Fi（HTTP）: `{lan_screen_url}`\n"
+        f"- Tailscale HTTP（テキスト・画像用）: `{tailscale_http_screen_url}`\n"
+        "\n"
+        "#### 2. ホーム画面のLiteで「本体への接続→API URL」に入れるURL（`/lite` なし）\n"
+        "Liteの「設定」→「本体への接続」→「API URL」へ入れる本体APIのベースURLです。"
+        "上の画面URLをそのまま貼らず、同じ接続方法の行から `/lite` を外したURLを入力してください。\n"
+        f"- Tailscale（HTTPS・推奨）: `{tailscale_https_base}`\n"
+        f"- 同一Wi-Fi（HTTP）: `{lan_base}`\n"
+        f"- Tailscale（HTTP）: `{tailscale_http_base}`\n"
+        "\n上のAPI URLをコピーして使えます。画面用の末尾 `/lite` は不要です。Lite側で画面URLを貼り付けた場合も、接続時にAPI URLへ補正します。\n"
+        "\n"
+        "#### PC側の接続状態・診断\n"
+        f"- PC内確認（スマホでは使いません）: `{local_screen_url}`\n"
+        f"- PC内API（スマホでは使いません）: `{local_base}`\n"
         f"{dns_line}\n"
         f"{ip_line}\n"
         f"{serve_line}\n\n"
         f"{serve_diagnostic_block}"
         f"**{next_action}**\n\n"
+        "#### スマホ側での最終確認（ブラウザだけでは完了ではありません）\n"
+        "1. 実際に使うホーム画面のNexus Ark Liteを開き、下部の「設定」→「本体への接続」を開きます。\n"
+        "2. 上のAPI URL（`/lite` なし）と、本体で保存済みの既存の接続用Tokenを入力・確認して「接続」を押します。Tokenはこの案内には表示しません。\n"
+        "3. 本体のルーム一覧や会話が表示されることを確認してください。**🏠 本体接続** は「設定」→「独立モードの接続・準備状況」、**接続済み** は接続メニューで確認できます。ブラウザで画面を開けただけでは、ホーム画面PWAの本体接続確認とはしません。\n\n"
+        "同一Wi-FiのURLをスマホで開けない場合は、PCとスマホが同じWi-Fiか確認し、Windowsの確認画面で"
+        "Nexus ArkまたはPythonの**プライベートネットワーク**通信を許可してください。公共ネットワークへは許可しないでください。\n\n"
         "スマホの音声入力はブラウザ制約によりHTTPSが必要です。Tailscale接続では、PC側で一度だけ以下を実行してHTTPS URLを使います。\n\n"
         f"```bash\n{serve_command}\n```\n\n"
+        "#### HTTPS初回承認の手順\n"
+        "初回のTailscale承認が必要な場合や、「Tailscale HTTPS設定を実行」が30秒で終わった場合は、"
+        "PCの**Windowsターミナル**で上の固定コマンドを本人が実行し、表示されたTailscaleの承認を許可してください。"
+        "この案内はコマンドを実行しません。Tailscale Funnelやインターネットへの公開は不要です。\n\n"
         "設定済みか確認する場合:\n\n"
         "```bash\n"
         "tailscale serve status\n"
         "tailscale serve status --json\n"
         "```\n"
+    )
+
+
+def build_api_gateway_lite_qr_html() -> str:
+    """Nexus Ark LiteのTailscale HTTPS URLをQRコードとして返す。"""
+    dns_name = _get_tailscale_dns_name()
+    if not dns_name:
+        return ""
+
+    url = f"https://{dns_name}/lite/"
+    try:
+        import segno
+
+        buffer = io.BytesIO()
+        segno.make(url, error="m").save(buffer, kind="png", scale=6, border=4)
+        data = base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception:
+        return ""
+
+    return (
+        '<div style="text-align:center;margin:8px 0">'
+        '<div style="font-size:0.85em;color:#9aa3ab;margin-bottom:6px">'
+        "Nexus Ark Lite スマホ用QR（Tailscale HTTPS）</div>"
+        f'<img alt="Nexus Ark Lite スマホ用QRコード" src="data:image/png;base64,{data}" '
+        'style="width:240px;height:240px;max-width:100%;background:#fff;padding:8px;'
+        'border-radius:8px;display:inline-block" />'
+        '<div style="font-size:0.8em;color:#9aa3ab;margin-top:6px">'
+        "QRにはURLだけが含まれます。接続用TokenはLiteで別途入力してください。</div>"
+        "</div>"
     )
 
 
@@ -14574,14 +18732,43 @@ def build_api_gateway_security_diagnostics() -> str:
 
 
 def build_api_gateway_personal_use_guide() -> str:
-    """個人拡張用途向けに、API Gateway / Liteの使い方をユーザーフレンドリーに案内する。"""
+    """Nexus Ark Liteの二つの使い方を、最初の一判断だけで案内する。"""
     return (
-        "#### 📱 スマホからペルソナに話しかける\n"
-        "**Nexus Ark Lite** を使うと、外出先のスマホからペルソナとチャットしたり、"
-        "音声で話しかけたり、Twitter下書きを承認したりできます。\n\n"
-        "1. 下の「API設定」でAPI Gatewayを有効にして、接続用Tokenを生成・保存します。\n"
-        "2. 「Nexus Ark Lite 接続情報」に表示されるURLをスマホで開きます。\n"
-        "3. Tokenを入力して接続すると、ペルソナとの会話が始められます。\n\n"
+        '<section class="lite-start-choice" aria-labelledby="lite-start-choice-title">'
+        '<h3 id="lite-start-choice-title">📱 使い方を選んでください</h3>'
+        '<p class="lite-start-choice-lead">下のボタンから、そのまま必要な設定を始められます。</p>'
+        '<div class="lite-start-choice-grid">'
+        '<article class="lite-start-choice-card" data-mode="connected">'
+        '<span class="lite-start-choice-badge">A・すぐ使える</span>'
+        '<h4>PCをつけたまま使う</h4>'
+        '<ul>'
+        '<li>本体と同じ会話・記憶・機能を使います</li>'
+        '<li>同じWi-Fi、またはTailscaleで接続します</li>'
+        '<li>実際に使うホーム画面のLiteで「設定」→「本体への接続」を開き、API URLと既存Tokenを入力して接続します</li>'
+        '</ul>'
+        '</article>'
+        '<article class="lite-start-choice-card" data-mode="independent">'
+        '<span class="lite-start-choice-badge">B・初回準備あり</span>'
+        '<h4>PCを止めても使う</h4>'
+        '<ul>'
+        '<li>持ち出したペルソナと必要な記憶で会話します</li>'
+        '<li>独立モード自体には本体接続不要です。PCを止めていても会話できます</li>'
+        '<li>帰宅後にLiteでの会話を本体へ戻せます。スマホから帰宅するときは本体接続が必要で、帰宅はPCのNexus Ark本体からもできます</li>'
+        '</ul>'
+        '</article>'
+        '</div>'
+        '<p class="lite-start-choice-note">ブラウザでLiteの画面を開けても、本体接続の確認は完了ではありません。'
+        'ホーム画面に追加した、実際に使うLiteでAPI URL（画面URLの末尾「/lite」は付けない）と既存Tokenを確認し、'
+        '「接続」を押してください。</p>'
+        '<p class="lite-start-choice-safety">AIサービスのAPIキーやクラウドの所有者用認証情報はスマホへ渡しません。'
+        '確認なしに独立モードを開始することもありません。</p>'
+        '</section>'
+    )
+
+
+def build_api_gateway_external_use_guide() -> str:
+    """API Gatewayの個人拡張用途をLite導線と分けて案内する。"""
+    return (
         "#### 🔌 身の回りの環境をペルソナに伝える\n"
         "**API Gateway** を使うと、Nexus Ark本体を改造せずに、"
         "身の回りのツールやデバイスからペルソナへ状況を伝えられます。\n\n"
@@ -14595,7 +18782,7 @@ def build_api_gateway_personal_use_guide() -> str:
         "具体的な接続方法やコードサンプルは、下の「利用可能なAPI一覧・外部連携リファレンス」を開いてください。\n\n"
         "#### ⚠️ 安全に使うために\n"
         "- 自分のPC・自宅Wi-Fi・Tailscaleなど、**自分が管理するネットワーク**で使ってください。\n"
-        "- 「API設定」の **Token認証は必ず有効** にしてください。\n"
+        "- 「本体接続の設定」の **Token認証は必ず有効** にしてください。\n"
         "- 詳しい安全確認は下の「安全診断」に表示されます。\n"
     )
 
@@ -14608,13 +18795,20 @@ def handle_refresh_api_gateway_lite_connection_help():
 
 
 def _load_external_integration_guide() -> str:
-    """assets/guides/api_gateway_external_integration.md を読み込む。失敗時は空文字。"""
-    guide_path = os.path.join(_UI_HANDLERS_PROJECT_ROOT, "assets", "guides", "api_gateway_external_integration.md")
-    try:
-        with open(guide_path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except Exception:
-        return ""
+    """接続レシピとユーザーガイド正本のデータ参照を同じ画面へ表示する。"""
+    parts = []
+    for relative in (
+        ("docs", "user_guide", "07b_api_data_reference.md"),
+        ("assets", "guides", "api_gateway_external_integration.md"),
+    ):
+        try:
+            with open(os.path.join(_UI_HANDLERS_PROJECT_ROOT, *relative), "r", encoding="utf-8") as f:
+                content = f.read().strip()
+            if content:
+                parts.append(content)
+        except (OSError, UnicodeError):
+            continue
+    return "\n\n---\n\n".join(parts)
 
 
 def build_api_gateway_external_docs() -> str:
@@ -14712,6 +18906,7 @@ def handle_refresh_external_api_gateway_panel(_room_name: str):
     return (
         gr.update(value=build_api_gateway_security_diagnostics()),
         gr.update(value=build_api_gateway_lite_connection_help()),
+        gr.update(value=build_api_gateway_lite_qr_html()),
         gr.update(value=build_api_gateway_external_docs()),
     )
 
@@ -14725,6 +18920,7 @@ def handle_save_external_api_gateway_settings(enabled: bool, host: str, port: in
         gr.update(value=token),
         gr.update(value=build_api_gateway_security_diagnostics()),
         gr.update(value=build_api_gateway_lite_connection_help()),
+        gr.update(value=build_api_gateway_lite_qr_html()),
         gr.update(value=build_api_gateway_external_docs()),
     )
 
@@ -14785,6 +18981,7 @@ def handle_configure_tailscale_lite_https():
         return (
             gr.update(value=build_api_gateway_security_diagnostics()),
             gr.update(value=build_api_gateway_lite_connection_help()),
+            gr.update(value=build_api_gateway_lite_qr_html()),
             gr.update(value="Tailscale CLIが見つかりません。PC側でTailscaleをインストールし、`tailscale serve --https=443 http://127.0.0.1:8000` を実行してください。"),
         )
 
@@ -14796,6 +18993,7 @@ def handle_configure_tailscale_lite_https():
         return (
             gr.update(value=build_api_gateway_security_diagnostics()),
             gr.update(value=build_api_gateway_lite_connection_help()),
+            gr.update(value=build_api_gateway_lite_qr_html()),
             gr.update(value=f"Tailscale HTTPSは既に設定済みです。スマホで `{url}` を開いてください。"),
         )
 
@@ -14809,24 +19007,36 @@ def handle_configure_tailscale_lite_https():
             return (
                 gr.update(value=build_api_gateway_security_diagnostics()),
                 gr.update(value=build_api_gateway_lite_connection_help()),
+                gr.update(value=build_api_gateway_lite_qr_html()),
                 gr.update(value=f"Tailscale HTTPS設定を実行しました。スマホで `{url}` を開いてください。"),
             )
         message = output or "Tailscale Serve設定に失敗しました。"
         return (
             gr.update(value=build_api_gateway_security_diagnostics()),
             gr.update(value=build_api_gateway_lite_connection_help()),
+            gr.update(value=build_api_gateway_lite_qr_html()),
             gr.update(value=f"Tailscale Serve設定に失敗しました。\n\n```text\n{message}\n```"),
         )
     except subprocess.TimeoutExpired:
         return (
             gr.update(value=build_api_gateway_security_diagnostics()),
             gr.update(value=build_api_gateway_lite_connection_help()),
-            gr.update(value="Tailscale Serve設定がタイムアウトしました。Tailscaleの認証/HTTPS有効化画面が待機している可能性があります。"),
+            gr.update(value=build_api_gateway_lite_qr_html()),
+            gr.update(
+                value=(
+                    "Tailscale Serve設定がタイムアウトしました。"
+                    "Tailscaleの認証/HTTPS有効化画面が待機している可能性があります。"
+                    "下の接続情報にある「HTTPS初回承認の手順」を確認し、"
+                    "PCのWindowsターミナルで案内された固定コマンドを実行して本人が承認してください。"
+                    "設定の連打やToken再生成は不要です。"
+                )
+            ),
         )
     except Exception as e:
         return (
             gr.update(value=build_api_gateway_security_diagnostics()),
             gr.update(value=build_api_gateway_lite_connection_help()),
+            gr.update(value=build_api_gateway_lite_qr_html()),
             gr.update(value=f"Tailscale Serve設定でエラーが発生しました: {e}"),
         )
 
@@ -15793,8 +20003,8 @@ def handle_refresh_internal_state(room_name: str) -> Tuple[float, float, float, 
         boredom = round(drives.get("boredom", {}).get("level", 0.0), 2)
         curiosity = round(drives.get("curiosity", {}).get("level", 0.0), 2)
         goal_drive = round(drives.get("goal_achievement", {}).get("level", 0.0), 2)
-        # Phase F: relatednessを直接使用（devotion廃止）
-        relatedness = round(drives.get("relatedness", {}).get("level", 0.0), 2)
+        # 旧感情由来の保存値は表示せず、進行中の関係の意図から現在値を計算する。
+        relatedness = round(mm.calculate_relatedness(), 2)
 
         # 2. Dominant Drive (ドライブに応じた動的情報)
         dominant = mm.get_dominant_drive()
@@ -15839,19 +20049,18 @@ def handle_refresh_internal_state(room_name: str) -> Tuple[float, float, float, 
 
         elif dominant == "devotion":
             # 奉仕欲（後方互換性）→ 関係性維持に統合案内
-            dynamic_info = "💞 関係性維持（Relatedness）\n（旧奉仕欲はRelatednessに統合されました）"
+            dynamic_info = "💞 関係への思い（Relatedness）\n（旧奉仕欲はRelatednessに統合されました）"
 
         elif dominant == "relatedness":
-            # 関係性維持欲求：ペルソナの感情
-            relatedness_data = drives.get("relatedness", {})
-            persona_emotion = relatedness_data.get("persona_emotion", "neutral")
-            persona_intensity = relatedness_data.get("persona_intensity", 0.0)
-            emotion_display = {
-                "joy": "😊 喜び", "contentment": "☺️ 満足", "protective": "🛡️ 庇護欲",
-                "anxious": "😟 不安", "sadness": "😢 悲しみ", "anger": "😠 怒り",
-                "neutral": "😐 平静"
-            }.get(persona_emotion, persona_emotion)
-            dynamic_info = f"💞 関係性維持（Relatedness）\nペルソナ感情: {emotion_display} (強度: {persona_intensity:.1f})"
+            intentions = mm.get_relationship_intentions(active_only=True)
+            if intentions:
+                item = intentions[0]
+                label = "気がかり" if item.get("kind") == "concern" else "望み"
+                dynamic_info = (f"💞 関係への思い（Relatedness）\n"
+                                f"{label}: {item.get('trigger', '')[:60]}\n"
+                                f"望む変化: {item.get('desired_change', '')[:60]}")
+            else:
+                dynamic_info = "💞 関係への思い（Relatedness）\n進行中の意図はありません"
         else:
             dynamic_info = f"【{dominant.upper()}】"
 
@@ -16087,34 +20296,61 @@ def handle_check_update():
     アップデートを確認し、UIを更新するための情報を返します。
     """
     try:
+        host_status = inspect_update_host_status()
+        if host_status.get("state") not in {"ready", "not_required"}:
+            return update_host_guidance(host_status), gr.update(visible=False), gr.update(interactive=False)
         mgr = UpdateManager()
-        # root.json がない場合はメッセージを出す
-        if not mgr.is_configured():
+        result = mgr.check_for_updates_result()
+        state = result.get("state")
+        new_version = result.get("version")
+        if state == "not_configured":
             return "### ℹ️ 更新システムが未構成です\n\n`metadata/root.json` が見つかりませんでした。公式の配布パッケージでは自動的に構成されます。", gr.update(visible=False), gr.update(interactive=False)
 
-        new_version, message = mgr.check_for_updates()
-
-        if new_version:
+        if state == "available" and new_version:
+            version = html.escape(str(new_version))
             return (
-                f"### ✨ 新しいバージョンが利用可能です: v{new_version}\n\n{message}",
+                f"### ✨ 新しいバージョンが利用可能です: v{version}\n\n新しいバージョン {version} が利用可能です。",
                 gr.update(visible=True), # ダウンロードボタンを表示
                 gr.update(interactive=True)
             )
-        else:
+        if state == "no_update":
             return (
-                f"**✅ {message}**",
+                "**✅ 最新バージョンを使用中です。**",
                 gr.update(visible=False),
                 gr.update(interactive=False)
             )
-    except Exception as e:
-        logger.error(f"Handle check update error: {e}")
-        return f"### ❌ 更新確認中にエラーが発生しました\n\n{e}", gr.update(visible=False), gr.update(interactive=False)
+        if result.get("error_code") == "metadata_version_mismatch":
+            message = (
+                "更新サーバーの版番号が保存済みの更新情報と整合しないため、確認を中止しました。"
+                "開発版と公開版で更新先が異なる場合にも起こります。"
+            )
+        else:
+            message = "通信状態と更新先を確認し、時間をおいてもう一度お試しください。"
+        return (
+            "### ❌ 本体の更新を確認できませんでした\n\n"
+            f"{message}\n\n現在の本体はそのまま利用できます。"
+            "スマホ版Liteの更新状態は、下の欄で確認できます。",
+            gr.update(visible=False),
+            gr.update(interactive=False),
+        )
+    except Exception as exc:
+        logger.error("Handle check update error: %s", type(exc).__name__)
+        return (
+            "### ❌ 本体の更新を確認できませんでした\n\n"
+            "時間をおいてもう一度お試しください。現在の本体はそのまま利用できます。"
+            "スマホ版Liteの更新状態は、下の欄で確認できます。",
+            gr.update(visible=False),
+            gr.update(interactive=False),
+        )
 
 def handle_apply_update():
     """
     アップデートをダウンロードして適用します。
     """
     try:
+        host_status = inspect_update_host_status()
+        if host_status.get("state") not in {"ready", "not_required"}:
+            return update_host_guidance(host_status)
         mgr = UpdateManager()
         success, message = mgr.download_and_apply()
 
@@ -16122,9 +20358,9 @@ def handle_apply_update():
             import platform
             if platform.system() != "Windows":
                 # Windows以外（Linux等）は、ここで明示的に再起動をトリガーする。
-                # Windowsは UpdateManager のバックグラウンド処理側で終了が管理される。
+                # Windowsは UpdateManager の検証済みstaging callbackで終了が管理される。
                 mgr.trigger_restart()
-            return f"### 🎉 {message}\n\nアプリケーションは自動的に再起動し、このタブが自動でリロードされます。そのままお待ちください。"
+            return f"### 🎉 {message}\n\nアプリケーションは自動的に再起動し、このタブが自動でリロードされます。そのままお待ちください。\n\n再起動後、この欄にスマホ版Liteの更新が必要か表示します。"
         else:
             return f"### ❌ 更新に失敗しました\n\n詳細: {message}"
     except Exception as e:
@@ -16139,6 +20375,9 @@ def handle_restart_app(confirmed: str):
     if str(confirmed).strip().lower() != "true":
         return gr.update(), ""
     try:
+        host_status = inspect_update_host_status()
+        if host_status.get("state") not in {"ready", "not_required", "migration_required"}:
+            return update_host_guidance(host_status), ""
         mgr = UpdateManager()
         mgr.trigger_restart()
         return (
@@ -16888,17 +21127,9 @@ def handle_food_consume(choice_str, room_name):
              unified_df = handle_refresh_unified_inventory(room_name, "ユーザー")
              _, _, choices = _get_food_inventory_data(room_name)
 
-             taste = target.get('taste_profile', {})
-             phys = target.get('physical_sensation', {}) or target.get('physical', {})
-             syn = target.get('synesthesia', {})
-
              msg_for_status = f"🍽️ 【アイテム消費: {target.get('name')}】を味わいました。"
-
-             chat_input_text = f"*{target.get('name')} を口に含んだ...*\n"
-             chat_input_text += f"{target.get('flavor_text', '')}\n\n"
-             chat_input_text += f"(味覚データ: 甘味{taste.get('sweetness')}, 塩味{taste.get('saltiness')}, 酸味{taste.get('sourness')}, 苦味{taste.get('bitterness')}, 旨味{taste.get('umami')})\n"
-             chat_input_text += f"(物理感覚: 温度{phys.get('temperature')}, 渋み{phys.get('astringency')}, とろみ{phys.get('viscosity')}, 重み{phys.get('weight')})\n"
-             chat_input_text += f"(イメージ: 色 {syn.get('color')} / 感情 {syn.get('emotion')} / 情景 {syn.get('landscape')})"
+             from src.features.item_manager import build_consumed_item_chat_input
+             chat_input_text = build_consumed_item_chat_input(target)
 
              img_path = target.get('image_path')
              multimodal_value = {
@@ -17075,15 +21306,12 @@ def handle_consume_location_item_button_click(room_name, location_name, item_cho
             msg_for_status = f"【アイテム消費: {success_item_data.get('name')}】を {qty} 個味わいました。"
 
             if is_food:
-                taste = success_item_data.get('taste_profile', {})
-                phys = success_item_data.get('physical_sensation', {}) or success_item_data.get('physical', {})
-                syn = success_item_data.get('synesthesia', {})
-
-                chat_input_text = f"*{success_item_data.get('name')} を {qty} 個口に含んだ...*\n"
-                chat_input_text += f"{success_item_data.get('flavor_text', '') or success_item_data.get('description', '')}\n\n"
-                chat_input_text += f"(味覚データ: 甘味{taste.get('sweetness')}, 塩味{taste.get('saltiness')}, 酸味{taste.get('sourness')}, 苦味{taste.get('bitterness')}, 旨味{taste.get('umami')})\n"
-                chat_input_text += f"(物理感覚: 温度{phys.get('temperature')}, 渋み{phys.get('astringency')}, とろみ{phys.get('viscosity')}, 重み{phys.get('weight')})\n"
-                chat_input_text += f"(イメージ: 色 {syn.get('color')} / 感情 {syn.get('emotion')} / 情景 {syn.get('landscape')})"
+                from src.features.item_manager import build_consumed_item_chat_input
+                chat_input_text = build_consumed_item_chat_input(
+                    success_item_data,
+                    qty,
+                    include_amount=True,
+                )
 
                 img_path = success_item_data.get('image_path')
                 multimodal_value = {
@@ -17494,21 +21722,32 @@ def handle_get_item_details(room_name, item_choice, is_location=False):
 # -------------------------------------------------------------------
 # [新規] 一時的現在地システム ハンドラー
 # -------------------------------------------------------------------
-def handle_temp_location_activate(room_name):
-    """一時的現在地タブが選択された時: ON にする"""
-    if not room_name:
+def handle_temp_location_activate(room_name, user_initiated: bool = False, evt: gr.SelectData = None):
+    """一時的現在地タブの明示選択でONにする。
+
+    Gradioは初期化・プログラム選択でもselectを発火する。フロントで確認した
+    利用者の明示選択と、selected=trueの組合せだけをモード変更に使う。
+    """
+    if not room_name or not user_initiated:
+        return
+    if evt is not None and not getattr(evt, "selected", True):
         return
     try:
         from agent.temporary_location_manager import TemporaryLocationManager
         tlm = TemporaryLocationManager()
+        if not str(tlm.get_current_data(room_name).get("scenery_text") or "").strip():
+            gr.Warning("情景を入力・適用してから一時的現在地を有効にしてください")
+            return
         tlm.set_active(room_name, True)
         gr.Info("📍 一時的現在地モードを有効にしました")
     except Exception as e:
         logger.error(f"[TempLocation] 有効化に失敗: {e}")
 
-def handle_virtual_location_activate(room_name):
-    """仮想現在地タブが選択された時: OFF にする"""
-    if not room_name:
+def handle_virtual_location_activate(room_name, user_initiated: bool = False, evt: gr.SelectData = None):
+    """仮想現在地タブの明示選択でOFFにする。"""
+    if not room_name or not user_initiated:
+        return
+    if evt is not None and not getattr(evt, "selected", True):
         return
     try:
         from agent.temporary_location_manager import TemporaryLocationManager
@@ -17518,7 +21757,7 @@ def handle_virtual_location_activate(room_name):
     except Exception as e:
         logger.error(f"[TempLocation] 無効化に失敗: {e}")
 
-def handle_generate_temp_scenery(room_name, image, api_key_name, user_hint=""):
+def handle_generate_temp_scenery(room_name, image, api_key_name, user_hint="", location_name=None):
     """画像から情景テキストを生成する"""
     if not room_name:
         gr.Warning("ルームが選択されていません")
@@ -17570,8 +21809,18 @@ def handle_generate_temp_scenery(room_name, image, api_key_name, user_hint=""):
         result = tlm.generate_from_image(room_name, image_path, api_key, user_hint=user_hint)
 
         if result and not result.startswith("（"):
-            # [Fix] バックエンド側の現在地データも即座に更新する
-            tlm.update_current(room_name, result, image_path=image_path)
+            # generate_from_imageが補足・画像と一緒に保存済み。二重保存で補足を消さない。
+            # 場所名はAI向け補足（source_description）と別の値として保持する。
+            if location_name is not None:
+                current = tlm.get_current_data(room_name)
+                tlm.update_current(
+                    room_name,
+                    result,
+                    source_description=current.get("source_description", ""),
+                    image_path=current.get("image_path", image_path),
+                    location_name=str(location_name).strip(),
+                )
+            tlm.set_active(room_name, True)
 
             gr.Info("✅ 情景テキストの生成が完了しました")
             return gr.update(value=result), gr.update(value=result), gr.update(value=image_path or None)
@@ -17585,7 +21834,7 @@ def handle_generate_temp_scenery(room_name, image, api_key_name, user_hint=""):
         gr.Error(f"エラー: {e}")
         return gr.update(), gr.update(), gr.update()
 
-def handle_apply_temp_scenery(room_name, text, image_path):
+def handle_apply_temp_scenery(room_name, text, image_path, location_name=None):
     """編集したテキストを一時的現在地データとして適用する"""
     if not room_name:
         gr.Warning("ルームが選択されていません")
@@ -17598,7 +21847,17 @@ def handle_apply_temp_scenery(room_name, text, image_path):
         from agent.temporary_location_manager import TemporaryLocationManager
         tlm = TemporaryLocationManager()
         # [Fix] 画像パスも保持しながらテキストを更新する
-        tlm.update_current(room_name, text.strip(), image_path=image_path)
+        current = tlm.get_current_data(room_name)
+        tlm.update_current(
+            room_name,
+            text.strip(),
+            source_description=current.get("source_description", ""),
+            image_path=image_path or current.get("image_path", ""),
+            location_name=(
+                None if location_name is None else str(location_name).strip()
+            ),
+        )
+        tlm.set_active(room_name, True)
         gr.Info("✅ 情景テキストを適用しました")
         return gr.update(value=text.strip())
     except Exception as e:
@@ -17678,7 +21937,11 @@ def handle_delete_temp_location(room_name, name):
         return gr.update(), gr.update(), gr.update()
 
 def get_temp_location_ui_state(room_name):
-    """一時的現在地のUI初期状態を取得する（ルーム変更時やロード時に使用）"""
+    """正本の一時的現在地をUIへ反映する（ルーム変更・高速再読込・ロード時）。
+
+    この関数は読み取り専用で、タブ更新によるモード変更を行わない。
+    タブの明示的な選択は既存の ``handle_*_location_activate`` が担当する。
+    """
     try:
         from agent.temporary_location_manager import TemporaryLocationManager
         tlm = TemporaryLocationManager()
@@ -17688,6 +21951,7 @@ def get_temp_location_ui_state(room_name):
 
         scenery = data.get("scenery_text", "")
         image_path = data.get("image_path") or None
+        location_name = str(data.get("location_name") or "").strip()
 
         # [Fix] Dropdown警告回避: choicesとvalueを明示的に更新
         saved_dropdown_update = gr.update(choices=saved, value=None)
@@ -17695,12 +21959,26 @@ def get_temp_location_ui_state(room_name):
         # [New] タブの選択状態
         selected_tab = "temp_location_tab" if active else "virtual_location_tab"
         tab_update = gr.update(selected=selected_tab)
+        status_text = (
+            f"一時的現在地: {'適用中' if active else '未適用'}"
+            f"（{'写真あり' if image_path else '写真なし'}）"
+        )
+        if location_name:
+            status_text += f" / 場所名: {location_name}"
+        status = gr.update(value=status_text)
+        location_name_update = gr.update(value=location_name)
 
-        return scenery, saved_dropdown_update, image_path, tab_update
-        return scenery, saved_dropdown_update, image_path, tab_update
+        return scenery, saved_dropdown_update, image_path, tab_update, status, location_name_update
     except Exception as e:
         logger.error(f"[TempLocation] UI状態取得エラー: {e}")
-        return "", gr.update(choices=[], value=None), None, gr.update()
+        return (
+            "",
+            gr.update(choices=[], value=None),
+            None,
+            gr.update(),
+            gr.update(value="一時的現在地: 状態を確認できません"),
+            gr.update(),
+        )
 
 # ==========================================
 # Twitter (X) 連携用ハンドラ
@@ -17804,6 +22082,27 @@ def handle_open_explicit_cache_guide():
         return gr.update(visible=True), content
     except Exception as e:
         return gr.update(visible=True), f"ガイドの読み込みに失敗しました: {e}"
+
+
+def _handle_open_project_markdown(relative_path: str):
+    """プロジェクト同梱Markdownを共通ビューアへ安全に読み込む。"""
+    project_root = Path(_UI_HANDLERS_PROJECT_ROOT).resolve()
+    guide_path = (project_root / relative_path).resolve()
+    try:
+        guide_path.relative_to(project_root)
+    except ValueError:
+        return gr.update(visible=True), "ガイドの場所がNexus Arkの外を指しています。"
+    try:
+        if not guide_path.is_file():
+            return gr.update(visible=True), f"ガイドファイルが見つかりません: {relative_path}"
+        return gr.update(visible=True), guide_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        return gr.update(visible=True), f"ガイドの読み込みに失敗しました: {exc}"
+
+
+def handle_open_lite_cloud_quick_guide():
+    """一般ユーザー向けのLite用クラウド初回準備ガイドを開く。"""
+    return _handle_open_project_markdown("docs/user_guide/07a_lite_cloud_setup.md")
 
 
 def handle_close_doc_viewer():
@@ -18208,8 +22507,12 @@ def handle_attach_generated_image_to_chat(image_path, current_input):
     current_input["files"] = files
     return current_input
 
-def handle_fetch_gemini_models(api_key_name, current_model=None, free_only: bool = False):
+def handle_fetch_gemini_models(api_key_name, current_model=None, free_only: bool = False, room_name=None):
     """Gemini API からテキストモデルリストを取得して更新する"""
+    from gemini_connection import is_vertex
+    if is_vertex(room_name):
+        gr.Info("Vertex AIのモデルIDをモデル欄へ直接入力してください。")
+        return gr.update()
     api_key = config_manager.GEMINI_API_KEYS.get(api_key_name, "")
     if not api_key:
         gr.Warning("APIキーが選択されていません。")
@@ -18229,6 +22532,11 @@ def handle_fetch_gemini_models(api_key_name, current_model=None, free_only: bool
     # 現在のモデルが新しいリストに含まれていれば、それを維持する
     new_value = current_model if current_model in models else (models[0] if models else None)
     return gr.update(choices=models, value=new_value)
+
+
+def handle_fetch_room_gemini_models(api_key_name, current_model, room_name):
+    return handle_fetch_gemini_models(api_key_name, current_model, room_name=room_name)
+
 
 def handle_fetch_image_models(provider, profile_name, free_only: bool = False):
     """画像モデルリストをAPIから取得して更新する"""
@@ -20364,6 +24672,13 @@ from .notes import (
     handle_research_selection,
     handle_save_research_entry,
     handle_note_file_list_refresh,
+    handle_note_history_load,
+    handle_note_history_latest,
+    handle_note_history_filter,
+    handle_note_history_selection,
+    handle_note_history_save,
+    handle_note_raw_load,
+    handle_note_raw_save,
     _research_subscription_rows,
     handle_research_subscription_refresh,
     handle_research_subscription_add,
@@ -20378,11 +24693,28 @@ from .notes import (
 
 
 
+# === ドメイン別サブモジュールからの再エクスポート（Lite更新） ===
+from .lite_updates import (
+    handle_lite_update_check,
+    handle_lite_update_run,
+    handle_lite_update_auth_recovery,
+)
+
+# === ドメイン別サブモジュールからの再エクスポート（emotions） ===
+from .emotions import (
+    handle_load_emotion_panel,
+    handle_select_emotion_definition,
+    handle_save_emotion_definition,
+)
+
 # === ドメイン別サブモジュールからの再エクスポート（memory） ===
 from .memory import (
     load_core_memory_content,
     handle_save_core_memory,
     handle_reload_core_memory,
+    handle_reload_core_memory_for_editor,
+    handle_core_memory_update_for_editor,
+    handle_reflect_identity_to_core_for_editor,
     handle_init_purpose_profile,
     handle_reload_purpose_profile,
     handle_save_purpose_profile,
@@ -20412,9 +24744,14 @@ from .memory import (
     handle_manual_sleep_maintenance,
     handle_update_episodic_memory,
     _get_working_memory_updates,
+    handle_get_working_memory_edit_state,
     handle_reload_working_memory,
     handle_reload_working_memory_metadata,
     handle_save_working_memory_metadata,
+    get_working_memory_cleanup_notice,
+    handle_working_memory_cleanup_notice,
+    handle_dismiss_working_memory_cleanup_notice,
+    handle_start_fresh_working_memory,
     handle_manual_dreaming,
     handle_manual_insight_only,
     handle_refresh_dream_journal,
@@ -20460,4 +24797,14 @@ from .memory import (
     handle_full_reindex,
     handle_current_log_reindex,
     handle_refresh_goals,
+)
+
+# 会話を待たせない情景更新（per-session state / workerからの結果だけ受け取る）。
+from .deferred_scenery import (
+    create_deferred_scenery_state,
+    close_deferred_scenery_state,
+    handle_cancel_deferred_scenery,
+    handle_after_chat_timers,
+    handle_deferred_scenery_poll,
+    schedule_deferred_scenery,
 )

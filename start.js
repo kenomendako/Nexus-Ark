@@ -4,7 +4,7 @@ module.exports = {
             method: "shell.run",
             params: {
                 path: "app",
-                message: "uv run nexus_ark.py",
+                message: "node release/check_uv_security.cjs && uv run nexus_ark.py",
             }
         }
     ]
