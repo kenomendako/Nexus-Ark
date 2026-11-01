@@ -1026,7 +1026,27 @@ function Get-TargetAssessment {
         return [ordered]@{ state = 'missing'; root = $root; start = $start; current = $current }
     }
     if (-not $start.canonical) { throw '対象Start.batがcanonical SHAと一致しません。' }
-    $hostAssessment = Get-HostState -CurrentPath $current
+    try {
+        $hostAssessment = Get-HostState -CurrentPath $current
+    }
+    catch {
+        # Only the observed 0.89 seven-file subset is eligible for an
+        # independent rebuild. It is never a runnable/repairable generation.
+        if ($start.sha256 -notin @(
+            '3bafb0efb475fdd9bd9e686739a461018c1612dc092a356b9bf8a9ed2538684a',
+            '184427c65309ebc1f45b2d2a2c5f71ee2ec1e70cb40c458a35449c1b06705241'
+        )) { throw }
+        $incomplete089 = [ordered]@{
+            '__init__.py' = 'e58a28a84176ff2ef4909f29709eb0efe75455d59abf1368f64c829caef24ad5'
+            'contracts.py' = '958c0c669f716b4eeb04083a1ba39eba913d90bfd7baae7b9c9a15bad848af20'
+            'runtime.py' = '3f446f01094438b75974a60215e5d670f90175d83bc2f62a0fb9aff45781245b'
+            'runtime_archive.py' = '15b6fd5835efebcb4a02210c7f7ebeffd52a86d4776dfeca109c9e068fb7dbcc'
+            'supervisor.py' = '7bbdc5e33f87aca6c8b76e64393825fe24612e50443c178406944588dff4be30'
+            'transaction.py' = '946a100fd0f5b61746f725f194e6c214684db9378e26df6ef406b6d1c35d48d9'
+            'trial.py' = 'a0bc50e42e462bf35dac908477b7863ac4a6031e8dcbb8a054f3bd3d4a80f326'
+        }
+        $hostAssessment = Compare-CurrentInventory -Root $current -Expected $incomplete089 -ExpectedState 'incomplete_089'
+    }
     return [ordered]@{ state = [string]$hostAssessment.state; root = $root; start = $start; current = $current; inventory = $hostAssessment }
 }
 
@@ -1308,6 +1328,20 @@ function Invoke-SecureUpdateHostRepair {
     }
     $pending = Get-PendingRepair -TargetRoot $root
     $hasCompleteReceipt = ($null -ne $pending -and @($pending.Keys) -contains 'complete')
+    if ($assessment.state -eq 'incomplete_089') {
+        # A known subset authorizes inspection and rebuilding beside the old
+        # root only. No partial host is copied, executed, or promoted here.
+        if (-not $InspectOnly -or $null -ne $pending) {
+            throw '欠落した0.89 hostは直接修復せず、独立した初回更新で再構築してください。'
+        }
+        $completeSource = Assert-ApprovedSourceHost -SourceHostPath $SourceHostPath
+        if ($completeSource.inventory.state -ne 'known_new') { throw '欠落hostの再構築には最新の完全な配布hostが必要です。' }
+        Assert-NoPendingArtifacts -Root $root -AllowRolledBackNext:$AllowRolledBackNext
+        Assert-AppLockClear -Root $root
+        Assert-TargetProcessesStopped -Root $root
+        Assert-SecureRepairLeaseAvailable -Root $root
+        return New-SecureRepairResult -State 'incomplete_089' -Changed $false -TargetRoot $root -SourceHostPath $SourceHostPath -Message '既知0.89 hostの欠落を確認しました。旧hostを起動せず、独立した初回更新で再構築します。'
+    }
     if ($assessment.state -eq 'missing' -and ($null -eq $pending -or $hasCompleteReceipt)) {
         throw 'canonical hostがないrootに、復旧可能な未完了receiptがありません。'
     }

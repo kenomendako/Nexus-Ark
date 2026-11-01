@@ -396,6 +396,7 @@ function Assert-TargetRoot {
 
     $startText = Get-Content -LiteralPath $start -Raw -Encoding UTF8
     $hasModernHost = $startText -match 'update_host\.supervisor' -and $startText -notmatch '(?i)robocopy'
+    $requiresIndependentRebuild = $false
     $current = Join-Path $root 'updater\current'
     if (Test-SafePathOrAbsent $current) {
         $hostDirectory = Assert-RegularDirectory (Join-Path $current 'update_host') '選択したルートの保護host'
@@ -411,6 +412,15 @@ function Assert-TargetRoot {
     # uv. Only the dedicated receipt protocol can justify a missing current.
     if ($null -ne $Source) {
         $hostState = Invoke-SecureHostMaintenance -Source $Source -TargetRoot $root -InspectOnly -AllowRolledBackNext:$AllowRolledBackNext
+        if ($hostState.state -eq 'incomplete_089') {
+            $targetVersion = Read-VersionValue (Join-Path $app 'version.json') '選択したルートの app/version.json'
+            # Do not treat the signed current target as a newer release.
+            # The normal TUF version comparison remains strict.
+            if ($targetVersion -ne '0.5.0.89' -or [version]$Source.Version -le [version]$targetVersion) {
+                throw '[legacy-bootstrap-secure-release-required]'
+            }
+            $requiresIndependentRebuild = $true
+        }
         if ($hasModernHost -and -not (Test-SafePathOrAbsent $current) -and $hostState.state -ne 'repair_pending') {
             throw '更新hostの中断状態を検証できないため停止します。'
         }
@@ -462,6 +472,7 @@ function Assert-TargetRoot {
         App = $app
         Start = $start
         Version = Read-VersionValue (Join-Path $app 'version.json') '選択したルートの app/version.json'
+        RequiresIndependentRebuild = $requiresIndependentRebuild
     }
 }
 
@@ -649,7 +660,7 @@ function Invoke-SecureHostMaintenance {
             throw ('更新の準備を安全に完了できないため、Nexus Arkを起動していません。' + "`r`n" + $safeReasons[$kind] + "`r`n確認コード: " + $kind)
         }
         $result = $outputText | ConvertFrom-Json
-        if ([string]$result.state -notin @('legacy', 'known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_new', 'repair_pending')) {
+        if ([string]$result.state -notin @('legacy', 'known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_new', 'repair_pending', 'incomplete_089')) {
             throw '更新host準備の結果を検証できません。'
         }
         if (-not $InspectOnly -and [string]$result.state -notin @('legacy', 'known_new')) {
@@ -758,6 +769,7 @@ function Get-LegacyBootstrapWorkspace {
 function Test-NeedsIndependentSecureUpdate {
     param([Parameter(Mandatory=$true)][hashtable]$Target)
     if ($Target.ContainsKey('Recovery') -and $Target.Recovery) { return $true }
+    if ($Target.ContainsKey('RequiresIndependentRebuild') -and $Target.RequiresIndependentRebuild) { return $true }
     # この版より前は既知protected Startでも旧本体のCA経路を起動しない。
     return ([version]$Target.Version -lt [version]'0.5.0.75')
 }

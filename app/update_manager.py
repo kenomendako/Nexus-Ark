@@ -29,6 +29,7 @@ LEGACY_MIGRATION_HOST_FILES = (
     "transaction.py",
     "trial.py",
     "supervisor.py",
+    "windows_processes.py",
 )
 
 _UPDATE_HOST_MESSAGES = {
