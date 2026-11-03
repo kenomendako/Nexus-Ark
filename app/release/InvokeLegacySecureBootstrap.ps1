@@ -453,6 +453,42 @@ function Read-LegacyBootstrapJsonOutput {
     return $result
 }
 
+function Format-LegacyBootstrapFailureDetail {
+    param($Value)
+    if ($null -eq $Value) { return '' }
+    $steps = @('unknown','download','runtime','copy','environment','trial','switch',
+        'write_swap_intent','park_old_root','write_old_parked','promote_new_root',
+        'write_new_promoted','verify_promoted_root','write_committed')
+    $types = @('unknown','OSError','PermissionError','FileNotFoundError','FileExistsError',
+        'NotADirectoryError','IsADirectoryError','RuntimeError','ValueError','TransactionError',
+        'UnknownTransactionError','UnsafePathError','ManualRecoveryRequired','BootstrapError')
+    $states = @('unknown','preparing','prepared','swap_intent','old_parked','new_promoted',
+        'committed','rolled_back','manual_recovery_required')
+    $parts = @()
+    foreach ($entry in @(@('step',$steps), @('exception_type',$types), @('recovery_state',$states))) {
+        $name = [string]$entry[0]
+        if ($Value.PSObject.Properties.Name -notcontains $name) { return '' }
+        $item = $Value.$name
+        if ($item -isnot [string] -or $entry[1] -cnotcontains $item) { return '' }
+        $parts += ($name + '=' + $item)
+    }
+    foreach ($name in @('winerror','errno')) {
+        if ($Value.PSObject.Properties.Name -contains $name) {
+            $number = $Value.$name
+            $maximum = if ($name -eq 'winerror') { 65535 } else { 4095 }
+            if (($number -isnot [int] -and $number -isnot [long]) -or $number -lt 0 -or $number -gt $maximum) { return '' }
+            $parts += ($name + '=' + [string]$number)
+        }
+    }
+    return ('詳細診断: ' + ($parts -join ', '))
+}
+
+function Get-LegacyBootstrapFailureText {
+    $stored = Get-Variable -Name LegacyBootstrapFailureText -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $stored) { return '' }
+    return [string]$stored.Value
+}
+
 function Invoke-LegacyBootstrapUpdateProcess {
     param(
         [Parameter(Mandatory = $true)][string]$PythonExecutable,
@@ -463,6 +499,7 @@ function Invoke-LegacyBootstrapUpdateProcess {
         [Parameter(Mandatory = $true)][hashtable]$Environment
     )
 
+    $script:LegacyBootstrapFailureText = ''
     $arguments = @(
         '-I', '-B', '-X', 'utf8',
         (Quote-LegacyBootstrapArgument $ScriptPath),
@@ -494,6 +531,16 @@ function Invoke-LegacyBootstrapUpdateProcess {
         $code = 'child-failed'
         if ($result.PSObject.Properties.Name -contains 'error_code' -and [string]$result.error_code -in $safeCodes) {
             $code = [string]$result.error_code
+        }
+        if ($result.PSObject.Properties.Name -contains 'failure_detail') {
+            $script:LegacyBootstrapFailureText = Format-LegacyBootstrapFailureDetail $result.failure_detail
+            if ($script:LegacyBootstrapFailureText) {
+                if ($result.PSObject.Properties.Name -contains 'diagnostic_saved' -and
+                    $result.diagnostic_saved -is [bool] -and $result.diagnostic_saved) {
+                    $script:LegacyBootstrapFailureText += "`r`n詳細診断は復旧フォルダー内の download\bootstrap-failure.json に保存しました。"
+                }
+                Write-Host ('[Nexus Ark] ' + $script:LegacyBootstrapFailureText)
+            }
         }
         throw ('[legacy-bootstrap-' + $code + ']')
     }
@@ -567,6 +614,7 @@ function Invoke-LegacySecureBootstrap {
         [Parameter(Mandatory = $true)][string]$UvExecutable
     )
 
+    $script:LegacyBootstrapFailureText = ''
     $toolsRoot = $null
     try {
         $recovery = $Target.ContainsKey('Recovery') -and [bool]$Target['Recovery']

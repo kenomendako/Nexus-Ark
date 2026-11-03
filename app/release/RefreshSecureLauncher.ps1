@@ -31,15 +31,17 @@ $KnownOldStartSha256 = @(
     'ca8b0cc1e38d4dcc40436f0744436e3c65bcc904cd894c2c263f3eaff02d53d1',
     'b58de9707250d4657d199025b75a1e3c50c315272362c1fe593470b2a163ec20', # Windows package CRLF
     '837c25b9c4b4c5fb30d7f2f6d6081ed8daa4f0bfcbe2aeb31cddca9ddeb24b39', # 3.12.15 LF
-    'e3070fbc412577aff121d8a8aff33bb0bd15c790fce205580926569299de7c37' # 3.12.15 CRLF
+    'e3070fbc412577aff121d8a8aff33bb0bd15c790fce205580926569299de7c37', # 3.12.15 CRLF
+    '3bafb0efb475fdd9bd9e686739a461018c1612dc092a356b9bf8a9ed2538684a', # 3.12.16 LF before import guard
+    '184427c65309ebc1f45b2d2a2c5f71ee2ec1e70cb40c458a35449c1b06705241' # 3.12.16 CRLF before import guard
 )
 
-# This is the canonical launcher produced by replacing only the host selector
-# in the HEAD file with the managed CPython 3.12.16 selector.  Keep this list
-# fixed: TemplatePath is an input location, not an authorization boundary.
+# These are the current canonical launchers, including the data-import guard.
+# Keep this list fixed: TemplatePath is an input location, not an authorization
+# boundary.
 $KnownNewStartSha256 = @(
-    '3bafb0efb475fdd9bd9e686739a461018c1612dc092a356b9bf8a9ed2538684a', # 3.12.16 LF
-    '184427c65309ebc1f45b2d2a2c5f71ee2ec1e70cb40c458a35449c1b06705241' # 3.12.16 CRLF
+    'd01dc08b7184ad2ea2eb9679e2ff1d0a47e9446fa5f80f9907e9f36766c5410a', # 3.12.16 LF with import guard
+    '94efac6d885ca3e7745cc6772621fd9712763cdcff6807cb38198383c7ec03f3' # 3.12.16 CRLF with import guard
 )
 
 function Get-NormalizedPath {

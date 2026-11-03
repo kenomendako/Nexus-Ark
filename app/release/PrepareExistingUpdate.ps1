@@ -156,7 +156,7 @@ function Test-SafePathOrAbsent {
             return $false
         }
         if (Test-ReparsePoint $item) {
-            throw ('リンクまたは再解析ポイントを含むため停止します: {0}' -f $cursor)
+            throw '[preparation-linked-path]'
         }
     }
     return $true
@@ -868,6 +868,14 @@ function Invoke-PreparedTarget {
 
 function Get-PreparationErrorText {
     param([Parameter(Mandatory=$true)][string]$Message)
+    if ($Message -in @('[preparation-linked-path]', '[legacy-bootstrap-reparse-path]')) {
+        return ("同期フォルダーやリンクの属性を検出したため、安全のため停止しました。`r`n" +
+            "OneDrive同期のデスクトップなどでは、この停止が起きる場合があります。`r`n`r`n" +
+            "Nexus Arkを通常終了し、元のフォルダーを残したまま、全体をOneDriveなどの同期対象外の通常フォルダーへコピーしてください。オンライン専用のファイルは、先にOneDriveの「このデバイス上で常に保持する」で取得を完了してください。`r`n" +
+            "新版ZIPも同期対象外の別フォルダーへ展開します。コピー完了後、新版のPrepareSecureUpdate.batでコピー先を選びます。コピーした旧版のStart.batは先に起動しないでください。`r`n" +
+            "コピーが止まる・エラーが出る場合や、以前の更新途中の記録がある場合は、移動・削除・強制終了せずご相談ください。`r`n" +
+            '確認コード: preparation-linked-path')
+    }
     if ($Message -notmatch '^\[legacy-bootstrap-([a-z0-9-]+)\]$') { return $Message }
     $code = $Matches[1]
     $reasons = @{
@@ -878,17 +886,26 @@ function Get-PreparationErrorText {
         'trial-port-unavailable' = '起動確認に使うポートが使用中です。既存の本体が完全に終了しているか確認してください。'
         'trial-exited' = '新版が起動確認を完了できませんでした。確認コードをお知らせください。'
         'trial-timeout' = '新版の起動確認が時間内に完了しませんでした。確認コードをお知らせください。'
+        'environment-failed' = '新版のPython依存環境を準備できず、切り替え前に停止しました。旧フォルダーと復旧用フォルダーを残し、確認コードをお知らせください。'
+        'environment-verification-failed' = '新版のPython実行環境の確認に失敗し、切り替え前に停止しました。旧フォルダーと復旧用フォルダーを残し、確認コードをお知らせください。'
         'signature-verification-failed' = '更新の署名または有効期限を確認できません。安全のため停止しています。'
         'download-verification-failed' = '更新ファイルを完全に取得・検証できません。通信を確認してから再実行してください。'
     }
     $reason = '安全確認を完了できませんでした。確認コードをお知らせください。'
     if ($reasons.ContainsKey($code)) { $reason = $reasons[$code] }
-    return ('安全な初回更新を完了できないため、本体を自動起動していません。' + "`r`n" + $reason + "`r`n既存フォルダー・backup・隣の復旧フォルダーを削除しないでください。`r`n確認コード: legacy-bootstrap-" + $code)
+    $text = '安全な初回更新を完了できないため、本体を自動起動していません。' + "`r`n" + $reason + "`r`n既存フォルダー・backup・隣の復旧フォルダーを削除しないでください。`r`n確認コード: legacy-bootstrap-" + $code
+    $getter = Get-Command -Name Get-LegacyBootstrapFailureText -CommandType Function -ErrorAction SilentlyContinue
+    if ($null -ne $getter) {
+        $diagnostic = & $getter
+        if ($diagnostic) { $text += "`r`n" + $diagnostic }
+    }
+    return $text
 }
 
 function Invoke-PreparationMain {
     param([string]$PackageRoot = '')
 
+    $script:LegacyBootstrapFailureText = ''
     try {
         Set-PreparationStatus -Text '準備ツールを確認しています…'
         $source = Get-PackageSource -PackageRoot $PackageRoot

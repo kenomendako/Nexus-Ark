@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--source-root', required=True, type=Path)
     parser.add_argument('--uv', required=True, type=Path)
     args = parser.parse_args()
+    last_phase = 'unknown'
     try:
         if os.name != 'nt':
             raise RuntimeError('windows-required')
@@ -31,7 +32,9 @@ def main():
         from legacy_bootstrap.installer import install, BootstrapError, package_default_update_url
         phases = {'download', 'runtime', 'copy', 'environment', 'trial', 'switch', 'complete'}
         def progress(phase):
+            nonlocal last_phase
             mapped = phase if phase in phases else ('runtime' if 'runtime' in phase else 'download')
+            last_phase = mapped
             emit({'event': 'progress', 'phase': mapped})
         # 配布先の既定値を新ZIPの公開設定から読む。旧moduleはimportしない。
         default = package_default_update_url(args.source_root)
@@ -60,8 +63,12 @@ def main():
         if code not in allowed:
             code = 'verification-failed'
         # 内部例外、URL、path、設定内容をGUIへ転送しない。
+        from legacy_bootstrap.diagnostics import failure_detail, save_failure_detail
+        detail = failure_detail(exc, phase=last_phase)
+        saved = save_failure_detail(args.root, detail)
         emit({'event': 'result', 'state': 'blocked', 'error_code': code,
-              'recovery_state': 'preserved-review-required'})
+              'recovery_state': 'preserved-review-required',
+              'failure_detail': detail, 'diagnostic_saved': saved})
         return 1
 
 

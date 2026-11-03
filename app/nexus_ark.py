@@ -589,10 +589,11 @@ try:
                 with gr.Group(visible=False) as onboarding_step2_migrate:
                     gr.Markdown("<br>")
                     gr.Markdown("### 📦 旧バージョンからのデータ移行")
-                    gr.Markdown("旧Nexus Arkのフォルダパスを入力してください。設定ファイルとキャラクターデータが自動的に移行されます。")
+                    gr.Markdown("本体を終了し、ZIPを別の新しいフォルダーへ展開してから、その `ImportUserData.bat` で引き継ぎます。元のフォルダーはそのまま残ります。")
 
                     onboarding_migrate_path = gr.Textbox(
-                        label="旧Nexus Arkフォルダのパス",
+                        label="旧Nexus Arkフォルダのパス（この画面では使用しません）",
+                        visible=False,
                         placeholder="例: C:\\Users\\username\\Documents\\NexusArk",
                         info="config.json があるフォルダを指定してください"
                     )
@@ -607,7 +608,7 @@ try:
 
                     with gr.Row():
                         onboarding_back_btn2 = gr.Button("← 戻る", variant="secondary", size="sm")
-                        onboarding_migrate_exec_btn = gr.Button("📦 データを移行して開始", variant="primary", size="lg")
+                        onboarding_migrate_exec_btn = gr.Button("📦 データの引き継ぎ手順を確認", variant="primary", size="lg")
                     onboarding_migrate_status = gr.Textbox(visible=False, label="ステータス", lines=4)
 
                 # --- イベントハンドラ ---
@@ -662,227 +663,14 @@ try:
                         return gr.update(visible=True, value=f"保存に失敗しました: {e}"), gr.update(visible=True)
 
             def execute_migration(migrate_path):
-                import shutil
-                import datetime
-                import stat
-                import gc
-                import time
-                import errno
-                from pathlib import Path
-                from rag_manager import RAGManager
-                import ui_handlers
-                import utils
-
-                # [2026-02-11 FIX] Windows PermissionError 対処
-                # 1. メモリ上のRAGキャッシュとインスタンスをクリアしてファイルロックを解放
-                print("[Migration] Clearing RAG caches and instances...")
-                ui_handlers._rag_managers.clear()
-                RAGManager.clear_cache()
-                utils.invalidate_log_migration_cache()
-                gc.collect()
-                time.sleep(0.5) # Windowsのファイル解放待ち
-
-                yield gr.update(visible=True, value="【準備中】メモリとファイルロックを解放しています..."), gr.update(visible=True)
-
-                # 2. 読み取り専用ファイルを解除するハンドラ (Python 3.12 以降の onexc にも対応)
-                def handle_remove_readonly(func, path, excinfo):
-                    # excinfo は (type, value, traceback) または Exception
-                    try:
-                        os.chmod(path, stat.S_IWRITE)
-                        func(path)
-                    except Exception:
-                        pass # 致命的なロックは後続のリネーム退避に任せる
-
-                if not migrate_path or not migrate_path.strip():
-                    yield gr.update(visible=True, value="パスを入力してください。"), gr.update(visible=True)
-                    return
-
-                migrate_path = migrate_path.strip()
-                src_path = Path(migrate_path)
-                dest_path = Path(__file__).parent
-
-                # パス存在チェック
-                if not src_path.exists():
-                    yield gr.update(visible=True, value=f"指定されたパスが見つかりません: {migrate_path}"), gr.update(visible=True)
-                    return
-
-                # config.json の存在チェック
-                if not (src_path / "config.json").exists():
-                    yield gr.update(visible=True, value=f"config.json が見つかりません。正しいNexus Arkフォルダを指定してください。"), gr.update(visible=True)
-                    return
-
-                try:
-                    # --- 1. ルート設定ファイルの移行 ---
-                    yield gr.update(visible=True, value="【ステップ 1/3】 ルート設定ファイルを移行しています..."), gr.update(visible=True)
-                    for filename in ["config.json", "alarms.json", "redaction_rules.json", ".gemini_key_states.json"]:
-                        src_file = src_path / filename
-                        dest_file = dest_path / filename
-
-                        if src_file.exists():
-                            if dest_file.exists():
-                                backup_file = dest_file.with_suffix(dest_file.suffix + ".bak")
-                                shutil.copy2(dest_file, backup_file)
-                                print(f"[Migration] Created backup: {filename}")
-
-                            shutil.copy2(src_file, dest_file)
-                            print(f"[Migration] Copied: {filename}")
-
-                    # --- 2. charactersフォルダの移行 ---
-                    src_chars = src_path / "characters"
-                    dest_chars = dest_path / "characters"
-                    migrated_room_name_map = {}
-                    dest_chars.mkdir(parents=True, exist_ok=True)
-
-                    if src_chars.exists():
-                        target_dirs = [d for d in src_chars.iterdir() if d.is_dir() and not d.name.startswith(".")]
-                        total_chars = len(target_dirs)
-
-                        for i, char_dir in enumerate(target_dirs, 1):
-                            # ターゲットディレクトリ名を決定
-                            # "オリヴェ" (およびその表記ゆれ) は "Olivie" にマッピングして統合
-                            target_name = room_manager.normalize_room_folder_for_migration(char_dir.name)
-                            if target_name != char_dir.name:
-                                migrated_room_name_map[char_dir.name] = target_name
-
-                            target_dir = dest_chars / target_name
-
-                            yield gr.update(visible=True, value=f"【ステップ 2/3】 キャラクターデータをコピー中 ({i}/{total_chars}): {target_name}\n（データ量によっては数分かかる場合があります）"), gr.update(visible=True)
-                            print(f"[Migration] Migrating character: {char_dir.name} -> {target_name}")
-
-                            if target_dir.exists():
-                                # 既存フォルダ（初期生成されたOlivieなど）をバックアップ
-                                # [v2] characters/フォルダの外に移動してUIに表示されないようにする
-                                timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                                global_migration_backup_dir = dest_path / "backups" / "migration_retired"
-                                global_migration_backup_dir.mkdir(parents=True, exist_ok=True)
-
-                                backup_dir = global_migration_backup_dir / f"{target_name}_{timestamp_str}"
-                                shutil.move(str(target_dir), str(backup_dir))
-                                print(f"[Migration] Retired existing {target_name} to: {backup_dir}")
-                            else:
-                                # 存在しない場合でも、もし元が「オリヴェ」で先が「Olivie」なら、
-                                # すでに「Olivie」にマージ済みかもしれないのでチェック
-                                pass
-
-                            try:
-                                shutil.copytree(str(char_dir), str(target_dir))
-                                utils.invalidate_log_migration_cache(str(target_dir))
-                                print(f"[Migration] Copied character: {char_dir.name}")
-                            except OSError as e:
-                                if e.errno == 112 or "disk space" in str(e).lower(): # WinError 112: Space error
-                                    print(f"⚠️ [Migration] Error copying {char_dir.name}: Disk full or quota exceeded. Skipping remaining files for this character.")
-                                    # 部分的にコピーされている可能性があるので、不完全な状態を残すか、クリーンアップするか判断が難しいが
-                                    # ユーザーデータなので残せるだけ残す方針（ただし壊れている可能性あり）
-                                    yield gr.update(visible=True, value=f"⚠️ {char_dir.name} のコピー中にディスク容量不足エラーが発生しました。一部のデータのみコピーされました。"), gr.update(visible=True)
-                                    time.sleep(3)
-                                else:
-                                    print(f"⚠️ [Migration] Error copying {char_dir.name}: {e}")
-                                # エラーが出ても続行する（他のキャラクタや処理を止めない）
-
-                    migrated_config_path = dest_path / "config.json"
-                    if migrated_config_path.exists():
-                        try:
-                            with open(migrated_config_path, "r", encoding="utf-8") as f:
-                                migrated_config = json.load(f)
-                            if room_manager.normalize_migrated_config_room_references(migrated_config, migrated_room_name_map):
-                                with open(migrated_config_path, "w", encoding="utf-8") as f:
-                                    json.dump(migrated_config, f, indent=4, ensure_ascii=False)
-                                print(f"[Migration] Normalized migrated room references: {migrated_room_name_map}")
-                        except Exception as e:
-                            print(f"[Migration] Warning: failed to normalize config room references: {e}")
-
-                    # --- 3. オリヴェの特例アップグレード（アセットマージ） ---
-                    yield gr.update(visible=True, value="【ステップ 3/3】 標準ペルソナ（Olivie）のアセットを統合しています..."), gr.update(visible=True)
-                    # サンプルペルソナから最新のアセット（仕様書、RAG、画像、設定）を注入する
-                    sample_olivie_path = dest_path / "assets" / "sample_persona" / "Olivie"
-                    target_olivie_path = dest_chars / "Olivie"
-
-                    # オリヴェが存在し、かつサンプルアセットがある場合のみ実行
-                    if target_olivie_path.exists() and sample_olivie_path.exists():
-                        print("[Migration] Upgrading Olivie with latest assets...")
-
-                        # A. RAGデータの置換 (強制上書き)
-                        target_rag = target_olivie_path / "rag_data"
-                        source_rag = sample_olivie_path / "rag_data"
-                        if source_rag.exists():
-                            if target_rag.exists():
-                                try:
-                                    # [Windows] 削除ではなくリネーム退避を優先
-                                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                                    retired_rag_dir = dest_path / "backups" / "migration_retired" / "rag_data"
-                                    retired_rag_dir.mkdir(parents=True, exist_ok=True)
-                                    retired_path = retired_rag_dir / f"Olivie_rag_{timestamp}"
-
-                                    # まずリネーム
-                                    shutil.move(str(target_rag), str(retired_path))
-                                    print(f"  - Retired existing RAG data to {retired_path}")
-                                except Exception as e:
-                                    print(f"  - Rename/Move failed ({e}). Falling back to rmtree.")
-                                    shutil.rmtree(str(target_rag), onexc=handle_remove_readonly)
-
-                            shutil.copytree(str(source_rag), str(target_rag))
-                            print("  - Replaced RAG data")
-
-                        # B. 知識ファイル(Specification)の置換
-                        target_know = target_olivie_path / "knowledge"
-                        source_know = sample_olivie_path / "knowledge"
-                        if source_know.exists():
-                            if not target_know.exists(): target_know.mkdir(parents=True)
-                            for f in source_know.glob("*.md"):
-                                shutil.copy2(f, target_know / f.name)
-                            print("  - Updated knowledge specifications")
-
-                        # C. 情景画像の追加 (存在しないもののみ追加)
-                        target_imgs = target_olivie_path / "spaces" / "images"
-                        source_imgs = sample_olivie_path / "spaces" / "images"
-                        if source_imgs.exists():
-                            if not target_imgs.exists(): target_imgs.mkdir(parents=True)
-                            for img in source_imgs.iterdir():
-                                if not (target_imgs / img.name).exists():
-                                    shutil.copy2(img, target_imgs / img.name)
-                            print("  - Added new scenery images")
-
-                        # D. テーマ設定のマージ
-                        try:
-                            t_conf_path = target_olivie_path / "room_config.json"
-                            s_conf_path = sample_olivie_path / "room_config.json"
-                            if t_conf_path.exists() and s_conf_path.exists():
-                                with open(t_conf_path, "r", encoding="utf-8") as f: t_data = json.load(f)
-                                with open(s_conf_path, "r", encoding="utf-8") as f: s_data = json.load(f)
-
-                                # テーマ関連設定を強制上書き
-                                if "override_settings" not in t_data: t_data["override_settings"] = {}
-                                s_overrides = s_data.get("override_settings", {})
-
-                                keys_to_merge = ["room_theme_enabled", "theme_ui_opacity", "voice_id", "voice_style_prompt"]
-                                # theme_ で始まるキーも全て対象
-                                keys_to_merge.extend([k for k in s_overrides.keys() if k.startswith("theme_")])
-
-                                for k in keys_to_merge:
-                                    if k in s_overrides:
-                                        t_data["override_settings"][k] = s_overrides[k]
-
-                                with open(t_conf_path, "w", encoding="utf-8") as f:
-                                    json.dump(t_data, f, indent=4, ensure_ascii=False)
-                                print("  - Merged room configuration (theme settings)")
-                        except Exception as e:
-                            print(f"  - Warning: Failed to merge room_config: {e}")
-
-                    yield gr.update(visible=True, value="【完了処理】設定を反映しています..."), gr.update(visible=True)
-                    # Mark as complete
-                    onboarding_manager.mark_setup_completed()
-
-                    # グローバル設定を再読み込み
-                    config_manager.load_config()
-
-                    # 成功メッセージを表示（__SUCCESS__マーカーでJSがリロードをトリガー）
-                    gr.Info("✅ データ移行が完了しました！自動でリロードします...")
-                    yield gr.update(visible=True, value="__SUCCESS__ 移行完了！リロード中..."), gr.update(visible=True)
-                except Exception as e:
-                    import traceback
-                    error_details = traceback.format_exc()
-                    print(f"[Migration Error] {error_details}")
-                    yield gr.update(visible=True, value=f"移行に失敗しました: {e}\n\n詳細:\n{error_details[:500]}"), gr.update(visible=True)
+                # コピー中の保存・自律行動を避け、停止中の専用ツールへ案内する。
+                yield gr.update(visible=True, value=(
+                    "データの引き継ぎは、本体を終了してから行います。"
+                    "ZIPを別の新しいフォルダーへ展開し、その ImportUserData.bat を開いて、"
+                    "現在使っている旧版（またはバックアップ）のフォルダーを選んでください。"
+                    "コピーと照合の完了後、引き継ぎ先の Start.bat から起動します。"
+                    "この画面ではデータを書き換えていません。"
+                )), gr.update(visible=True)
 
             onboarding_finish_btn.click(
                 fn=finish_onboarding,

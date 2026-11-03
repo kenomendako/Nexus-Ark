@@ -27,16 +27,15 @@ if (-not $script:IsDotSourced) {
 }
 
 # 89d5c9eb stable host: seven files.  5746fd60 adds windows_processes.py and
-# changes the transaction/supervisor files.  The latter is retained as an
-# approved previous eight-file generation.  The shipped 0.77 host is retained
-# as known_077, the 0.87/0.88 host as known_088, while the current source is
-# the next known_new generation.
+# changes the transaction/supervisor files.  The shipped 0.77 host is retained
+# as known_077, the 0.87/0.88 host as known_088, and the complete 0.89--0.93
+# eight-file host is retained as historical generations.  The current source
+# is a separate known_new generation because supervisor.py has changed.
 # The source is not an authorization boundary by itself: every complete
 # generation is pinned below and receipts must carry one of these exact maps.
-# Receipts from prior helpers may label known_old8, known_077, or known_088 as
+# Receipts from prior helpers may label any historical generation as
 # ``known_new``; they are accepted only when their complete map proves that
-# exact prior generation.  In particular, a pre-0.89 receipt labelled
-# ``known_new`` may be interpreted as known_088 only with the complete map.
+# exact prior generation.  No state-only or partial-map fallback is accepted.
 $script:KnownOldHostSha256 = [ordered]@{
     '__init__.py' = 'e58a28a84176ff2ef4909f29709eb0efe75455d59abf1368f64c829caef24ad5'
     'contracts.py' = '4018fe870273e8fa38b5e07b60bbb49d51edd2feaec38f22e087d528f3fa115f'
@@ -86,12 +85,22 @@ $script:Known088HostSha256 = [ordered]@{
     'trial.py' = 'a0bc50e42e462bf35dac908477b7863ac4a6031e8dcbb8a054f3bd3d4a80f326'
     'windows_processes.py' = 'd6c43c7327dde06c021800f87d800a86bdf11550c46411ba4c73c7c30f171641'
 }
-$script:KnownNewHostSha256 = [ordered]@{
+$script:Known093HostSha256 = [ordered]@{
     '__init__.py' = 'e58a28a84176ff2ef4909f29709eb0efe75455d59abf1368f64c829caef24ad5'
     'contracts.py' = '958c0c669f716b4eeb04083a1ba39eba913d90bfd7baae7b9c9a15bad848af20'
     'runtime.py' = '3f446f01094438b75974a60215e5d670f90175d83bc2f62a0fb9aff45781245b'
     'runtime_archive.py' = '15b6fd5835efebcb4a02210c7f7ebeffd52a86d4776dfeca109c9e068fb7dbcc'
     'supervisor.py' = '7bbdc5e33f87aca6c8b76e64393825fe24612e50443c178406944588dff4be30'
+    'transaction.py' = '946a100fd0f5b61746f725f194e6c214684db9378e26df6ef406b6d1c35d48d9'
+    'trial.py' = 'a0bc50e42e462bf35dac908477b7863ac4a6031e8dcbb8a054f3bd3d4a80f326'
+    'windows_processes.py' = 'd6c43c7327dde06c021800f87d800a86bdf11550c46411ba4c73c7c30f171641'
+}
+$script:KnownNewHostSha256 = [ordered]@{
+    '__init__.py' = 'e58a28a84176ff2ef4909f29709eb0efe75455d59abf1368f64c829caef24ad5'
+    'contracts.py' = '958c0c669f716b4eeb04083a1ba39eba913d90bfd7baae7b9c9a15bad848af20'
+    'runtime.py' = '3f446f01094438b75974a60215e5d670f90175d83bc2f62a0fb9aff45781245b'
+    'runtime_archive.py' = '15b6fd5835efebcb4a02210c7f7ebeffd52a86d4776dfeca109c9e068fb7dbcc'
+    'supervisor.py' = 'd2539b3f81721145326367202424327283feba1296541c79fb01799d71027897'
     'transaction.py' = '946a100fd0f5b61746f725f194e6c214684db9378e26df6ef406b6d1c35d48d9'
     'trial.py' = 'a0bc50e42e462bf35dac908477b7863ac4a6031e8dcbb8a054f3bd3d4a80f326'
     'windows_processes.py' = 'd6c43c7327dde06c021800f87d800a86bdf11550c46411ba4c73c7c30f171641'
@@ -115,8 +124,11 @@ function Get-KnownHostGeneration {
         'known_088' {
             return [ordered]@{ state = 'known_088'; rank = 4; map = $script:Known088HostSha256 }
         }
+        'known_093' {
+            return [ordered]@{ state = 'known_093'; rank = 5; map = $script:Known093HostSha256 }
+        }
         'known_new' {
-            return [ordered]@{ state = 'known_new'; rank = 5; map = $script:KnownNewHostSha256 }
+            return [ordered]@{ state = 'known_new'; rank = 6; map = $script:KnownNewHostSha256 }
         }
         default { throw 'host世代が許可済み一覧にありません。' }
     }
@@ -131,8 +143,10 @@ $script:KnownCanonicalStartSha256 = @(
     'b58de9707250d4657d199025b75a1e3c50c315272362c1fe593470b2a163ec20',
     '837c25b9c4b4c5fb30d7f2f6d6081ed8daa4f0bfcbe2aeb31cddca9ddeb24b39',
     'e3070fbc412577aff121d8a8aff33bb0bd15c790fce205580926569299de7c37',
-    '3bafb0efb475fdd9bd9e686739a461018c1612dc092a356b9bf8a9ed2538684a', # 3.12.16 LF
-    '184427c65309ebc1f45b2d2a2c5f71ee2ec1e70cb40c458a35449c1b06705241' # 3.12.16 CRLF
+    '3bafb0efb475fdd9bd9e686739a461018c1612dc092a356b9bf8a9ed2538684a', # 3.12.16 LF before import guard
+    '184427c65309ebc1f45b2d2a2c5f71ee2ec1e70cb40c458a35449c1b06705241', # 3.12.16 CRLF before import guard
+    'd01dc08b7184ad2ea2eb9679e2ff1d0a47e9446fa5f80f9907e9f36766c5410a', # 3.12.16 LF with import guard
+    '94efac6d885ca3e7745cc6772621fd9712763cdcff6807cb38198383c7ec03f3' # 3.12.16 CRLF with import guard
 )
 
 function Get-NormalizedPath {
@@ -419,7 +433,7 @@ function Get-HostState {
     if (-not $item.PSIsContainer -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
         throw 'updater/currentが通常のdirectoryではありません。'
     }
-    foreach ($generation in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_new')) {
+    foreach ($generation in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_093', 'known_new')) {
         $definition = Get-KnownHostGeneration -State $generation
         try {
             $verified = Compare-CurrentInventory -Root $path -Expected $definition.map -ExpectedState $definition.state
@@ -439,7 +453,7 @@ function Assert-ApprovedSourceHost {
     if ($leaf -ine 'current' -or (Split-Path -Leaf $parent) -ine 'updater') {
         throw 'sourceはdistribution/updater/currentでなければなりません。'
     }
-    foreach ($generation in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_new')) {
+    foreach ($generation in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_093', 'known_new')) {
         $definition = Get-KnownHostGeneration -State $generation
         try {
             $verified = Compare-CurrentInventory -Root $source -Expected $definition.map -ExpectedState $definition.state
@@ -662,8 +676,9 @@ function Copy-SecureTree {
     )
     Assert-RegularDirectory -Path $Source -Label 'copy source' | Out-Null
     Assert-NoReparseAncestors -Path $Destination -Label 'copy destination' -AllowMissing
-    if (Test-Path -LiteralPath $Destination) { throw 'copy destination already exists。' }
-    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    $destinationIo = Get-SecureReceiptIoPath $Destination
+    if ([IO.Directory]::Exists($destinationIo) -or [IO.File]::Exists($destinationIo)) { throw 'copy destination already exists。' }
+    [IO.Directory]::CreateDirectory($destinationIo) | Out-Null
     $stack = New-Object System.Collections.Stack
     $stack.Push([ordered]@{ source = (Get-NormalizedPath $Source); destination = (Get-NormalizedPath $Destination) })
     while ($stack.Count -gt 0) {
@@ -681,11 +696,13 @@ function Copy-SecureTree {
             }
             $destinationItem = Join-Path $pair.destination $item.Name
             if ($item.PSIsContainer) {
-                New-Item -ItemType Directory -Path $destinationItem -Force | Out-Null
+                [IO.Directory]::CreateDirectory((Get-SecureReceiptIoPath $destinationItem)) | Out-Null
                 $stack.Push([ordered]@{ source = $item.FullName; destination = $destinationItem })
             }
             else {
-                [IO.File]::Copy($item.FullName, $destinationItem, $false)
+                # ancestor/reparse検査は上で通常表記のpathへ実施済み。
+                # 保全先だけMAX_PATHを越える場合も、除外せず全件コピーする。
+                [IO.File]::Copy((Get-SecureReceiptIoPath $item.FullName), (Get-SecureReceiptIoPath $destinationItem), $false)
                 if ((Get-SecureSha256 -Path $destinationItem) -ne (Get-SecureSha256 -Path $item.FullName)) {
                     throw 'copy後のhost file SHA256検証に失敗しました。'
                 }
@@ -1178,16 +1195,16 @@ function Get-ReceiptGenerationDefinition {
     )
     $stateName = if ($Role -eq 'old') { [string]$Receipt.old_state } else { [string]$Receipt.new_state }
     $files = if ($Role -eq 'old') { $Receipt.old_files } else { $Receipt.new_files }
-    foreach ($candidateName in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_new')) {
+    foreach ($candidateName in @('known_new', 'known_093', 'known_old', 'known_old8', 'known_077', 'known_085', 'known_088')) {
         $candidate = Get-KnownHostGeneration -State $candidateName
         try { Assert-ReceiptFilesExact -Files $files -Expected $candidate.map -Label ('receipt {0}_files' -f $Role) }
         catch { continue }
         if ($stateName -eq $candidate.state) { return $candidate }
-        # Receipts emitted by previous helpers called old8 and 0.77
+        # Receipts emitted by previous helpers called a historical generation
         # ``known_new``.  The complete map is the compatibility proof; no
         # state-only or partial-map fallback is accepted.
         if ($Role -eq 'new' -and $stateName -eq 'known_new' -and
-            $candidate.state -in @('known_old8', 'known_077', 'known_085', 'known_088')) {
+            $candidate.state -in @('known_093', 'known_old8', 'known_077', 'known_085', 'known_088')) {
             return [ordered]@{ state = $candidate.state; rank = $candidate.rank; map = $candidate.map; legacy_label = $true }
         }
         throw ('receiptの{0}_stateと{0}_filesが一致しません。' -f $Role)
@@ -1347,7 +1364,7 @@ function Invoke-SecureUpdateHostRepair {
     }
     $source = Assert-ApprovedSourceHost -SourceHostPath $SourceHostPath
     $sourceDefinition = Get-KnownHostGeneration -State ([string]$source.inventory.state)
-    $assessmentDefinition = if ($assessment.state -in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_new')) {
+    $assessmentDefinition = if ($assessment.state -in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_093', 'known_new')) {
         Get-KnownHostGeneration -State ([string]$assessment.state)
     }
     else { $null }
@@ -1409,7 +1426,7 @@ function Invoke-SecureUpdateHostRepair {
         }
         return $recoveryResult
     }
-    if ($assessment.state -in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_new')) {
+    if ($assessment.state -in @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_093', 'known_new')) {
         if ($sourceDefinition.rank -lt $assessmentDefinition.rank) {
             throw 'sourceが現在hostより古い世代です。'
         }
@@ -1435,7 +1452,7 @@ function Invoke-SecureUpdateHostRepair {
         Assert-SecureRepairLeaseAvailable -Root $root
         return New-SecureRepairResult -State 'known_new' -Changed $false -TargetRoot $root -SourceHostPath $source.path -OldSha256 $script:KnownNewHostSha256['supervisor.py'] -NewSha256 $script:KnownNewHostSha256['supervisor.py'] -Message '既知の新版hostです。変更しません。'
     }
-    if ($assessment.state -notin @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088')) { throw '修復対象hostが既知旧版ではありません。' }
+    if ($assessment.state -notin @('known_old', 'known_old8', 'known_077', 'known_085', 'known_088', 'known_093')) { throw '修復対象hostが既知旧版ではありません。' }
     if ($InspectOnly) {
         return New-SecureRepairResult -State ([string]$assessment.state) -Changed $false -TargetRoot $root -SourceHostPath $source.path -OldSha256 $assessmentDefinition.map['supervisor.py'] -NewSha256 $sourceDefinition.map['supervisor.py'] -Message '既知の旧hostです。修復可能です。'
     }

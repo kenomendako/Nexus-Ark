@@ -2,6 +2,12 @@
 chcp 65001 > nul
 setlocal
 cd /d "%~dp0"
+if exist ".data-import-incomplete" (
+    echo [Nexus Ark] Data import is incomplete. Do not use this new folder.
+    echo [Nexus Ark] Keep your original folder and extract the ZIP to another new folder.
+    pause
+    exit /b 1
+)
 
 echo ---------------------------------------------------
 echo  Nexus Ark Launching...

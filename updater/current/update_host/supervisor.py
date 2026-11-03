@@ -889,6 +889,23 @@ class UpdateSupervisor:
         )
 
     def run(self) -> int:
+        """データ移行と排他し、未完了のコピーを起動しない。"""
+        try:
+            with UpdateLock(self.paths.root / "data-transfer.lock", uuid.uuid4().hex,
+                            reclaim_stale=True):
+                if os.path.lexists(self.paths.root / ".data-import-incomplete"):
+                    raise UnsafeGenerationError(
+                        "データ移行が未完了です。この新版は起動せず、元のフォルダーを保持して、"
+                        "ZIPを別の新しいフォルダーへ展開し直してください")
+                return self._run_locked()
+        except UnsafeGenerationError as exc:
+            print(f"[Nexus Ark] {exc}", file=sys.stderr)
+            return 1
+        except (RuntimeError, OSError) as exc:
+            print(f"[Nexus Ark] データ移行または起動処理と重なったため停止しました: {type(exc).__name__}", file=sys.stderr)
+            return 1
+
+    def _run_locked(self) -> int:
         """host lifecycleを実行し、最終app processのexit codeを返す。"""
 
         try:
